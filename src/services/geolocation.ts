@@ -54,7 +54,10 @@ class GeoService {
     };
   }
 
-  /** Injects a fix (used by the demo "walk" and by tests). */
+  /** True when positions come from ?sim= or tests instead of the device. */
+  isSimulated = (): boolean => this.simulated;
+
+  /** Injects a fix (used by ?sim= and by tests). */
   push(fix: GeoFix): void {
     this.simulated = true;
     this.set({ status: "ok", fix });

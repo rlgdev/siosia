@@ -37,6 +37,9 @@ export function Home() {
             <option value="pl">Polski</option>
           </select>
         </label>
+        <a className="btn btn-link" href="./guide.html">
+          {t("home.guide")}
+        </a>
         <button type="button" className="btn btn-link" onClick={() => store.openPanel("profile")}>
           {app.cfg?.backend === "supabase" ? t("home.signIn") : t("home.profile")}
         </button>

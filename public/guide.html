@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#14161a" />
+<title>Siosia guide</title>
+<link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+<style>
+  :root { --ink:#14161a; --muted:#5b6370; --bg:#f4f5f7; --surface:#fff; --line:#d9dde3; --accent:#0b6e4f; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --ink:#f2f4f7; --muted:#a6aebb; --bg:#0f1115; --surface:#1a1d23; --line:#333944; --accent:#3fbf8f; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:720px; margin:0 auto; padding:calc(20px + env(safe-area-inset-top)) 16px 48px; }
+  header { display:flex; gap:14px; align-items:center; margin-bottom:8px; }
+  .logo { width:48px; height:48px; border-radius:14px; flex:none; }
+  h1 { font-size:1.5rem; margin:0; } h2 { font-size:1.2rem; margin:28px 0 8px; } h3 { font-size:1.05rem; margin:18px 0 6px; }
+  .muted { color:var(--muted); }
+  .lang { display:flex; gap:8px; margin:14px 0 4px; }
+  .lang button, .btn { min-height:44px; padding:0 16px; border-radius:12px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font:inherit; font-weight:600; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; }
+  .lang button[aria-pressed="true"] { background:var(--ink); color:var(--surface); border-color:var(--ink); }
+  .btn-primary { background:var(--ink); color:var(--surface); border-color:var(--ink); }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px 16px; margin:12px 0; }
+  ol, ul { padding-left:1.3em; } li { margin:6px 0; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; background:var(--bg); border:1px solid var(--line); font-size:.85rem; font-weight:700; }
+  .bar { background:#0b5a40; color:#fff; border-radius:10px; padding:2px 8px; font-weight:600; font-size:.9rem; white-space:nowrap; }
+  table { width:100%; border-collapse:collapse; font-size:.95rem; } td { border-top:1px solid var(--line); padding:8px 6px; vertical-align:top; } td:first-child { font-weight:600; width:38%; }
+  [data-lang] { display:none; } html[lang="en"] [data-lang="en"], html[lang="pl"] [data-lang="pl"] { display:block; }
+  :focus-visible { outline:3px solid #1d4ed8; outline-offset:2px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img class="logo" src="./icons/icon-192.png" alt="" />
+    <div>
+      <h1><span data-lang="en">How Siosia works</span><span data-lang="pl">Jak działa Siosia</span></h1>
+      <p class="muted" style="margin:0"><span data-lang="en">For riders and drivers · 2-minute read</span><span data-lang="pl">Dla pasażerów i kierowców · 2 minuty czytania</span></p>
+    </div>
+  </header>
+  <div class="lang" role="group" aria-label="Language">
+    <button type="button" data-set="en">English</button>
+    <button type="button" data-set="pl">Polski</button>
+    <a class="btn btn-primary" href="./" style="margin-left:auto"><span data-lang="en">Open Siosia</span><span data-lang="pl">Otwórz Siosię</span></a>
+  </div>
+
+  <!-- ============================== ENGLISH ============================== -->
+  <section data-lang="en">
+    <div class="card">
+      <strong>You need:</strong> this link, the <strong>invite code</strong> from your organiser, and a phone with a current Chrome (Android) or Safari (iPhone). No app store, no account, no payment details.
+    </div>
+
+    <h2>First time — 1 minute</h2>
+    <ol>
+      <li>Open the link and enter the <strong>invite code</strong> (once per phone).</li>
+      <li>Pick a <strong>nickname</strong> (2–20 characters). That is your whole profile.</li>
+      <li>Optional — install it like an app: Android Chrome menu ⋮ → <em>Add to Home screen</em>; iPhone Safari Share → <em>Add to Home Screen</em>.</li>
+      <li>When asked, <strong>allow location</strong>. Said no by mistake? Android: tap 🔒 next to the address → Permissions → Location → Allow. iPhone: Settings → Privacy → Location Services → Safari Websites → While Using. Then reload.</li>
+    </ol>
+
+    <h2>Riding</h2>
+    <ol>
+      <li>Tap <strong>Ride</strong>. Pickup = where you are (move the green pin if needed).</li>
+      <li>Set the <strong>dropoff</strong>: tap the field and search an address, or <strong>long-press the map</strong>, or 📌 then tap the map.</li>
+      <li>You see distance, time and a <strong>fixed price</strong> — it never changes after you request.</li>
+      <li>Tap <strong>Request ride</strong>. The first nearby driver to accept gets it. Nobody in 3 minutes → <em>Try again</em>.</li>
+      <li>You see the driver's <strong>nickname, rating, car and plate</strong> and the car moving. <span class="bar">● Sharing your live location</span> means your driver sees you — tap <em>Stop</em> anytime.</li>
+      <li>At the end <strong>pay the driver directly</strong> (Siosia handles no money), tap <em>Mark as paid</em>, give 1–5 stars.</li>
+    </ol>
+
+    <h2>Driving</h2>
+    <ol>
+      <li>Tap <strong>Drive</strong> and enter your car once (make, model, colour, plate, seats). Riders see it only after you accept.</li>
+      <li>Tap <strong>Go online</strong>. <strong>Keep Siosia open with the screen on</strong> — phones pause location when the screen locks.</li>
+      <li>A request arrives with a chime: distance to pickup, trip, fare and a <strong>20-second</strong> countdown. <strong>Accept</strong> or <strong>Decline</strong>.</li>
+      <li><strong>Navigate</strong> opens Google Maps (Apple Maps on iPhone). Then <strong>I've arrived</strong> → <strong>Start trip</strong> → <strong>Complete trip</strong>.</li>
+      <li>Collect the fare directly, tap <em>Mark fare collected</em>, rate the rider. Earnings: ☰ → <em>Earnings &amp; history</em>.</li>
+      <li><strong>Go offline</strong> when done. <em>Rider no-show</em> appears 5 minutes after <em>I've arrived</em>.</li>
+    </ol>
+
+    <h2>Privacy</h2>
+    <ul>
+      <li>Your position is shared only while you're an online driver or have a ride with an assigned driver, only with that person, and it is <strong>never stored</strong>.</li>
+      <li>A ride keeps pickup, dropoff, distance, time, price, statuses and ratings. Your nickname is the only personal data. ☰ → <em>Delete my profile</em> anonymises your rides.</li>
+    </ul>
+
+    <h2>Problems?</h2>
+    <table>
+      <tr><td>"Service unavailable"</td><td>Tap <em>Retry</em>. If it stays, contact the organiser shown on that screen.</td></tr>
+      <tr><td>Location off or inaccurate</td><td>Allow location (above). GPS is better outdoors. You can always place pins by hand.</td></tr>
+      <tr><td>Driver gets no requests</td><td>Be online, keep the app open and the screen on, within ~8 km of riders.</td></tr>
+      <tr><td>The car doesn't move</td><td>The driver's screen may be locked — you'll see "last seen … s ago".</td></tr>
+      <tr><td>Just looking around?</td><td>Try the demo with robot drivers: <a href="./?backend=mock">open demo mode</a>.</td></tr>
+    </table>
+  </section>
+
+  <!-- =============================== POLSKI =============================== -->
+  <section data-lang="pl">
+    <div class="card">
+      <strong>Potrzebujesz:</strong> tego linku, <strong>kodu zaproszenia</strong> od organizatora i telefonu z aktualnym Chrome (Android) lub Safari (iPhone). Bez sklepu z aplikacjami, bez konta, bez danych płatniczych.
+    </div>
+
+    <h2>Pierwsze uruchomienie — 1 minuta</h2>
+    <ol>
+      <li>Otwórz link i wpisz <strong>kod zaproszenia</strong> (raz na telefon).</li>
+      <li>Wybierz <strong>pseudonim</strong> (2–20 znaków). To cały Twój profil.</li>
+      <li>Opcjonalnie zainstaluj jak aplikację: Android Chrome menu ⋮ → <em>Dodaj do ekranu głównego</em>; iPhone Safari Udostępnij → <em>Do ekranu początkowego</em>.</li>
+      <li>Gdy telefon zapyta, <strong>zezwól na lokalizację</strong>. Odmówiłeś przez pomyłkę? Android: 🔒 obok adresu → Uprawnienia → Lokalizacja → Zezwól. iPhone: Ustawienia → Prywatność → Usługi lokalizacji → Witryny Safari → Podczas używania. Potem odśwież.</li>
+    </ol>
+
+    <h2>Jadę (pasażer)</h2>
+    <ol>
+      <li>Dotknij <strong>Jadę</strong>. Odbiór = Twoja pozycja (w razie potrzeby przesuń zieloną pinezkę).</li>
+      <li>Ustaw <strong>cel</strong>: dotknij pola i wyszukaj adres, albo <strong>przytrzymaj mapę</strong>, albo 📌 i dotknij mapy.</li>
+      <li>Widzisz dystans, czas i <strong>stałą cenę</strong> — po zamówieniu się nie zmienia.</li>
+      <li>Dotknij <strong>Zamów kurs</strong>. Kurs dostaje pierwszy kierowca, który przyjmie. Nikt w 3 minuty → <em>Spróbuj ponownie</em>.</li>
+      <li>Widzisz <strong>pseudonim, ocenę, samochód i numer rejestracyjny</strong> kierowcy oraz jadące auto. <span class="bar">● Udostępniasz lokalizację</span> oznacza, że kierowca Cię widzi — w każdej chwili dotknij <em>Zatrzymaj</em>.</li>
+      <li>Na końcu <strong>zapłać kierowcy bezpośrednio</strong> (Siosia nie obsługuje pieniędzy), <em>Oznacz jako zapłacone</em>, wystaw 1–5 gwiazdek.</li>
+    </ol>
+
+    <h2>Wożę (kierowca)</h2>
+    <ol>
+      <li>Dotknij <strong>Wożę</strong> i raz wpisz samochód (marka, model, kolor, rejestracja, miejsca). Pasażer zobaczy go dopiero po przyjęciu.</li>
+      <li>Dotknij <strong>Przejdź online</strong>. <strong>Trzymaj Siosię otwartą z włączonym ekranem</strong> — telefon wstrzymuje lokalizację po zablokowaniu.</li>
+      <li>Zamówienie przychodzi z dźwiękiem: odległość do odbioru, kurs, cena i <strong>20 sekund</strong> na decyzję. <strong>Przyjmij</strong> lub <strong>Odrzuć</strong>.</li>
+      <li><strong>Nawiguj</strong> otwiera Mapy Google (Mapy Apple na iPhonie). Potem <strong>Jestem na miejscu</strong> → <strong>Rozpocznij kurs</strong> → <strong>Zakończ kurs</strong>.</li>
+      <li>Pobierz opłatę bezpośrednio, <em>Oznacz opłatę jako pobraną</em>, oceń pasażera. Zarobki: ☰ → <em>Zarobki i historia</em>.</li>
+      <li>Na koniec <strong>Przejdź offline</strong>. <em>Pasażer się nie pojawił</em> jest dostępne 5 minut po <em>Jestem na miejscu</em>.</li>
+    </ol>
+
+    <h2>Prywatność</h2>
+    <ul>
+      <li>Twoja pozycja jest udostępniana tylko gdy jesteś kierowcą online albo masz kurs z przydzielonym kierowcą, tylko tej osobie, i <strong>nigdy nie jest zapisywana</strong>.</li>
+      <li>Kurs przechowuje odbiór, cel, dystans, czas, cenę, statusy i oceny. Pseudonim to jedyna informacja osobowa. ☰ → <em>Usuń mój profil</em> anonimizuje kursy.</li>
+    </ul>
+
+    <h2>Problemy?</h2>
+    <table>
+      <tr><td>„Usługa niedostępna”</td><td><em>Spróbuj ponownie</em>. Jeśli nie pomaga, skontaktuj się z organizatorem podanym na ekranie.</td></tr>
+      <tr><td>Lokalizacja wyłączona / niedokładna</td><td>Zezwól na lokalizację (wyżej). Na zewnątrz GPS działa lepiej. Pinezki zawsze można postawić ręcznie.</td></tr>
+      <tr><td>Kierowca nie dostaje zamówień</td><td>Bądź online, aplikacja otwarta, ekran włączony, do ~8 km od pasażerów.</td></tr>
+      <tr><td>Auto stoi w miejscu</td><td>Ekran kierowcy mógł się zablokować — widać „ostatnio widziany … s temu”.</td></tr>
+      <tr><td>Chcesz tylko zobaczyć?</td><td>Wypróbuj demo z kierowcami-robotami: <a href="./?backend=mock">otwórz tryb demo</a>.</td></tr>
+    </table>
+  </section>
+</main>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var pref = null;
+    try { pref = JSON.parse(localStorage.getItem("siosia.lang")); } catch (e) {}
+    var langs = navigator.languages || [navigator.language];
+    var initial = pref || (langs.some(function (l) { return (l || "").toLowerCase().indexOf("pl") === 0; }) ? "pl" : "en");
+    function set(l) {
+      root.lang = l;
+      document.querySelectorAll("[data-set]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-set") === l)); });
+    }
+    document.querySelectorAll("[data-set]").forEach(function (b) { b.addEventListener("click", function () { set(b.getAttribute("data-set")); }); });
+    set(initial);
+  })();
+</script>
+</body>
+</html>

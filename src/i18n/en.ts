@@ -48,6 +48,7 @@ export const en = {
   "home.language": "Language",
   "home.signIn": "Keep my account across devices",
   "home.profile": "Profile",
+  "home.guide": "How it works",
 
   "profile.title": "Profile",
   "profile.nickname": "Nickname",

@@ -83,7 +83,7 @@ function tripKey(id: string) {
 /** Asks for location permission explicitly (FR-020) and resolves with a first fix. */
 function firstFix(timeoutMs = 15_000): Promise<GeoFix> {
   const current = geo.getState().fix;
-  if (current && Date.now() - current.t < 30_000) return Promise.resolve(current);
+  if (current && (geo.isSimulated() || Date.now() - current.t < 30_000)) return Promise.resolve(current);
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) return reject(new Error("geo_unavailable"));
     navigator.geolocation.getCurrentPosition(

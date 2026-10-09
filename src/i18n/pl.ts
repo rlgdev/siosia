@@ -50,6 +50,7 @@ export const pl: Record<MessageKey, string> = {
   "home.language": "Język",
   "home.signIn": "Zachowaj konto na innych urządzeniach",
   "home.profile": "Profil",
+  "home.guide": "Jak to działa",
 
   "profile.title": "Profil",
   "profile.nickname": "Pseudonim",
