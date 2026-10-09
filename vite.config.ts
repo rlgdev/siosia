@@ -36,7 +36,11 @@ export default defineConfig({
         // offline tile storage). config.json is never cached so operators can change it live.
         globPatterns: ["**/*.{js,css,html,svg,png,webmanifest}"],
         navigateFallback: "index.html",
-        navigateFallbackDenylist: [/config\.json$/],
+        navigateFallbackDenylist: [/config\.json$/, /guide\.html$/],
+        // A new version takes over at once instead of waiting until every tab is closed.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         runtimeCaching: []
       }
     })
