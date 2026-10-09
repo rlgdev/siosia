@@ -1,0 +1,24 @@
+{
+  "_comment": "Optional runtime config. Copy to public/config.json before building (or next to index.html on the host) to change settings without a rebuild. Only PUBLISHABLE values belong here.",
+  "supabaseUrl": "https://YOUR-PROJECT.supabase.co",
+  "supabaseKey": "sb_publishable_xxx",
+  "backend": "",
+  "operatorContact": "Ola — ola@example.com",
+  "demoAllowed": true,
+  "mockInviteCode": null,
+  "fallbackCenter": { "lat": 52.2297, "lng": 21.0122 },
+  "map": {
+    "tileUrl": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    "routingUrl": "https://router.project-osrm.org",
+    "geocodeUrl": "https://nominatim.openstreetmap.org"
+  },
+  "deployment": {
+    "_comment": "Used by the demo (mock) backend only. The real backend reads tariff, timers and service area from the app_config table.",
+    "tariff": { "base": 5, "perKm": 2.5, "perMin": 0.5, "minimum": 10, "currency": "PLN" },
+    "timers": { "offerS": 20, "expiryS": 180, "noShowS": 300 },
+    "serviceArea": null,
+    "dispatchRadiusKm": 8,
+    "maxTripKm": 50,
+    "timezone": "Europe/Warsaw"
+  }
+}

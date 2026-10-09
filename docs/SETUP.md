@@ -1,0 +1,180 @@
+# Siosia — operator setup guide
+
+From an empty account to a working link on two phones in about **45 minutes**, at **zero cost**.
+Written for someone who has never used Supabase or GitHub Pages. Each step says where to click and
+what to copy. Phone-side instructions for your riders and drivers are in
+[USER-GUIDE.md](USER-GUIDE.md).
+
+```
+ phones ──HTTPS──▶ GitHub Pages (static app)          ← you deploy here (step 7)
+   │
+   ├──────────────▶ Supabase Free (database, auth,    ← you create this (steps 1–6)
+   │                realtime, server rules)
+   └──────────────▶ OpenStreetMap tiles · OSRM routing · Nominatim search (free, nothing to set up)
+```
+
+> **Just want to look at it?** The deployed link works without any backend in **demo mode**: add
+> `?backend=mock` to the URL. Everything then runs inside one browser, with two robot drivers.
+
+---
+
+## 0. What you need (2 min)
+
+- A **GitHub** account (free) — hosts the code and the website.
+- A **Supabase** account (free) — sign up at <https://supabase.com> with your GitHub account.
+  The free plan allows 2 active projects; Siosia uses one.
+- An **invite code** you will give to your pilot group, e.g. `WAW-PILOT-26`.
+- Two phones for the final test (Android Chrome or iOS Safari).
+
+## 1. Create the Supabase project (5 min)
+
+1. <https://supabase.com/dashboard> → **New project**.
+2. **Name** `siosia` · **Database password** → *Generate*, store it in your password manager (the
+   app never needs it) · **Region** closest to your city (e.g. *Central EU (Frankfurt)*) · plan
+   **Free** → **Create new project**. Wait ~2 minutes.
+
+## 2. Create the database (3 min)
+
+1. Left sidebar → **SQL Editor** → **New query**.
+2. Open [`supabase/migrations/0001_siosia.sql`](../supabase/migrations/0001_siosia.sql), copy
+   **all** of it, paste, press **Run**.
+3. Expect *Success. No rows returned.* (A notice about pg_cron is fine.) It created the tables,
+   the access rules (RLS), the server functions (atomic accept, 3-minute expiry, re-dispatch …),
+   the private-realtime policies and two scheduled jobs.
+
+The script is safe to run again later (e.g. after an update).
+
+## 3. Set your invite code and contact (2 min)
+
+Still in the SQL editor, run (edit the values):
+
+```sql
+select public.siosia_set_invite_code('WAW-PILOT-26');      -- FR-007: stored only as a bcrypt hash
+update public.app_config set operator_contact = 'Ola · ola@example.com' where id = 1;
+```
+
+Optional — change the tariff, timers or service area (defaults: PLN, 5.00 + 2.50/km + 0.50/min,
+minimum 10.00; offer 20 s, expiry 3 min, no-show 5 min; dispatch radius 8 km; no area limit):
+
+```sql
+update public.app_config set
+  currency = 'PLN', fare_base = 5.00, fare_per_km = 2.50, fare_per_min = 0.50, fare_minimum = 10.00,
+  service_lat = 52.2297, service_lng = 21.0122, service_radius_km = 25   -- one city
+where id = 1;
+```
+
+## 4. Authentication settings (4 min)
+
+1. **Authentication → Sign In / Providers** (sometimes *Providers*): turn **Allow anonymous
+   sign-ins** **ON** → *Save*. Every phone gets a private session without an account (FR-002).
+   Supabase rate-limits anonymous sign-ins per IP (Authentication → Rate Limits); keep it.
+   Do **not** enable CAPTCHA — the app doesn't send CAPTCHA tokens.
+2. Optional, for *Keep my account across devices* (US8):
+   - **Email (magic link)** works out of the box (the built-in mailer sends only a few emails per
+     hour — fine for a pilot).
+   - **Allow manual linking** ON (same page) lets an anonymous user attach Google later.
+   - **Google** needs an OAuth client from Google Cloud Console (Authorized redirect URI:
+     `https://<project-ref>.supabase.co/auth/v1/callback`), then paste its client ID and secret
+     into the Google provider.
+3. **Authentication → URL Configuration**: set **Site URL** to your site address from step 7
+   (e.g. `https://<github-user>.github.io/siosia/`) and add the same with `**` to **Redirect URLs**
+   (`https://<github-user>.github.io/siosia/**`). You can come back after step 7.
+
+## 5. Realtime: private channels only (1 min)
+
+**Realtime → Settings** (or *Project Settings → Realtime*): turn **Allow public access** **OFF** and
+save. Live positions then flow only on private channels authorised by the policies from step 2:
+a ride's channel is readable only by its rider and driver.
+
+## 6. Copy the two public values (1 min)
+
+**Project Settings → API Keys** (or the **Connect** button):
+
+- **Project URL** — `https://abcdefghijkl.supabase.co`
+- **Publishable key** — `sb_publishable_…` (older projects: the **anon / public** key)
+
+> Never copy the **secret** / `service_role` key anywhere. The app only needs the publishable key,
+> which is safe in a browser: every rule is enforced in the database.
+
+## 7. Publish the website on GitHub Pages (10 min)
+
+1. Put the code in a GitHub repository under your account — **public** (GitHub Pages is free for
+   public repositories). E.g. create `siosia`, then from this folder:
+   ```bash
+   git remote add origin https://github.com/<github-user>/siosia.git
+   git push -u origin main
+   ```
+2. Repository → **Settings → Pages** → *Build and deployment* → **Source: GitHub Actions**.
+3. Repository → **Settings → Secrets and variables → Actions → Variables** tab →
+   **New repository variable**, three times:
+
+   | Name | Value |
+   | --- | --- |
+   | `SUPABASE_URL` | Project URL from step 6 |
+   | `SUPABASE_PUBLISHABLE_KEY` | publishable key from step 6 |
+   | `OPERATOR_CONTACT` | shown when the service is down, e.g. `Ola · ola@example.com` |
+
+4. **Actions → CI → Run workflow** (or push any commit). The workflow lints, type-checks, runs all
+   tests (none need credentials), builds with your variables and deploys. After ~4 minutes the
+   *deploy* job shows the URL: `https://<github-user>.github.io/siosia/`.
+5. Go back to step 4.3 if you skipped the URL configuration.
+
+Other free hosts work too (Cloudflare Pages, Netlify, Vercel): build command `npm run build`,
+output folder `dist`, and the environment variables `VITE_SUPABASE_URL`,
+`VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_OPERATOR_CONTACT`. The build uses relative paths, so any
+sub-path works.
+
+## 8. First run and the two-phone test (10 min)
+
+1. Open the URL on your phone → enter the **invite code** → nickname → **Drive** → vehicle →
+   **Go online** (allow location; keep the screen on).
+2. Second phone → same URL → invite code → nickname → **Ride** → pickup = your GPS position,
+   dropoff by search or long-press → **Request ride**.
+3. Accept on the driver phone and follow [FIELD-TEST.md](FIELD-TEST.md) for the full checklist.
+4. Share the link and the invite code with your group, together with
+   [USER-GUIDE.md](USER-GUIDE.md).
+
+## Running it day to day
+
+| Task | Where |
+| --- | --- |
+| See rides, offers, ratings | Supabase → **Table Editor** → `rides` (endpoints, totals, times — never live positions) |
+| Errors and logs | Supabase → **Logs** (API, Postgres, Realtime); browser console on the phone |
+| Usage vs. free limits | Supabase → **Settings → Usage**. At the pilot ceiling (§10 of the spec) Siosia stays well inside the free tier; if realtime messages ever run hot, raise the presence cadence in `src/core/defaults.ts` |
+| Change the invite code | `select public.siosia_set_invite_code('NEW-CODE');` — existing devices stay joined |
+| Change tariff / timers / area | `update public.app_config set … where id = 1;` — applies to new requests |
+| Paused project | Free projects pause after 7 quiet days. The **Keep backend awake** workflow pings weekly once `SUPABASE_URL` is set. If it paused anyway: Supabase dashboard → project → **Restore**. The app shows *Service unavailable — retry* (with your contact) meanwhile |
+| Remove a user | Authentication → Users → delete; their rides stay, anonymised |
+| Update the app | push to `main`; CI tests and redeploys. Re-run the SQL file if `supabase/migrations` changed |
+
+## Local development against your project
+
+```bash
+cp .env.example .env.local      # fill VITE_SUPABASE_URL + VITE_SUPABASE_PUBLISHABLE_KEY
+npm install
+npm run dev                     # http://localhost:5173 (add it to Auth → Redirect URLs for magic links)
+```
+
+`?backend=mock` forces the demo backend at any time. Phones need HTTPS for GPS, so test on phones
+with the deployed link.
+
+## Troubleshooting
+
+| Symptom | Cause → fix |
+| --- | --- |
+| *Service unavailable* right after deploy | Variables missing/typo (step 7.3) → fix and re-run the workflow. Or the project is paused → **Restore** |
+| Stuck on *Service unavailable* although the project is up | SQL from step 2 not run (the app calls `siosia_config`) → run it |
+| *That invite code is not valid* | Step 3 not run, or a different code. Spaces and letter case don't matter |
+| Session error on first launch | Anonymous sign-ins disabled → step 4.1 |
+| Driver never gets requests | Driver must be **online**, within 8 km of the pickup, with location allowed and the app open. Check step 5 isn't blocking: the policies come from step 2 |
+| Rider never sees the car move | Driver phone screen locked or app in background → keep it open (the app warns). Check Realtime isn't disabled |
+| Magic link opens the wrong site | Step 4.3 URLs |
+| Map tiles/route missing sometimes | Community servers (OSM/OSRM) are best-effort; the app falls back to a straight-line estimate and keeps working |
+
+## Security checklist
+
+- [ ] Only the **publishable** key is in GitHub variables / `.env.local`.
+- [ ] Anonymous sign-ins ON, CAPTCHA OFF, rate limit kept.
+- [ ] Realtime **Allow public access** OFF.
+- [ ] Invite code set and shared only with your group.
+- [ ] SQL file ran without errors (it revokes direct table writes; all writes go through checked functions).

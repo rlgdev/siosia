@@ -1,0 +1,203 @@
+// MockBackend — the in-browser backend (FR-070). Each instance is one "client" (a user in this tab,
+// or a robot driver). Server calls run the shared Engine over localStorage under a Web Lock; effects
+// are published on the MockBus exactly like the Supabase functions publish realtime messages.
+
+import { Engine, type EngineConfig } from "../../core/engine";
+import type {
+  DeploymentConfig,
+  DriverPos,
+  DriverPresence,
+  Lang,
+  LatLng,
+  RideRequestInput,
+  RiderPos,
+  Role,
+  SharingStop,
+  Vehicle
+} from "../../core/types";
+import type { Backend, DriverPresenceHandle, OfferDecision, RideChannel, RideChannelHandlers, Unsub } from "../types";
+import { getBus, type MockBus } from "./bus";
+import { withDb } from "./store";
+
+const SERVER_CLIENT = "server";
+
+export function tabUserId(): string {
+  const KEY = "siosia.mock.uid";
+  try {
+    const existing = sessionStorage.getItem(KEY);
+    if (existing) return existing;
+    const id = "u-" + Math.random().toString(36).slice(2, 10);
+    sessionStorage.setItem(KEY, id);
+    return id;
+  } catch {
+    return "u-" + Math.random().toString(36).slice(2, 10);
+  }
+}
+
+export class MockBackend implements Backend {
+  readonly kind = "mock" as const;
+  readonly needsInvite: boolean;
+  private readonly bus: MockBus;
+  private readonly clientId: string;
+  private sweeper: ReturnType<typeof setInterval> | null = null;
+
+  constructor(
+    readonly uid: string,
+    private readonly cfg: EngineConfig,
+    opts: { bus?: MockBus; sweep?: boolean } = {}
+  ) {
+    this.needsInvite = cfg.inviteCode !== null;
+    this.bus = opts.bus ?? getBus();
+    this.clientId = `${uid}:${Math.random().toString(36).slice(2, 7)}`;
+    // Server-side timers (expiry, offer timeouts) — any open tab keeps the mock "server" ticking.
+    if (opts.sweep !== false) this.sweeper = setInterval(() => void this.call((e) => e.sweep()).catch(() => {}), 2000);
+  }
+
+  dispose(): void {
+    if (this.sweeper) clearInterval(this.sweeper);
+  }
+
+  private async call<T>(fn: (e: Engine) => T): Promise<T> {
+    let engine: Engine | null = null;
+    try {
+      return await withDb((db) => {
+        engine = new Engine(db, this.cfg, Date.now());
+        return fn(engine);
+      });
+    } finally {
+      const fx = (engine as Engine | null)?.effects;
+      if (fx) {
+        for (const u of fx.notify) this.bus.publish(`user:${u}`, "changed", {}, SERVER_CLIENT);
+        if (fx.pingDrivers) this.bus.publish("drivers", "ping", {}, SERVER_CLIENT);
+      }
+    }
+  }
+
+  async start(): Promise<string> {
+    return this.uid;
+  }
+  async ping(): Promise<void> {}
+  async getConfig(): Promise<DeploymentConfig> {
+    const { inviteCode: _secret, ...pub } = this.cfg;
+    return pub;
+  }
+
+  isMember(deviceId: string) {
+    return this.call((e) => e.isMember(this.uid, deviceId));
+  }
+  join(code: string, deviceId: string) {
+    return this.call((e) => e.join(this.uid, code, deviceId));
+  }
+  getProfile() {
+    return this.call((e) => e.getProfile(this.uid));
+  }
+  saveProfile(nickname: string, language: Lang) {
+    return this.call((e) => e.saveProfile(this.uid, nickname, language));
+  }
+  getVehicle() {
+    return this.call((e) => e.getVehicle(this.uid));
+  }
+  saveVehicle(v: Vehicle) {
+    return this.call((e) => e.saveVehicle(this.uid, v));
+  }
+  deleteProfile() {
+    return this.call((e) => e.deleteProfile(this.uid));
+  }
+  myState() {
+    return this.call((e) => e.myState(this.uid));
+  }
+  getRide(rideId: string) {
+    return this.call((e) => e.getRide(this.uid, rideId));
+  }
+  history() {
+    return this.call((e) => e.history(this.uid));
+  }
+  earnings() {
+    return this.call((e) => e.earnings(this.uid));
+  }
+  requestRide(input: RideRequestInput) {
+    return this.call((e) => e.requestRide(this.uid, input));
+  }
+  cancelRide(rideId: string, reason?: string) {
+    return this.call((e) => e.cancelRide(this.uid, rideId, reason));
+  }
+  setOnline(online: boolean) {
+    return this.call((e) => e.setOnline(this.uid, online));
+  }
+  heartbeat(pos: LatLng | null) {
+    return this.call((e) => e.heartbeat(this.uid, pos));
+  }
+  decideOffer(offerId: string, decision: OfferDecision) {
+    return this.call((e) => e.decideOffer(this.uid, offerId, decision));
+  }
+  advance(rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number) {
+    return this.call((e) => e.advance(this.uid, rideId, to, actualKm));
+  }
+  markPaid(rideId: string) {
+    return this.call((e) => e.markPaid(this.uid, rideId));
+  }
+  markCollected(rideId: string) {
+    return this.call((e) => e.markCollected(this.uid, rideId));
+  }
+  rate(rideId: string, stars: number, comment: string) {
+    return this.call((e) => e.rate(this.uid, rideId, stars, comment));
+  }
+
+  // ---------- realtime ----------
+
+  onMyChanges(cb: () => void): Unsub {
+    return this.bus.subscribe(`user:${this.uid}`, this.clientId, () => cb());
+  }
+
+  onDriverPing(cb: () => void): Unsub {
+    return this.bus.subscribe("drivers", this.clientId, (event) => {
+      if (event === "ping") cb();
+    });
+  }
+
+  watchDrivers(cb: (drivers: DriverPresence[]) => void): Unsub {
+    return this.bus.onPresence("drivers", (state) => cb(Object.values(state) as DriverPresence[]));
+  }
+
+  driverPresence(): DriverPresenceHandle {
+    const bus = this.bus;
+    const key = this.uid;
+    const client = this.clientId;
+    return {
+      track: (p) => bus.track("drivers", key, p, client),
+      untrack: () => bus.untrack("drivers", key, client),
+      close: () => bus.untrack("drivers", key, client)
+    };
+  }
+
+  openRide(rideId: string, role: Role, h: RideChannelHandlers): RideChannel {
+    const topic = `ride:${rideId}`;
+    const bus = this.bus;
+    const client = this.clientId;
+    const unsub = bus.subscribe(topic, client, (event, payload) => {
+      if (event === "driver_pos") h.onDriverPos?.(payload as DriverPos);
+      else if (event === "rider_pos") h.onRiderPos?.(payload as RiderPos);
+      else if (event === "sharing_stop") h.onSharingStop?.(payload as SharingStop);
+    });
+    const peer = role === "rider" ? "driver" : "rider";
+    let lastPeer: boolean | null = null;
+    const unsubPres = bus.onPresence(topic, (state) => {
+      const present = peer in state;
+      if (present !== lastPeer) {
+        lastPeer = present;
+        h.onPeer?.(present);
+      }
+    });
+    bus.track(topic, role, { role, t: Date.now() }, client);
+    return {
+      sendDriverPos: (p) => bus.publish(topic, "driver_pos", p, client),
+      sendRiderPos: (p) => bus.publish(topic, "rider_pos", p, client),
+      sendSharingStop: (p) => bus.publish(topic, "sharing_stop", p, client),
+      close: () => {
+        unsub();
+        unsubPres();
+        bus.untrack(topic, role, client);
+      }
+    };
+  }
+}

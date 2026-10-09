@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dev-dist/
+playwright-report/
+test-results/
+coverage/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+public/config.json
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/
+
+# Local tooling
+*.tsbuildinfo
+.claude/

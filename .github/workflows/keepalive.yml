@@ -1,0 +1,25 @@
+# Keeps the free Supabase project from pausing after a quiet week (spec D-04, Q7 default).
+# Runs weekly; does nothing until the SUPABASE_URL repository variable is set.
+name: Keep backend awake
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    if: ${{ vars.SUPABASE_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call a read-only API function
+        env:
+          URL: ${{ vars.SUPABASE_URL }}
+          KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          curl -fsS -X POST "$URL/rest/v1/rpc/siosia_config" \
+            -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+            -H "Content-Type: application/json" -d '{}' > /dev/null
+          echo "Backend answered."

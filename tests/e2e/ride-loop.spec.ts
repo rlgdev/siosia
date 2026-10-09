@@ -1,0 +1,134 @@
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+
+// Full P1 loop on the mock backend (US1–US4): rider requests, a human driver accepts, statuses
+// propagate, positions stream, sharing stops, receipts, ratings, history and earnings.
+// External map services are blocked so the run is deterministic (routing falls back to the
+// straight-line estimate — US6 — and pins keep their coordinate labels).
+
+async function isolate(context: BrowserContext) {
+  await context.route(/router\.project-osrm\.org|nominatim\.openstreetmap\.org|tile\.openstreetmap\.org/, (r) => r.abort());
+}
+
+async function onboard(page: Page, nick: string) {
+  await page.goto("/?robots=0");
+  await page.getByLabel("Nickname").fill(nick);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: `Hi, ${nick}` })).toBeVisible();
+}
+
+async function longPressMap(page: Page, dx: number, dy: number) {
+  const box = (await page.locator(".map").boundingBox())!;
+  // Leaflet turns a right-click / long-press into "contextmenu" → sets the dropoff (FR-011).
+  await page.mouse.click(box.x + box.width / 2 + dx, box.y + 120 + dy, { button: "right" });
+}
+
+test("rider and driver complete a ride end to end", async ({ context }) => {
+  await isolate(context);
+  const driver = await context.newPage();
+  const rider = await context.newPage();
+
+  // --- driver: nickname → Drive → vehicle → Go online (S4 visible) ---
+  await onboard(driver, "Adam");
+  await driver.getByTestId("mode-drive").click();
+  await driver.getByLabel("Make").fill("Skoda");
+  await driver.getByLabel("Model").fill("Octavia");
+  await driver.getByLabel("Colour").fill("Grey");
+  await driver.getByLabel("Plate").fill("WX 12345");
+  await driver.getByRole("button", { name: "Save" }).click();
+  await driver.getByTestId("toggle-online").click();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Online");
+  await expect(driver.getByTestId("sharing-banner")).toContainText("online as a driver");
+
+  // --- rider: nickname → Ride → pickup from GPS, dropoff by long-press → fare ---
+  await onboard(rider, "Ola");
+  await rider.getByTestId("mode-ride").click();
+  await expect(rider.getByTestId("pickup-field")).toContainText("My location");
+  await longPressMap(rider, 160, -40);
+  await expect(rider.getByTestId("dropoff-field")).toContainText("Pinned");
+  await expect(rider.getByTestId("fare")).toContainText("PLN");
+  await expect(rider.getByTestId("estimate")).toContainText("estimate"); // routing blocked → fallback (FR-032)
+  const fare = (await rider.getByTestId("fare").textContent())!.trim();
+  await rider.getByTestId("request-ride").click();
+  await expect(rider.getByTestId("searching-title")).toHaveText("Finding a driver…");
+
+  // --- driver gets the offer card within the ping round-trip, accepts ---
+  const card = driver.getByTestId("offer-card");
+  await expect(card).toBeVisible({ timeout: 5000 });
+  await expect(card).toContainText("Ola");
+  await expect(card).toContainText(fare.match(/\d+[.,]\d{2}/)![0]); // same frozen fare on the offer
+  await driver.getByTestId("accept-offer").click();
+  await expect(driver.getByTestId("trip-status")).toContainText("Head to the pickup");
+
+  // --- rider sees driver, vehicle and plate (FR-015/044) and shares location (S4) ---
+  await expect(rider.getByTestId("driver-card")).toContainText("Adam");
+  await expect(rider.getByTestId("plate")).toHaveText("WX 12345");
+  await expect(rider.getByTestId("ride-status")).toContainText("Your driver is on the way");
+  await expect(rider.getByTestId("sharing-banner")).toContainText("with your driver");
+
+  // driver moves → rider's car marker appears (positions over the ride channel only). Chromium
+  // feeds GPS only to the focused page, so focus the driver like the phone in their hand.
+  await driver.bringToFront();
+  await context.setGeolocation({ latitude: 52.2307, longitude: 21.0132, accuracy: 8 });
+  await expect(rider.locator(".leaflet-marker-icon.car")).toBeVisible({ timeout: 10_000 });
+
+  // --- statuses propagate within a second each (US1.4) ---
+  await driver.getByTestId("arrived").click();
+  await expect(rider.getByTestId("ride-status")).toContainText("Your driver has arrived", { timeout: 2000 });
+  await driver.getByTestId("start-trip").click();
+  await expect(rider.getByTestId("ride-status")).toContainText("On the way to your destination", { timeout: 2000 });
+  await expect(rider.getByTestId("sharing-banner")).toHaveCount(0); // rider sharing stops at in_progress
+  await driver.getByTestId("complete-trip").click();
+
+  // --- receipts on both sides; all sharing stopped on the rider ---
+  await expect(rider.getByTestId("after-ride-title")).toHaveText("Trip complete");
+  await expect(rider.getByTestId("receipt-fare")).toHaveText(fare);
+  await expect(driver.getByTestId("after-ride-title")).toHaveText("Trip summary");
+  await expect(rider.getByTestId("sharing-banner")).toHaveCount(0);
+
+  await rider.getByTestId("mark-paid").click();
+  await expect(rider.getByText("Paid")).toBeVisible();
+  await rider.getByRole("radio", { name: "5 of 5 stars" }).click();
+  await rider.getByTestId("send-rating").click();
+  await expect(rider.getByText("Thanks for rating!")).toBeVisible();
+  await driver.getByTestId("mark-paid").click(); // "Mark fare collected"
+  await driver.getByRole("radio", { name: "4 of 5 stars" }).click();
+  await driver.getByTestId("send-rating").click();
+  await driver.getByTestId("after-ride-done").click();
+  await rider.getByTestId("after-ride-done").click();
+
+  // --- earnings and history (US7) ---
+  await expect(driver.getByTestId("today-earnings")).toHaveText(fare);
+  await driver.getByTestId("toggle-online").click();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
+  await expect(driver.getByTestId("sharing-banner")).toHaveCount(0);
+  await rider.getByRole("button", { name: "Menu" }).click();
+  await rider.getByRole("button", { name: "Ride history" }).click();
+  await expect(rider.getByTestId("history-list")).toContainText("Completed");
+});
+
+test("a request nobody accepts expires and can be retried; a cancelled request withdraws offers", async ({ context }) => {
+  await isolate(context);
+  const rider = await context.newPage();
+  await onboard(rider, "Ewa");
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, -150, 30);
+  await rider.getByTestId("request-ride").click();
+  await expect(rider.getByTestId("searching-title")).toBeVisible();
+  await expect(rider.getByText("No drivers nearby yet")).toBeVisible({ timeout: 8000 });
+  await rider.getByTestId("cancel-request").click();
+  await expect(rider.getByTestId("request-ride")).toBeVisible();
+});
+
+test("demo robots accept a request without any second device (FR-070)", async ({ context }) => {
+  await isolate(context);
+  const rider = await context.newPage();
+  await rider.goto("/?robots=2");
+  await rider.getByLabel("Nickname").fill("Solo");
+  await rider.getByRole("button", { name: "Continue" }).click();
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 120, 40);
+  await expect(rider.getByText(/Cars nearby: [12]/)).toBeVisible({ timeout: 15_000 });
+  await rider.getByTestId("request-ride").click();
+  await expect(rider.getByTestId("driver-card")).toContainText("Robo", { timeout: 20_000 });
+  await expect(rider.getByTestId("plate")).toHaveText(/RB \d{4}/);
+});
