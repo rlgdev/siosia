@@ -180,6 +180,10 @@ alter table public.rides           enable row level security;
 alter table public.offers          enable row level security;
 alter table public.ratings         enable row level security;
 
+-- Explicit grants, so the script also works on projects created with "automatically expose new
+-- tables" turned off (recommended).
+grant usage on schema public to anon, authenticated;
+
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
               public.memberships, public.invite_failures, public.rides, public.offers, public.ratings
   from anon, authenticated;

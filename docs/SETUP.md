@@ -134,6 +134,19 @@ sub-path works.
 4. Share the link and the invite code with your group, together with
    [USER-GUIDE.md](USER-GUIDE.md).
 
+### Optional: live smoke test of the backend (2 min)
+
+From your computer, with the project values and your invite code:
+
+```bash
+SUPABASE_URL=https://<ref>.supabase.co SUPABASE_KEY=sb_publishable_… SIOSIA_INVITE=YOUR-CODE npm run smoke
+```
+
+It signs in three throwaway anonymous users (rider, driver, outsider) and checks 18 things end to
+end: invite gate, private realtime channels, the driver ping, the offer, the atomic accept, live
+positions over the ride channel (outsider refused), lifecycle rules, receipts and RLS. Expect
+*All live checks passed.*
+
 ## Running it day to day
 
 | Task | Where |
