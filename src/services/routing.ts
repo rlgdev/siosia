@@ -15,8 +15,14 @@ export interface RouteResult {
 }
 
 let baseUrl = "https://router.project-osrm.org";
-const gate = new RateGate(CADENCE.routeMinGapMs);
+let gate = new RateGate(CADENCE.routeMinGapMs);
 const cache = new Map<string, RouteResult>();
+
+/** Test hook: forget cached routes and the rate-limit slot. */
+export function resetRoutingState(): void {
+  cache.clear();
+  gate = new RateGate(CADENCE.routeMinGapMs);
+}
 
 export function setRoutingUrl(url: string): void {
   baseUrl = url.replace(/\/+$/, "");

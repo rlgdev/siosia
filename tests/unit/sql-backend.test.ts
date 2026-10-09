@@ -134,8 +134,9 @@ describe("SQL backend (PGlite)", () => {
   it("denies direct table writes and cross-user reads (FR-006, NFR-07)", async () => {
     expect(await errorOf(as(U.d1, "update public.rides set fare = 1"))).toMatch(/permission denied/);
     expect(await errorOf(as(U.d1, "insert into public.profiles (user_id, nickname) values ($1, 'Hacker')", [U.d1]))).toMatch(/permission denied/);
-    expect(await as<number>(U.d1, "select count(*)::int from public.vehicles")).toBe(1); // only own row
-    expect(await as<number>(U.d1, "select count(*)::int from public.profiles")).toBe(1);
+    // No direct reads either: tables would expose other users' ids; the API returns what each may see.
+    for (const t of ["vehicles", "profiles", "rides", "offers", "ratings", "driver_status", "memberships"])
+      expect(await errorOf(as(U.d1, `select count(*) from public.${t}`)), t).toMatch(/permission denied/);
   });
 
   let rideId = "";
@@ -155,7 +156,8 @@ describe("SQL backend (PGlite)", () => {
   it("refuses a request from an online driver and going online with an active ride (FR-005)", async () => {
     await call(U.d1, "siosia_set_online", [true]);
     expect(await errorOf(call(U.d1, "siosia_request_ride", [PICKUP, DROPOFF, 3, 9, false]))).toBe("online_as_driver");
-    expect(await errorOf(call(U.rider, "siosia_set_online", [true]))).toBe("no_vehicle");
+    await call(U.rider, "siosia_save_vehicle", ["Fiat", "Panda", "Red", "WX RIDER", 4]);
+    expect(await errorOf(call(U.rider, "siosia_set_online", [true]))).toBe("active_ride");
   });
 
   it("dispatches to every eligible driver in range, one card each (§6)", async () => {
@@ -188,10 +190,10 @@ describe("SQL backend (PGlite)", () => {
     expect(ride).toMatchObject({ status: "accepted", driver: { nickname: "Adam", vehicle: { make: "Skoda", plate: "WX 0002" } } });
     // outsiders cannot read the ride, nor its realtime channel
     expect(await errorOf(call(U.d3, "siosia_get_ride", [rideId]))).toBe("not_found");
-    expect(await as<number>(U.d3, "select count(*)::int from public.rides")).toBe(0);
-    expect(await as(U.d3, "select public.siosia_rt_can_read($1)", [`ride:${rideId}`])).toBe(false);
-    expect(await as(U.d1, "select public.siosia_rt_can_read($1)", [`ride:${rideId}`])).toBe(true);
-    expect(await as(U.rider, "select public.siosia_rt_can_write($1, 'broadcast')", [`ride:${rideId}`])).toBe(true);
+    expect(await as(U.d3, "select public.siosia_rt_can_read($1)", [`ride:${rideId}:1`])).toBe(false);
+    expect(await as(U.d1, "select public.siosia_rt_can_read($1)", [`ride:${rideId}:1`])).toBe(true);
+    expect(await as(U.d1, "select public.siosia_rt_can_read($1)", [`ride:${rideId}`])).toBe(false); // round required
+    expect(await as(U.rider, "select public.siosia_rt_can_write($1, 'broadcast')", [`ride:${rideId}:1`])).toBe(true);
     expect(await as(U.rider, "select public.siosia_rt_can_write('drivers', 'presence')")).toBe(false);
     expect(await as(U.d2, "select public.siosia_rt_can_write('drivers', 'presence')")).toBe(true);
     expect(await as(U.rider, `select public.siosia_rt_can_read('user:${U.d1}')`)).toBe(false);
@@ -209,6 +211,12 @@ describe("SQL backend (PGlite)", () => {
     expect(await call(U.d2, "siosia_decide_offer", [(s2.offer as Json).id, "accept"])).toBe("won");
     const prof = await call<Json>(U.d1, "siosia_get_profile");
     expect(prof.driverCancels).toBe(1);
+    // The live channel is per assignment: the removed driver cannot follow round 2.
+    expect((await call<Json>(U.rider, "siosia_get_ride", [rideId])).round).toBe(2);
+    expect(await as(U.d1, "select public.siosia_rt_can_read($1)", [`ride:${rideId}:2`])).toBe(false);
+    expect(await as(U.d1, "select public.siosia_rt_can_read($1)", [`ride:${rideId}:1`])).toBe(false);
+    expect(await as(U.d2, "select public.siosia_rt_can_read($1)", [`ride:${rideId}:2`])).toBe(true);
+    expect(await as(U.d2, "select public.siosia_rt_can_read($1)", [`ride:${rideId}:1`])).toBe(false);
   });
 
   it("validates every transition server-side (§5)", async () => {
@@ -264,6 +272,38 @@ describe("SQL backend (PGlite)", () => {
     await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
     const p = await call<Json>(U.rider2, "siosia_get_profile");
     expect(p.riderCancels).toBe(1);
+  });
+
+  it("offers a withdrawn card again when the driver is eligible again; a decline is final (§6 rule 4)", async () => {
+    const ride = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    await call(U.d3, "siosia_set_online", [true]); // the sweep set d3 offline above
+    const a = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    expect((a.offer as Json).rideId).toBe(ride.id);
+    await call(U.d3, "siosia_set_online", [false]); // card withdrawn
+    await call(U.d3, "siosia_set_online", [true]);
+    const b = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    expect(b.offer).toMatchObject({ id: (a.offer as Json).id, rideId: ride.id, status: "offered" });
+    expect((await call<Json>(U.rider2, "siosia_get_ride", [ride.id])).notifiedCount).toBe(1); // not double-counted
+    await call(U.d3, "siosia_decide_offer", [(b.offer as Json).id, "decline"]);
+    const c = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    expect(c.offer).toBeNull();
+    // A decline tapped while the card was withdrawn (phone offline) is final as well.
+    await admin("update public.offers set status = 'withdrawn' where id = $1", [(b.offer as Json).id]);
+    await call(U.d3, "siosia_decide_offer", [(b.offer as Json).id, "decline"]);
+    expect((await admin("select status from public.offers where id = $1", [(b.offer as Json).id])).rows[0]).toEqual({ status: "declined" });
+    expect((await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng])).offer).toBeNull();
+    await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
+  });
+
+  it("sets idle drivers offline after 60 s of silence and lets a dead driver session ride (FR-005, US4-2)", async () => {
+    await admin("update public.driver_status set last_seen = now() - interval '61 seconds' where user_id = $1", [U.d2]);
+    expect((await call<Json>(U.d2, "siosia_my_state")).driverOnline).toBe(false);
+    // d1's driver tab died 13 s ago: requesting a ride closes that stale session instead of refusing.
+    await admin("update public.driver_status set last_seen = now() - interval '13 seconds' where user_id = $1", [U.d1]);
+    const ride = await call<Json>(U.d1, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    expect(ride.status).toBe("requested");
+    expect((await call<Json>(U.d1, "siosia_my_state")).driverOnline).toBe(false);
+    await call(U.d1, "siosia_cancel_ride", [ride.id, null]);
   });
 
   it("anonymises a deleted profile", async () => {

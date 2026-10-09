@@ -21,6 +21,9 @@ import { withDb } from "./store";
 
 const SERVER_CLIENT = "server";
 
+export const randomKey = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+
 export function tabUserId(): string {
   const KEY = "siosia.mock.uid";
   try {
@@ -159,19 +162,20 @@ export class MockBackend implements Backend {
     return this.bus.onPresence("drivers", (state) => cb(Object.values(state) as DriverPresence[]));
   }
 
+  /** Presence under a random key per handle (= per idle period), never the user id. */
   driverPresence(): DriverPresenceHandle {
     const bus = this.bus;
-    const key = this.uid;
+    const key = randomKey();
     const client = this.clientId;
     return {
-      track: (p) => bus.track("drivers", key, p, client),
+      track: (p) => bus.track("drivers", key, { ...p, id: key }, client),
       untrack: () => bus.untrack("drivers", key, client),
       close: () => bus.untrack("drivers", key, client)
     };
   }
 
-  openRide(rideId: string, role: Role, h: RideChannelHandlers): RideChannel {
-    const topic = `ride:${rideId}`;
+  openRide(ride: { id: string; round: number }, role: Role, h: RideChannelHandlers): RideChannel {
+    const topic = `ride:${ride.id}:${ride.round}`;
     const bus = this.bus;
     const client = this.clientId;
     const unsub = bus.subscribe(topic, client, (event, payload) => {

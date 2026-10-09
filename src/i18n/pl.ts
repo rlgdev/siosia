@@ -184,6 +184,7 @@ export const pl: Record<MessageKey, string> = {
   "driver.needVehicle": "Dodaj pojazd, aby zacząć wozić.",
   "driver.queued": "Oczekujące: +{n}",
   "driver.keepOpen": "Trzymaj Siosię otwartą z włączonym ekranem.",
+  "driver.autoOffline": "Przełączono Cię na offline po minucie bez połączenia (zablokowany ekran lub aplikacja w tle). Trzymaj Siosię otwartą z włączonym ekranem i przejdź online ponownie.",
 
   "offer.title": "Nowe zamówienie",
   "offer.toPickup": "{km} km do odbioru · {min} min",
@@ -255,6 +256,9 @@ export const pl: Record<MessageKey, string> = {
   "err.too_early": "Nieobecność można zgłosić 5 minut po przyjeździe.",
   "err.window_closed": "To możliwe tylko w ciągu 24 h od kursu.",
   "err.already_rated": "Ten kurs został już oceniony.",
+  "err.email_in_use": "Ten e-mail należy już do konta — użyj „Zaloguj się e-mailem”.",
+  "err.no_account": "Żadne konto nie używa jeszcze tego e-maila. Połącz go na pierwszym telefonie, potem zaloguj się tutaj.",
+  "err.not_enabled": "Ta metoda logowania nie jest włączona w tej Siosi.",
   "err.unavailable": "Usługa niedostępna — sprawdź połączenie i spróbuj ponownie.",
 
   "demo.banner": "Tryb demo — wszystko działa w tej przeglądarce",

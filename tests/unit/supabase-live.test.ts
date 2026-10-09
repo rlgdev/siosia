@@ -52,8 +52,9 @@ describe.skipIf(!URL || !KEY || !INVITE)("SupabaseBackend against the live proje
     const pings: number[] = [];
     const unping = driver.onDriverPing(() => pings.push(Date.now()));
     const presence = driver.driverPresence();
-    presence.track({ id: driverId, lat: 51.509, lng: -0.13, state: "idle", heading: 90, t: Date.now() });
-    const presenceMs = await waitFor(() => seen.some((l) => l.some((d) => d.id === driverId)), 15_000);
+    presence.track({ lat: 51.509, lng: -0.13, state: "idle", heading: 90, t: Date.now() });
+    // The presence key is random per idle period — never the user id (privacy).
+    const presenceMs = await waitFor(() => seen.some((l) => l.some((d) => d.lat === 51.509 && d.id !== driverId)), 15_000);
 
     const riderEvents: number[] = [];
     const driverEvents: number[] = [];
@@ -78,8 +79,8 @@ describe.skipIf(!URL || !KEY || !INVITE)("SupabaseBackend against the live proje
     const positions: DriverPos[] = [];
     let riderSawDriver = false;
     let driverSawRider = false;
-    const rch = rider.openRide(ride.id, "rider", { onDriverPos: (p) => positions.push(p), onPeer: (p) => (riderSawDriver ||= p) });
-    const dch = driver.openRide(ride.id, "driver", { onPeer: (p) => (driverSawRider ||= p) });
+    const rch = rider.openRide({ id: ride.id, round: mine.ride!.round }, "rider", { onDriverPos: (p) => positions.push(p), onPeer: (p) => (riderSawDriver ||= p) });
+    const dch = driver.openRide({ id: ride.id, round: mine.ride!.round }, "driver", { onPeer: (p) => (driverSawRider ||= p) });
     await waitFor(() => riderSawDriver && driverSawRider, 15_000);
     dch.sendDriverPos({ lat: 51.508, lng: -0.129, heading: 45, accuracy: 6, t: Date.now() });
     const posMs = await waitFor(() => positions.length > 0);

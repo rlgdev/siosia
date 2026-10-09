@@ -34,7 +34,9 @@ export function Searching({ ride, expired, nearbyCount, busy, error, onCancel, o
       </Sheet>
     );
   }
-  const noDrivers = ride.notifiedCount === 0 && elapsed >= 3 && nearbyCount === 0;
+  // §6 rule 1: every eligible driver pulls the request within one 4 s heartbeat, so "nobody
+  // notified" soon means nobody eligible — even if idle cars show nearby (e.g. one that cancelled).
+  const noDrivers = ride.notifiedCount === 0 && elapsed >= 3 && (nearbyCount === 0 || elapsed >= 10);
   return (
     <Sheet>
       <div className="searching">

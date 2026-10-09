@@ -26,18 +26,21 @@ export function OfferCard({ offer, queued, offerS, from, busy, onAccept, onDecli
   const fired = useRef(false);
   const fromRef = useRef(from);
   fromRef.current = from;
+  const pickupRef = useRef(offer.pickup);
+  pickupRef.current = offer.pickup;
 
   useEffect(() => {
     fired.current = false;
     const f = fromRef.current;
     if (!f) return;
-    setToPickup(straightLineEstimate(f, offer.pickup));
+    const pickup = pickupRef.current;
+    setToPickup(straightLineEstimate(f, pickup));
     let alive = true;
-    void getRoute(f, offer.pickup, { timeoutMs: 2000 }).then((r) => alive && setToPickup({ km: r.km, min: r.min }));
+    void getRoute(f, pickup, { timeoutMs: 2000 }).then((r) => alive && setToPickup({ km: r.km, min: r.min }));
     return () => {
       alive = false;
     };
-  }, [offer.id, offer.pickup]);
+  }, [offer.id, offer.offeredAt, offer.pickup.lat, offer.pickup.lng]);
 
   useEffect(() => {
     if (left === 0 && !fired.current) {

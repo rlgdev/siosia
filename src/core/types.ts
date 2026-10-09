@@ -126,6 +126,8 @@ export interface RideView {
   collected: boolean;
   notifiedCount: number;
   redispatchCount: number;
+  /** Dispatch round; the live channel is per (ride, round) so a removed driver loses access. */
+  round: number;
   rider: PublicParty;
   driver: PublicDriver | null;
   /** Stars the viewer gave in this ride, if any. */
@@ -193,7 +195,10 @@ export interface SharingStop {
   from: Role;
 }
 
-/** Driver presence on the shared "drivers" channel: coarse position only (~100 m). */
+/**
+ * Driver presence on the shared "drivers" channel: coarse position only (~100 m). `id` is a random
+ * key per idle period — never the user id — so a rider cannot follow one driver over time.
+ */
 export interface DriverPresence extends LatLng {
   id: string;
   state: "idle" | "busy";
@@ -225,6 +230,9 @@ export type ServerErrorCode =
   | "too_early"
   | "window_closed"
   | "already_rated"
+  | "email_in_use"
+  | "no_account"
+  | "not_enabled"
   | "unavailable";
 
 export class ServerError extends Error {

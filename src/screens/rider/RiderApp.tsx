@@ -80,7 +80,12 @@ export function RiderApp() {
   }, [rideId, watched, api, t]);
 
   const pending = my?.pendingReceipt && my.pendingReceipt.role === "rider" && !dismissed.includes(my.pendingReceipt.id) ? my.pendingReceipt : null;
-  const receipt = !ride ? (ended?.status === "completed" ? ended : pending) : null;
+  // A receipt restored after a reload (§12) stays until Done, even once rating removes it from
+  // pendingReceipt — otherwise "Mark as paid" would become unreachable.
+  useEffect(() => {
+    if (!ride && !ended && pending) setEnded(pending);
+  }, [ride, ended, pending]);
+  const receipt = !ride && ended?.status === "completed" ? ended : null;
   const expired = !ride && ended?.status === "expired" ? ended : null;
 
   // Nearby cars: anonymous idle drivers within the dispatch radius (FR-018, Q4).
@@ -88,8 +93,8 @@ export function RiderApp() {
   useEffect(() => (watching ? api.watchDrivers(setDrivers) : undefined), [watching, api]);
   const center: LatLng = pickup ?? fix ?? cfg.fallbackCenter;
   const nearby = useMemo(
-    () => drivers.filter((d) => d.state === "idle" && d.id !== app.uid && haversineKm(d, center) <= dep.dispatchRadiusKm),
-    [drivers, app.uid, center, dep.dispatchRadiusKm]
+    () => drivers.filter((d) => d.state === "idle" && haversineKm(d, center) <= dep.dispatchRadiusKm),
+    [drivers, center, dep.dispatchRadiusKm]
   );
 
   useRobots(pickup ?? fix ?? cfg.fallbackCenter, true);

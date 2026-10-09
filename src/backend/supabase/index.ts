@@ -1,7 +1,7 @@
 // SupabaseBackend — the real multi-device backend (D-02). All writes go through SECURITY DEFINER
 // SQL functions (supabase/migrations/0001_siosia.sql) that enforce the lifecycle, the atomic claim
-// and the access rules; tables are additionally protected by RLS. Realtime uses PRIVATE channels
-// authorised by policies on realtime.messages. Only the publishable key ever reaches the browser.
+// and the access rules; tables are not readable or writable directly. Realtime uses PRIVATE
+// channels authorised by policies on realtime.messages. Only the publishable key reaches the browser.
 
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -33,8 +33,61 @@ import type {
 } from "../types";
 
 type RpcResult<T> = { ok?: T; error?: ServerErrorCode };
+type ChannelOpts = Parameters<SupabaseClient["channel"]>[1];
 
 const redirectTo = () => window.location.origin + window.location.pathname;
+const randomKey = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+const PING_TIMEOUT_MS = 5000;
+const REBUILD_DELAY_MS = 2000;
+
+/** Maps GoTrue errors to messages the user can act on (instead of a generic "unavailable"). */
+function authError(e: { status?: number; code?: string; message: string }): ServerError {
+  const code = e.code ?? "";
+  if (e.status === 429 || /rate_limit/.test(code)) return new ServerError("rate_limited", e.message);
+  if (["email_exists", "user_already_exists", "identity_already_exists"].includes(code)) return new ServerError("email_in_use", e.message);
+  if (["otp_disabled", "user_not_found", "signup_disabled"].includes(code)) return new ServerError("no_account", e.message);
+  if (["provider_disabled", "manual_linking_disabled", "email_provider_disabled"].includes(code) || /provider is not enabled/i.test(e.message))
+    return new ServerError("not_enabled", e.message);
+  if (e.status && e.status >= 400 && e.status < 500) return new ServerError("bad_input", e.message);
+  return new ServerError("unavailable", e.message);
+}
+
+/**
+ * A private channel that is rebuilt when the SERVER closes it (e.g. after a failed token refresh).
+ * Our own close never triggers a rebuild. `setup` attaches listeners to each new instance.
+ */
+function resilientChannel(
+  sb: SupabaseClient,
+  topic: string,
+  opts: ChannelOpts,
+  setup: (ch: RealtimeChannel) => void,
+  onSubscribed?: (ch: RealtimeChannel) => void
+): { current: () => RealtimeChannel; close: () => void } {
+  let closedByUs = false;
+  let ch: RealtimeChannel;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const build = () => {
+    const mine = sb.channel(topic, opts);
+    ch = mine;
+    setup(mine);
+    mine.subscribe((status) => {
+      if (closedByUs || ch !== mine) return;
+      if (status === "SUBSCRIBED") onSubscribed?.(mine);
+      if (status === "CLOSED") timer = setTimeout(() => !closedByUs && build(), REBUILD_DELAY_MS);
+    });
+  };
+  build();
+  return {
+    current: () => ch,
+    close: () => {
+      closedByUs = true;
+      if (timer) clearTimeout(timer);
+      void ch.untrack().catch(() => {});
+      void sb.removeChannel(ch);
+    }
+  };
+}
 
 export class SupabaseBackend implements Backend {
   readonly kind = "supabase" as const;
@@ -69,21 +122,39 @@ export class SupabaseBackend implements Backend {
     this.uid = session.user.id;
     await this.sb.realtime.setAuth(session.access_token);
     this.sb.auth.onAuthStateChange((_evt, s) => {
+      const next = s?.user?.id ?? null;
+      // Another tab signed in as someone else, or signed out: everything here belongs to the old
+      // user (profile, mode, channels), so start over rather than act on a stale identity.
+      if (next !== this.uid) {
+        if (typeof location !== "undefined") location.reload();
+        return;
+      }
       if (s?.access_token) void this.sb.realtime.setAuth(s.access_token);
     });
     return this.uid;
   }
 
+  /** D-04: reachability within 5 s, whatever the client does first (e.g. a token refresh). */
   async ping(): Promise<void> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    try {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ctrl.abort();
+        reject(new ServerError("unavailable", "timeout"));
+      }, PING_TIMEOUT_MS);
+    });
+    const call = (async () => {
       const { error } = await this.sb.rpc("siosia_config").abortSignal(ctrl.signal);
       if (error) throw new ServerError("unavailable", error.message);
+    })();
+    try {
+      await Promise.race([call, deadline]);
     } catch (e) {
       throw e instanceof ServerError ? e : new ServerError("unavailable", String(e));
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      call.catch(() => {});
     }
   }
 
@@ -144,7 +215,7 @@ export class SupabaseBackend implements Backend {
   async setOnline(online: boolean) {
     await this.rpc("siosia_set_online", { p_online: online });
     // Realtime authorisation is evaluated on join: re-join "drivers" so presence tracking is allowed.
-    if (online) this.drivers?.rejoin();
+    if (online) this.drivers?.rebuild();
   }
   heartbeat(pos: LatLng | null) {
     return this.rpc<MyState>("siosia_heartbeat", { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null });
@@ -168,18 +239,18 @@ export class SupabaseBackend implements Backend {
   // ---------- realtime ----------
 
   onMyChanges(cb: () => void): Unsub {
-    const ch = this.sb
-      .channel(`user:${this.uid}`, { config: { private: true } })
-      .on("broadcast", { event: "changed" }, () => cb())
-      .subscribe((status) => {
-        // After a reconnect we may have missed events: refetch.
-        if (status === "SUBSCRIBED") cb();
-      });
-    return () => void this.sb.removeChannel(ch);
+    const ch = resilientChannel(
+      this.sb,
+      `user:${this.uid}`,
+      { config: { private: true } },
+      (c) => void c.on("broadcast", { event: "changed" }, () => cb()),
+      () => cb() // (re)subscribed: events may have been missed meanwhile
+    );
+    return () => ch.close();
   }
 
   private driversChannel(): DriversChannel {
-    if (!this.drivers) this.drivers = new DriversChannel(this.sb, () => this.uid);
+    if (!this.drivers) this.drivers = new DriversChannel(this.sb);
     return this.drivers;
   }
 
@@ -191,43 +262,44 @@ export class SupabaseBackend implements Backend {
     return this.driversChannel().addPresence(cb);
   }
 
+  /** A fresh random presence key per handle (= per idle period), never the user id. */
   driverPresence(): DriverPresenceHandle {
     const dc = this.driversChannel();
+    const key = dc.newSession();
     return {
-      track: (p) => dc.track(p),
+      track: (p) => dc.track({ ...p, id: key }),
       untrack: () => dc.track(null),
       close: () => dc.track(null)
     };
   }
 
-  openRide(rideId: string, role: Role, h: RideChannelHandlers): RideChannel {
+  openRide(ride: { id: string; round: number }, role: Role, h: RideChannelHandlers): RideChannel {
     const peer = role === "rider" ? "driver" : "rider";
     let lastPeer: boolean | null = null;
-    const ch: RealtimeChannel = this.sb.channel(`ride:${rideId}`, {
-      config: { private: true, presence: { key: role }, broadcast: { self: false } }
-    });
-    ch.on("broadcast", { event: "driver_pos" }, ({ payload }) => h.onDriverPos?.(payload as DriverPos))
-      .on("broadcast", { event: "rider_pos" }, ({ payload }) => h.onRiderPos?.(payload as RiderPos))
-      .on("broadcast", { event: "sharing_stop" }, ({ payload }) => h.onSharingStop?.(payload as SharingStop))
-      .on("presence", { event: "sync" }, () => {
-        const present = peer in ch.presenceState();
-        if (present !== lastPeer) {
-          lastPeer = present;
-          h.onPeer?.(present);
-        }
-      })
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") void ch.track({ role, t: Date.now() });
-      });
-    const send = (event: string, payload: unknown) => void ch.send({ type: "broadcast", event, payload });
+    const handle = resilientChannel(
+      this.sb,
+      `ride:${ride.id}:${ride.round}`,
+      { config: { private: true, presence: { key: role }, broadcast: { self: false } } },
+      (ch) => {
+        ch.on("broadcast", { event: "driver_pos" }, ({ payload }) => h.onDriverPos?.(payload as DriverPos))
+          .on("broadcast", { event: "rider_pos" }, ({ payload }) => h.onRiderPos?.(payload as RiderPos))
+          .on("broadcast", { event: "sharing_stop" }, ({ payload }) => h.onSharingStop?.(payload as SharingStop))
+          .on("presence", { event: "sync" }, () => {
+            const present = peer in ch.presenceState();
+            if (present !== lastPeer) {
+              lastPeer = present;
+              h.onPeer?.(present);
+            }
+          });
+      },
+      (ch) => void ch.track({ role, t: Date.now() })
+    );
+    const send = (event: string, payload: unknown) => void handle.current().send({ type: "broadcast", event, payload });
     return {
       sendDriverPos: (p) => send("driver_pos", p),
       sendRiderPos: (p) => send("rider_pos", p),
       sendSharingStop: (p) => send("sharing_stop", p),
-      close: () => {
-        void ch.untrack();
-        void this.sb.removeChannel(ch);
-      }
+      close: () => handle.close()
     };
   }
 
@@ -245,7 +317,7 @@ export class SupabaseBackend implements Backend {
 
   async linkEmail(email: string) {
     const { error } = await this.sb.auth.updateUser({ email }, { emailRedirectTo: redirectTo() });
-    if (error) throw new ServerError("unavailable", error.message);
+    if (error) throw authError(error);
   }
 
   async signInWithEmail(email: string) {
@@ -253,17 +325,17 @@ export class SupabaseBackend implements Backend {
       email,
       options: { shouldCreateUser: false, emailRedirectTo: redirectTo() }
     });
-    if (error) throw new ServerError("unavailable", error.message);
+    if (error) throw authError(error);
   }
 
   async linkGoogle() {
     const { error } = await this.sb.auth.linkIdentity({ provider: "google", options: { redirectTo: redirectTo() } });
-    if (error) throw new ServerError("unavailable", error.message);
+    if (error) throw authError(error);
   }
 
   async signInWithGoogle() {
     const { error } = await this.sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirectTo() } });
-    if (error) throw new ServerError("unavailable", error.message);
+    if (error) throw authError(error);
   }
 
   async signOut() {
@@ -271,18 +343,24 @@ export class SupabaseBackend implements Backend {
   }
 }
 
-/** One shared "drivers" channel per client: pings, nearby-car presence and the driver's own presence. */
+/**
+ * One shared "drivers" channel per client: pings, nearby-car presence and the driver's own presence.
+ * realtime-js reuses a channel object per topic, so every re-creation (new presence key, fresh
+ * authorisation after going online, server close) is serialised and waits for the old one to go.
+ */
 class DriversChannel {
   private ch: RealtimeChannel | null = null;
+  /** Presence key the current channel was joined with (fixed by realtime-js at creation). */
+  private chKey = "";
   private readonly pings = new Set<() => void>();
   private readonly watchers = new Set<(d: DriverPresence[]) => void>();
   private tracked: DriverPresence | null = null;
   private joined = false;
+  private key = randomKey();
+  private chain: Promise<void> = Promise.resolve();
+  private readonly ours = new WeakSet<RealtimeChannel>();
 
-  constructor(
-    private readonly sb: SupabaseClient,
-    private readonly uid: () => string
-  ) {}
+  constructor(private readonly sb: SupabaseClient) {}
 
   addPing(cb: () => void): Unsub {
     this.pings.add(cb);
@@ -303,23 +381,47 @@ class DriversChannel {
     };
   }
 
+  /** Starts a new presence identity (random key) — the channel is re-created with it. */
+  newSession(): string {
+    this.key = randomKey();
+    this.tracked = null;
+    this.rebuild();
+    return this.key;
+  }
+
+  /** True when the joined channel carries the current key — never publish a new identity on an old one. */
+  private canPublish(): boolean {
+    return this.joined && !!this.ch && this.chKey === this.key;
+  }
+
   track(p: DriverPresence | null): void {
     this.tracked = p;
     if (p) {
       this.ensure();
-      if (this.joined) void this.ch?.track(p);
+      // Otherwise the payload is published by the SUBSCRIBED handler of the re-created channel.
+      if (this.canPublish()) void this.ch?.track(p);
     } else {
       if (this.joined) void this.ch?.untrack();
       this.maybeRelease();
     }
   }
 
-  rejoin(): void {
-    if (!this.ch) return;
-    const old = this.ch;
-    this.ch = null;
-    this.joined = false;
-    void this.sb.removeChannel(old).then(() => this.ensure());
+  /** Re-creates the channel (fresh authorisation and current presence key). */
+  rebuild(): void {
+    this.chain = this.chain.then(async () => {
+      const old = this.ch;
+      this.ch = null;
+      this.joined = false;
+      if (old) {
+        this.ours.add(old);
+        await this.sb.removeChannel(old).catch(() => "error");
+      }
+      if (this.needed()) this.create();
+    });
+  }
+
+  private needed(): boolean {
+    return this.pings.size > 0 || this.watchers.size > 0 || this.tracked !== null;
   }
 
   private list(): DriverPresence[] {
@@ -334,9 +436,15 @@ class DriversChannel {
   }
 
   private ensure(): void {
-    if (this.ch) return;
-    const ch = this.sb.channel("drivers", { config: { private: true, presence: { key: this.uid() } } });
+    this.chain = this.chain.then(() => {
+      if (!this.ch && this.needed()) this.create();
+    });
+  }
+
+  private create(): void {
+    const ch = this.sb.channel("drivers", { config: { private: true, presence: { key: this.key } } });
     this.ch = ch;
+    this.chKey = this.key;
     ch.on("broadcast", { event: "ping" }, () => this.pings.forEach((cb) => cb()))
       .on("presence", { event: "sync" }, () => {
         const list = this.list();
@@ -345,16 +453,29 @@ class DriversChannel {
       .subscribe((status) => {
         if (this.ch !== ch) return;
         this.joined = status === "SUBSCRIBED";
-        if (this.joined && this.tracked) void ch.track(this.tracked);
+        if (this.joined) {
+          if (this.tracked && this.chKey === this.key) void ch.track(this.tracked);
+          // Broadcasts are not stored: a dispatch ping sent while the channel was (re)joining is
+          // lost, so answer as if pinged — the heartbeat pulls any request opened meanwhile.
+          this.pings.forEach((cb) => cb());
+        }
+        if (status === "CLOSED" && !this.ours.has(ch)) {
+          // Closed by the server: rebuild unless nobody needs it any more.
+          this.ch = null;
+          setTimeout(() => this.ensure(), REBUILD_DELAY_MS);
+        }
       });
   }
 
   private maybeRelease(): void {
-    if (this.ch && this.pings.size === 0 && this.watchers.size === 0 && !this.tracked) {
-      const ch = this.ch;
-      this.ch = null;
-      this.joined = false;
-      void this.sb.removeChannel(ch);
-    }
+    this.chain = this.chain.then(async () => {
+      if (this.ch && !this.needed()) {
+        const ch = this.ch;
+        this.ch = null;
+        this.joined = false;
+        this.ours.add(ch);
+        await this.sb.removeChannel(ch).catch(() => "error");
+      }
+    });
   }
 }

@@ -171,8 +171,8 @@ p {
   width: 100%;
 }
 .btn-small {
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 44px;
+  padding: 0 14px;
 }
 
 .icon-btn {
@@ -424,14 +424,22 @@ select {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 body:has(.sharing-banner) .topbar {
-  top: calc(60px + var(--safe-top));
+  top: calc(var(--banner-h, 60px) + 8px);
 }
 
 .leaflet-top {
   top: calc(64px + var(--safe-top));
 }
 body:has(.sharing-banner) .leaflet-top {
-  top: calc(116px + var(--safe-top));
+  top: calc(var(--banner-h, 60px) + 64px);
+}
+/* FR-072: 44 px targets for the map's zoom buttons too. */
+.leaflet-bar a,
+.leaflet-touch .leaflet-bar a {
+  width: 44px;
+  height: 44px;
+  line-height: 44px;
+  font-size: 20px;
 }
 .leaflet-control-attribution {
   font-size: 11px;
@@ -733,11 +741,12 @@ body:has(.sharing-banner) .leaflet-top {
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--surface);
-  color: var(--line);
+  color: var(--muted); /* ≥ 3:1 non-text contrast (FR-074); ☆ vs ★ so state is not colour-only */
   cursor: pointer;
 }
 .star.on {
-  color: #b7791f;
+  color: #a1640f;
+  border-color: #a1640f;
 }
 
 /* panels */
@@ -748,6 +757,13 @@ body:has(.sharing-banner) .leaflet-top {
   background: var(--bg);
   display: flex;
   flex-direction: column;
+}
+/* Panels start below the S4 banner so their back button stays reachable while sharing. */
+body:has(.sharing-banner) .panel {
+  top: var(--banner-h, calc(60px + var(--safe-top)));
+}
+body:has(.sharing-banner) .panel-head {
+  padding-top: 10px;
 }
 .panel-head {
   display: flex;
@@ -871,6 +887,12 @@ body:has(.sharing-banner) .leaflet-top {
 .sharing-text {
   flex: 1;
   font-size: 0.92rem;
+}
+.sharing-error {
+  display: block;
+  margin-top: 2px;
+  font-weight: 700;
+  color: #ffe08a;
 }
 .live-dot {
   width: 10px;

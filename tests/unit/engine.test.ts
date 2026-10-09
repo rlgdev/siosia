@@ -201,6 +201,72 @@ describe("cancellation, re-dispatch, expiry (§5, §12)", () => {
   });
 });
 
+describe("liveness and re-offers (§6 rule 4, §12, US4-2)", () => {
+  it("offers a withdrawn card again once the driver is eligible; a decline stays final", () => {
+    const ride = request();
+    const a = online("d1", near(1)).offer!;
+    at((e) => e.setOnline("d1", false));
+    expect(db.offers[a.id].status).toBe("withdrawn");
+    const b = online("d1", near(1)).offer!;
+    expect(b).toMatchObject({ id: a.id, rideId: ride.id, status: "offered" });
+    expect(at((e) => e.getRide("rider", ride.id)).notifiedCount).toBe(1);
+    at((e) => e.decideOffer("d1", b.id, "decline"));
+    expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
+  });
+
+  it("keeps a decision made on a withdrawn card final", () => {
+    request();
+    const a = online("d1", near(1)).offer!;
+    now += 13_000;
+    at((e) => e.sweep()); // silent > 12 s → withdrawn
+    at((e) => e.decideOffer("d1", a.id, "decline")); // tapped while the phone was offline
+    expect(db.offers[a.id].status).toBe("declined");
+    expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
+  });
+
+  it("counts driver actions as signs of life, so completing after a signal gap keeps the driver online", () => {
+    const ride = request();
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    at((e) => e.advance("d1", ride.id, "arrived"));
+    at((e) => e.advance("d1", ride.id, "in_progress"));
+    now += 90_000; // no heartbeat during the trip (tunnel); in_progress waits (§12)
+    at((e) => e.advance("d1", ride.id, "completed", 4));
+    at((e) => e.sweep());
+    expect(db.drivers.d1.online).toBe(true);
+  });
+
+  it("sets an idle driver offline after 60 s of silence but keeps a driver on a trip", () => {
+    online("d1", near(1));
+    const ride = request();
+    const o = online("d2", near(1)).offer!;
+    at((e) => e.decideOffer("d2", o.id, "accept"));
+    at((e) => e.advance("d2", ride.id, "arrived"));
+    at((e) => e.advance("d2", ride.id, "in_progress"));
+    now += 61_000;
+    at((e) => e.sweep());
+    expect(db.drivers.d1.online).toBe(false); // idle → offline
+    expect(db.drivers.d2.online).toBe(true); // in_progress → waits for the driver (§12)
+  });
+
+  it("lets a user whose driver tab died ride instead of refusing with online_as_driver", () => {
+    online("d1", near(1));
+    now += 13_000;
+    const r = at((e) => e.requestRide("d1", { pickup: PICKUP, dropoff: DROPOFF, estKm: 3.42, estMin: 8.6, fareIsEstimate: false }));
+    expect(r.status).toBe("requested");
+    expect(db.drivers.d1.online).toBe(false);
+  });
+
+  it("bumps the dispatch round on re-dispatch so the live channel changes", () => {
+    const ride = request();
+    expect(ride.round).toBe(1);
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    at((e) => e.cancelRide("d1", ride.id, "other"));
+    expect(at((e) => e.getRide("rider", ride.id)).round).toBe(2);
+  });
+});
+
 describe("guards and privacy (FR-005, FR-007, FR-043, FR-044)", () => {
   it("requires the invite code, then only a nickname", () => {
     expect(code(() => at((e) => e.myState("stranger")))).toBe("not_member");

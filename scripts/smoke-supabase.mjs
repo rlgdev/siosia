@@ -114,9 +114,9 @@ check(evMs >= 0, `rider notified of acceptance in ${evMs} ms`);
 const seen = await rpc(rider.c, "siosia_get_ride", { p_ride: ride.id });
 check(seen.driver?.vehicle?.plate === "SMOKE1", "rider sees vehicle and plate only after assignment");
 
-const rch = listen(rider.c, `ride:${ride.id}`, ["driver_pos"]);
-const dch = listen(driver.c, `ride:${ride.id}`, []);
-const och = listen(outsider.c, `ride:${ride.id}`, ["driver_pos"]);
+const rch = listen(rider.c, `ride:${ride.id}:${seen.round}`, ["driver_pos"]);
+const dch = listen(driver.c, `ride:${ride.id}:${seen.round}`, []);
+const och = listen(outsider.c, `ride:${ride.id}:${seen.round}`, ["driver_pos"]);
 const [r1, r2, r3] = await Promise.all([rch.ready, dch.ready, och.ready]);
 check(r1.s === "SUBSCRIBED" && r2.s === "SUBSCRIBED", `ride channel open for rider and driver (${r1.s}/${r2.s})`);
 check(r3.s !== "SUBSCRIBED", `outsider refused on the ride channel (${r3.s})`);

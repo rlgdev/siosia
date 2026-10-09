@@ -182,6 +182,7 @@ export const en = {
   "driver.needVehicle": "Add your vehicle to start driving.",
   "driver.queued": "+{n} waiting",
   "driver.keepOpen": "Keep Siosia open with the screen on.",
+  "driver.autoOffline": "You were set offline after a minute without connection (screen locked or app in the background). Keep Siosia open with the screen on, then go online again.",
 
   "offer.title": "New ride request",
   "offer.toPickup": "{km} km to pickup · {min} min",
@@ -253,6 +254,9 @@ export const en = {
   "err.too_early": "No-show is available 5 minutes after you arrive.",
   "err.window_closed": "This is only possible within 24 h of the ride.",
   "err.already_rated": "You already rated this ride.",
+  "err.email_in_use": "This email already belongs to an account — use Sign in with email instead.",
+  "err.no_account": "No account uses this email yet. Link it on your first phone, then sign in here.",
+  "err.not_enabled": "This sign-in method is not enabled for this Siosia.",
   "err.unavailable": "Service unavailable — check your connection and retry.",
 
   "demo.banner": "Demo mode — everything runs in this browser",

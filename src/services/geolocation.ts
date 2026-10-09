@@ -54,6 +54,12 @@ class GeoService {
     };
   }
 
+  /** Feeds a fresh real fix (e.g. from an explicit getCurrentPosition) into the shared state. */
+  seed(fix: GeoFix): void {
+    if (this.simulated) return;
+    this.set({ status: "ok", fix });
+  }
+
   /** True when positions come from ?sim= or tests instead of the device. */
   isSimulated = (): boolean => this.simulated;
 
@@ -100,6 +106,8 @@ class GeoService {
   private stop(): void {
     if (this.watchId !== null) navigator.geolocation.clearWatch(this.watchId);
     this.watchId = null;
+    // A fix kept from a stopped watch is stale: never let it be used as "current" later.
+    if (!this.simulated && this.state.fix) this.set({ status: "idle", fix: null });
   }
 }
 

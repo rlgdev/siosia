@@ -305,7 +305,13 @@ export class Engine {
     this.requireUser(uid);
     this.sweep();
     if (this.activeRideOf(uid)) throw new ServerError("active_ride");
-    if (this.db.drivers[uid]?.online) throw new ServerError("online_as_driver");
+    const asDriver = this.db.drivers[uid];
+    if (asDriver?.online) {
+      // FR-005 applies to a live driver session; a driver tab that died (silent > 12 s, no trip)
+      // must not block this user from riding, so that stale session is closed instead.
+      if (this.now - asDriver.lastSeen > SERVER.driverStaleS * 1000) this.goOffline(uid);
+      else throw new ServerError("online_as_driver");
+    }
     const { pickup, dropoff } = input;
     if (!isValidLatLng(pickup) || !isValidLatLng(dropoff)) throw new ServerError("bad_input");
     if (!Number.isFinite(input.estKm) || !Number.isFinite(input.estMin) || input.estKm <= 0 || input.estMin < 0)
@@ -428,6 +434,7 @@ export class Engine {
 
   decideOffer(uid: string, offerId: string, decision: "accept" | "decline" | "timeout"): "won" | "ok" {
     this.requireUser(uid);
+    this.touchDriver(uid);
     this.sweep();
     const o = this.db.offers[offerId];
     if (!o || o.driverId !== uid) throw new ServerError("not_found");
@@ -459,12 +466,18 @@ export class Engine {
         return "ok"; // early client timer; the server clock decides
       this.closeOffer(o, decision === "decline" ? "declined" : "timed_out");
       this.effects.notify.add(r?.riderId ?? uid);
+    } else if (o.status === "withdrawn") {
+      // Decided while the card was withdrawn (e.g. the phone was briefly offline): still final,
+      // so it is not offered again when the driver becomes eligible (§6 rule 4).
+      o.status = decision === "decline" ? "declined" : "timed_out";
+      o.decidedAt = this.now;
     }
     return "ok";
   }
 
   advance(uid: string, rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number): RideView {
     this.requireUser(uid);
+    this.touchDriver(uid);
     this.sweep();
     const r = this.db.rides[rideId];
     if (!r) throw new ServerError("not_found");
@@ -532,9 +545,17 @@ export class Engine {
       if (o.status === "offered" && o.offeredAt !== null && this.now >= o.offeredAt + offerS * 1000) this.closeOffer(o, "timed_out");
     }
     for (const [uid, d] of Object.entries(this.db.drivers)) {
-      if (d.online && this.now - d.lastSeen > SERVER.driverStaleS * 1000) {
+      if (!d.online) continue;
+      const silentMs = this.now - d.lastSeen;
+      // Silent > 12 s (tab killed, phone offline): the driver loses their cards at once…
+      if (silentMs > SERVER.driverStaleS * 1000) {
         for (const o of Object.values(this.db.offers))
           if (o.driverId === uid && (o.status === "offered" || o.status === "queued")) this.closeOffer(o, "withdrawn");
+      }
+      // …and an idle driver silent for 60 s is set offline (a short screen lock is tolerated).
+      if (silentMs > SERVER.driverLostS * 1000 && !this.activeDriverRideOf(uid)) {
+        d.online = false;
+        this.effects.notify.add(uid);
       }
     }
     for (const r of Object.values(this.db.rides)) {
@@ -558,6 +579,16 @@ export class Engine {
     return Object.values(this.db.rides).find((r) => isActive(r.status) && (r.riderId === uid || r.driverId === uid)) ?? null;
   }
 
+  /** Any driver action proves the session is alive (not only heartbeats). */
+  private touchDriver(uid: string): void {
+    const d = this.db.drivers[uid];
+    if (d?.online) d.lastSeen = this.now;
+  }
+
+  private activeDriverRideOf(uid: string): RideRow | null {
+    return Object.values(this.db.rides).find((r) => r.driverId === uid && (r.status === "accepted" || r.status === "arrived" || r.status === "in_progress")) ?? null;
+  }
+
   private goOffline(uid: string): void {
     const d = this.db.drivers[uid];
     if (d) d.online = false;
@@ -570,10 +601,22 @@ export class Engine {
       .filter((r) => r.status === "requested" && r.riderId !== uid && !r.excluded.includes(uid))
       .sort((a, b) => a.requestedAt - b.requestedAt);
     for (const r of open) {
-      if (Object.values(this.db.offers).some((o) => o.rideId === r.id && o.driverId === uid && o.round === r.round)) continue;
+      // A card withdrawn for driver-side reasons (went offline, went silent, won another ride) is
+      // offered again once the driver is eligible (§6 rule 4); a decision (declined, timed out) is final.
+      const existing = Object.values(this.db.offers).find((o) => o.rideId === r.id && o.driverId === uid && o.round === r.round);
+      if (existing && existing.status !== "withdrawn") continue;
       const dist = haversineKm(pos, r.pickup);
       if (dist > this.cfg.dispatchRadiusKm) continue;
       const holding = Object.values(this.db.offers).some((o) => o.driverId === uid && o.status === "offered");
+      if (existing) {
+        existing.status = holding ? "queued" : "offered";
+        existing.createdAt = this.now;
+        existing.offeredAt = holding ? null : this.now;
+        existing.decidedAt = null;
+        existing.driverDistanceKm = round1(dist);
+        this.effects.notify.add(uid);
+        continue;
+      }
       const o: OfferRow = {
         id: this.nextId("o"),
         rideId: r.id,
@@ -715,6 +758,7 @@ export class Engine {
       collected: r.collected,
       notifiedCount: r.notifiedCount,
       redispatchCount: r.redispatchCount,
+      round: r.round,
       rider: this.party(r.riderId),
       driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.db.vehicles[r.driverId] ?? null } : null,
       myRating: mine ? mine.stars : null

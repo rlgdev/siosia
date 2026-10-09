@@ -5,8 +5,9 @@
 //   user:<uid>  "changed"  — server → that user: something about my rides/offers changed; refetch.
 //   drivers     "ping"     — server → online drivers: a request opened; send a heartbeat now.
 //   drivers     presence   — online drivers' coarse position (~100 m) for the nearby-cars view.
-//   ride:<id>   broadcast  — driver_pos / rider_pos / sharing_stop between the two parties.
-//   ride:<id>   presence   — whether the other party is connected.
+//   ride:<id>:<round> broadcast — driver_pos / rider_pos / sharing_stop between the two parties.
+//   ride:<id>:<round> presence  — whether the other party is connected. A new round (re-dispatch)
+//                                 means a new topic, so a removed driver hears nothing more.
 // Live positions only ever travel over realtime and are never stored (FR-043).
 
 import type {
@@ -45,7 +46,8 @@ export interface RideChannel {
 }
 
 export interface DriverPresenceHandle {
-  track(p: DriverPresence): void;
+  /** The backend sets `id` to this handle's random presence key. */
+  track(p: Omit<DriverPresence, "id">): void;
   untrack(): void;
   close(): void;
 }
@@ -99,7 +101,8 @@ export interface Backend {
   onDriverPing(cb: () => void): Unsub;
   watchDrivers(cb: (drivers: DriverPresence[]) => void): Unsub;
   driverPresence(): DriverPresenceHandle;
-  openRide(rideId: string, role: Role, handlers: RideChannelHandlers): RideChannel;
+  /** Live channel of one assignment: topic ride:<id>:<round>. */
+  openRide(ride: { id: string; round: number }, role: Role, handlers: RideChannelHandlers): RideChannel;
 
   // Optional account linking (US8) — only the Supabase backend implements these.
   account?(): Promise<AccountInfo>;

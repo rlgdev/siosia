@@ -43,7 +43,7 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
   await onboard(rider, "Ola");
   await rider.getByTestId("mode-ride").click();
   await expect(rider.getByTestId("pickup-field")).toContainText("My location");
-  await longPressMap(rider, 160, -40);
+  await longPressMap(rider, 100, 60);
   await expect(rider.getByTestId("dropoff-field")).toContainText("Pinned");
   await expect(rider.getByTestId("fare")).toContainText("PLN");
   await expect(rider.getByTestId("estimate")).toContainText("estimate"); // routing blocked → fallback (FR-032)
@@ -106,17 +106,49 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
   await expect(rider.getByTestId("history-list")).toContainText("Completed");
 });
 
-test("a request nobody accepts expires and can be retried; a cancelled request withdraws offers", async ({ context }) => {
+async function goOnlineAsDriver(driver: Page, nick: string, plate: string) {
+  await onboard(driver, nick);
+  await driver.getByTestId("mode-drive").click();
+  await driver.getByLabel("Make").fill("Kia");
+  await driver.getByLabel("Model").fill("Ceed");
+  await driver.getByLabel("Colour").fill("Blue");
+  await driver.getByLabel("Plate").fill(plate);
+  await driver.getByRole("button", { name: "Save" }).click();
+  await driver.getByTestId("toggle-online").click();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Online");
+}
+
+test("a request nobody accepts expires after 3 minutes and Try again requests anew (US3-4)", async ({ context }) => {
   await isolate(context);
   const rider = await context.newPage();
+  await rider.clock.install(); // real time keeps flowing; fastForward jumps the server timers too
   await onboard(rider, "Ewa");
   await rider.getByTestId("mode-ride").click();
   await longPressMap(rider, -150, 30);
   await rider.getByTestId("request-ride").click();
   await expect(rider.getByTestId("searching-title")).toBeVisible();
   await expect(rider.getByText("No drivers nearby yet")).toBeVisible({ timeout: 8000 });
+  await rider.clock.fastForward("03:05");
+  await expect(rider.getByText("No driver accepted your request.")).toBeVisible({ timeout: 10_000 });
+  await rider.getByTestId("try-again").click();
+  await expect(rider.getByTestId("searching-title")).toHaveText("Finding a driver…");
   await rider.getByTestId("cancel-request").click();
   await expect(rider.getByTestId("request-ride")).toBeVisible();
+});
+
+test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {
+  await isolate(context);
+  const driver = await context.newPage();
+  const rider = await context.newPage();
+  await goOnlineAsDriver(driver, "Bea", "WX 777");
+  await onboard(rider, "Ola");
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 140, 20);
+  await rider.getByTestId("request-ride").click();
+  await expect(driver.getByTestId("offer-card")).toBeVisible({ timeout: 5000 });
+  await rider.getByTestId("cancel-request").click();
+  await expect(driver.getByTestId("offer-card")).toHaveCount(0, { timeout: 3000 });
+  await expect(driver.getByTestId("driver-state")).toHaveText("Online");
 });
 
 test("demo robots accept a request without any second device (FR-070)", async ({ context }) => {

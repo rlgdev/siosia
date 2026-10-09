@@ -72,6 +72,9 @@ export class AppStore {
       window.addEventListener("popstate", () => {
         if (this.snap.panel) this.patch({ panel: null });
       });
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && this.snap.phase === "ready") this.requestRefresh();
+      });
     }
   }
 
@@ -132,13 +135,30 @@ export class AppStore {
       return;
     }
     const vehicle = await api.getVehicle();
-    const urlMode = new URLSearchParams(location.search).get("mode");
-    const mode: Mode | null =
-      urlMode === "ride" || urlMode === "drive" ? urlMode : readPref<Mode | null>(`mode.${this.snap.uid}`, null);
-    this.patch({ profile, vehicle, lang: profile.language, mode });
+    this.patch({ profile, vehicle, lang: profile.language });
     this.listen();
     await this.refresh();
-    this.patch({ phase: "ready" });
+    this.patch({ mode: this.initialMode(), phase: "ready" });
+  }
+
+  /**
+   * Mode on launch (§3: per device). A ?mode= link preselects once and is then removed from the URL,
+   * so a reload mid-trip reopens the mode this device was actually using (remembered per user).
+   */
+  private initialMode(): Mode | null {
+    const key = `mode.${this.snap.uid}`;
+    let mode: Mode | null = readPref<Mode | null>(key, null);
+    if (typeof location !== "undefined") {
+      const url = new URL(location.href);
+      const fromUrl = url.searchParams.get("mode");
+      if (fromUrl === "ride" || fromUrl === "drive") mode = fromUrl;
+      if (url.searchParams.has("mode")) {
+        url.searchParams.delete("mode");
+        history.replaceState(history.state, "", url);
+      }
+    }
+    writePref(key, mode);
+    return mode;
   }
 
   async join(code: string): Promise<void> {
@@ -192,7 +212,12 @@ export class AppStore {
   async deleteProfile(): Promise<void> {
     await this.api.deleteProfile();
     writePref(`mode.${this.snap.uid}`, null);
-    this.patch({ profile: null, vehicle: null, mode: null, panel: null, phase: "nickname" });
+    // The live listeners would now only get not_member errors.
+    this.dispose();
+    // Deleting also removes this device's membership, so a gated deployment asks for the invite
+    // code again (join → afterMember → nickname); an open demo goes straight to the nickname.
+    const member = await this.api.isMember(deviceId()).catch(() => false);
+    this.patch({ profile: null, vehicle: null, mode: null, panel: null, my: null, phase: member ? "nickname" : "invite" });
   }
 
   // ---------- live state ----------
@@ -207,10 +232,6 @@ export class AppStore {
       const busy = !!my && (!!my.ride || !!my.offer);
       if (busy && !this.snap.my?.driverOnline) void this.refresh().catch(() => {});
     }, CADENCE.pollActiveMs);
-    if (typeof document !== "undefined")
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") this.requestRefresh();
-      });
   }
 
   /** Coalesces bursts of realtime events into one fetch. */
@@ -255,7 +276,9 @@ export class AppStore {
 
   dispose(): void {
     this.unsubs.forEach((u) => u());
+    this.unsubs = [];
     if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
   }
 }
 

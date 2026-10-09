@@ -187,9 +187,8 @@ grant usage on schema public to anon, authenticated;
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
               public.memberships, public.invite_failures, public.rides, public.offers, public.ratings
   from anon, authenticated;
-grant select on public.app_config, public.profiles, public.vehicles, public.driver_status,
-                public.memberships, public.rides, public.offers, public.ratings
-  to authenticated;
+-- No direct table access at all: clients use the functions below, which return only what each
+-- party may see (raw tables would expose other users' ids, e.g. rides.driver_id / excluded).
 
 drop policy if exists siosia_config_read  on public.app_config;
 drop policy if exists siosia_profile_read on public.profiles;
@@ -296,6 +295,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'cancelledBy', r.cancelled_by, 'cancelReason', r.cancel_reason,
     'paid', r.paid, 'collected', r.collected,
     'notifiedCount', r.notified_count, 'redispatchCount', r.redispatch_count,
+    'round', r.round,
     'rider', siosia_party(r.rider_id),
     'driver', case when r.driver_id is null then null
                    else siosia_party(r.driver_id) || jsonb_build_object('vehicle', siosia_vehicle_json(r.driver_id)) end,
@@ -411,25 +411,34 @@ begin
   end loop;
 end $$;
 
-create or replace function public.siosia_end_ride(p_ride uuid, p_status text, p_by text, p_reason text)
-returns void language plpgsql security definer set search_path = public as $$
+drop function if exists public.siosia_end_ride(uuid, text, text, text);
+drop function if exists public.siosia_redispatch(uuid, text);
+
+-- Ends a ride only if it is still in one of the expected statuses (a concurrent transition wins).
+create or replace function public.siosia_end_ride(p_ride uuid, p_status text, p_by text, p_reason text,
+                                                  p_from text[] default array['requested','accepted','arrived'])
+returns boolean language plpgsql security definer set search_path = public as $$
 begin
   update rides set status = p_status, ended_at = now(), cancelled_by = p_by, cancel_reason = p_reason
-   where id = p_ride;
+   where id = p_ride and status = any (p_from);
+  if not found then return false; end if;
   perform siosia_withdraw_ride_offers(p_ride);
+  return true;
 end $$;
 
 -- accepted/arrived → requested without this driver; expiry restarts; fare unchanged (FR-051).
-create or replace function public.siosia_redispatch(p_ride uuid, p_reason text)
-returns void language plpgsql security definer set search_path = public as $$
+-- Guarded on the expected driver and status, so it can never undo a concurrent cancel or start.
+create or replace function public.siosia_redispatch(p_ride uuid, p_reason text, p_driver uuid)
+returns boolean language plpgsql security definer set search_path = public as $$
 begin
   update rides set
     status = 'requested',
-    excluded = case when driver_id is null or driver_id = any (excluded) then excluded else array_append(excluded, driver_id) end,
+    excluded = case when driver_id = any (excluded) then excluded else array_append(excluded, driver_id) end,
     driver_id = null, accepted_at = null, arrived_at = null,
     round = round + 1, redispatch_count = redispatch_count + 1,
     dispatch_started_at = now(), notified_count = 0, cancel_reason = p_reason
-  where id = p_ride;
+  where id = p_ride and status in ('accepted','arrived') and driver_id = p_driver;
+  return found;
 end $$;
 
 create or replace function public.siosia_go_offline(p_user uuid)
@@ -467,33 +476,61 @@ begin
            where f.status in ('offered','queued') and (x.status <> 'requested' or x.round <> f.round) loop
     perform siosia_close_offer(o.id, 'withdrawn');
   end loop;
-  -- 4. requests nobody accepted in time
+  -- 4. requests nobody accepted in time. Rows being changed right now (an Accept in flight) are
+  --    skipped and re-checked by the next sweep; the guarded update re-checks the status anyway.
   for r in select id from rides where status = 'requested'
-           and dispatch_started_at + make_interval(secs => c.request_expiry_s) <= now() loop
-    perform siosia_end_ride(r.id, 'expired', 'system', null);
+           and dispatch_started_at + make_interval(secs => c.request_expiry_s) <= now()
+           for update skip locked loop
+    perform siosia_end_ride(r.id, 'expired', 'system', null, array['requested']);
   end loop;
   -- 5. accepted/arrived rides whose driver vanished for 60 s are re-dispatched (§12)
   for r in select x.id, x.driver_id from rides x left join driver_status d on d.user_id = x.driver_id
            where x.status in ('accepted','arrived')
-             and (d.user_id is null or d.last_seen < now() - interval '60 seconds') loop
-    update driver_status set online = false where user_id = r.driver_id;
-    perform siosia_redispatch(r.id, 'driver_lost');
+             and (d.user_id is null or d.last_seen < now() - interval '60 seconds')
+           for update of x skip locked loop
+    if siosia_redispatch(r.id, 'driver_lost', r.driver_id) then
+      update driver_status set online = false where user_id = r.driver_id;
+      perform siosia_notify(r.driver_id);
+    end if;
+  end loop;
+  -- 6. idle drivers silent for 60 s go offline (a short screen lock is tolerated; a killed tab
+  --    must not leave the user "online" for good — FR-005, US4-2)
+  for r in update driver_status d set online = false
+            where d.online and d.last_seen < now() - interval '60 seconds'
+              and not exists (select 1 from rides x where x.driver_id = d.user_id
+                              and x.status in ('accepted','arrived','in_progress'))
+           returning d.user_id loop
+    perform siosia_notify(r.user_id);
   end loop;
 end $$;
 
 -- Pull offers for an idle online driver from its current coarse position (never stored).
 create or replace function public.siosia_pull_offers(p_driver uuid, p_lat float8, p_lng float8)
 returns void language plpgsql security definer set search_path = public as $$
-declare c app_config; r record; d float8; v_holding boolean; v_id uuid;
+declare c app_config; r record; d float8; v_holding boolean; v_id uuid; v_old uuid; v_old_status text;
 begin
   select * into c from app_config where id = 1;
   for r in select x.id, x.round, x.pickup_lat, x.pickup_lng from rides x
            where x.status = 'requested' and x.rider_id <> p_driver and not (p_driver = any (x.excluded))
            order by x.requested_at loop
-    continue when exists (select 1 from offers where ride_id = r.id and driver_id = p_driver and round = r.round);
+    -- A card withdrawn for driver-side reasons (offline, silent, won another ride) is offered again
+    -- once the driver is eligible (§6 rule 4); a decision (declined, timed out) is final.
+    v_old := null;
+    v_old_status := null;
+    select id, status into v_old, v_old_status from offers
+     where ride_id = r.id and driver_id = p_driver and round = r.round;
+    continue when v_old is not null and v_old_status <> 'withdrawn';
     d := siosia_km(p_lat, p_lng, r.pickup_lat, r.pickup_lng);
     continue when d > c.dispatch_radius_km;
     v_holding := exists (select 1 from offers where driver_id = p_driver and status = 'offered');
+    if v_old is not null then
+      update offers set status = case when v_holding then 'queued' else 'offered' end,
+                        offered_at = case when v_holding then null else now() end,
+                        created_at = clock_timestamp(), decided_at = null,
+                        driver_distance_km = round(d::numeric, 1)
+       where id = v_old;
+      continue;
+    end if;
     v_id := null;
     insert into offers (ride_id, driver_id, round, status, offered_at, driver_distance_km)
     values (r.id, p_driver, r.round,
@@ -724,7 +761,14 @@ begin
              and (rider_id = v_uid or driver_id = v_uid)) then
     return siosia_err('active_ride');
   end if;
-  if exists (select 1 from driver_status where user_id = v_uid and online) then return siosia_err('online_as_driver'); end if;
+  if exists (select 1 from driver_status where user_id = v_uid and online) then
+    -- FR-005 applies to a live driver session; a driver tab that died (silent > 12 s, no trip —
+    -- checked above) must not block this user from riding, so close that stale session.
+    if exists (select 1 from driver_status where user_id = v_uid and online and last_seen >= now() - interval '12 seconds') then
+      return siosia_err('online_as_driver');
+    end if;
+    perform siosia_go_offline(v_uid);
+  end if;
   begin
     plat := (p_pickup ->> 'lat')::float8;  plng := (p_pickup ->> 'lng')::float8;
     dlat := (p_dropoff ->> 'lat')::float8; dlng := (p_dropoff ->> 'lng')::float8;
@@ -784,7 +828,7 @@ begin
     end if;
     if r.status not in ('accepted','arrived') then return siosia_err('illegal_transition'); end if;
     update profiles set driver_cancels = driver_cancels + 1 where user_id = v_uid;
-    perform siosia_redispatch(r.id, v_reason);
+    perform siosia_redispatch(r.id, v_reason, v_uid);
     return siosia_ok('true'::jsonb);
   end if;
   return siosia_err('forbidden');
@@ -838,6 +882,7 @@ declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); o offers; r 
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  update driver_status set last_seen = now() where user_id = v_uid and online; -- a sign of life
   perform siosia_sweep();
   select * into o from offers where id = p_offer and driver_id = v_uid;
   if o.id is null then return siosia_err('not_found'); end if;
@@ -872,6 +917,12 @@ begin
       end if;
       perform siosia_close_offer(o.id, case when p_decision = 'decline' then 'declined' else 'timed_out' end);
       perform siosia_notify(r.rider_id);
+    elsif o.status = 'withdrawn' then
+      -- Decided while the card was withdrawn (phone briefly offline): still final, so it is not
+      -- offered again when the driver becomes eligible (§6 rule 4).
+      update offers set status = case when p_decision = 'decline' then 'declined' else 'timed_out' end,
+                        decided_at = now()
+       where id = o.id;
     end if;
     return siosia_ok('"ok"'::jsonb);
   end if;
@@ -891,6 +942,7 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r rides;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
+  update driver_status set last_seen = now() where user_id = v_uid and online; -- a sign of life
   perform siosia_sweep();
   select * into r from rides where id = p_ride for update;
   if r.id is null then return siosia_err('not_found'); end if;
@@ -1012,10 +1064,13 @@ grant execute on function public.siosia_rate(uuid, int, text) to authenticated;
 -- Realtime authorization (private channels). Turn OFF "Allow public access" in Realtime settings.
 -- ---------------------------------------------------------------------------------------------
 
+-- Topic suffix "<ride uuid>:<round>": only the current round's two parties are authorised, so a
+-- driver removed by re-dispatch cannot follow the ride on the new channel.
 create or replace function public.siosia_in_ride(p_ride_text text)
 returns boolean language sql stable security definer set search_path = public as $$
   select exists (select 1 from rides
-                 where id::text = p_ride_text
+                 where id::text = split_part(p_ride_text, ':', 1)
+                   and round::text = split_part(p_ride_text, ':', 2)
                    and (rider_id = auth.uid() or driver_id = auth.uid())
                    and status in ('requested','accepted','arrived','in_progress'));
 $$;

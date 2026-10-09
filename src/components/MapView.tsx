@@ -65,7 +65,7 @@ const iconKey = (m: MapMarker) => `${m.kind}|${Math.round(m.heading ?? 0)}|${m.s
 export function MapView(props: MapViewProps) {
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
-  const layers = useRef(new Map<string, { marker: L.Marker; key: string }>());
+  const layers = useRef(new Map<string, { marker: L.Marker; key: string; dragging: boolean }>());
   const acc = useRef<L.Circle | null>(null);
   const route = useRef<L.Polyline | null>(null);
   const handlers = useRef(props);
@@ -115,13 +115,17 @@ export function MapView(props: MapViewProps) {
       const existing = layers.current.get(mk.id);
       const k = iconKey(mk);
       if (existing) {
-        existing.marker.setLatLng([mk.pos.lat, mk.pos.lng]);
+        // Never move a pin the user is dragging (a GPS re-render would snap it back mid-drag).
+        if (!existing.dragging) existing.marker.setLatLng([mk.pos.lat, mk.pos.lng]);
         if (existing.key !== k) {
           existing.marker.setIcon(iconFor(mk));
           existing.key = k;
         }
         if (mk.draggable) existing.marker.dragging?.enable();
-        else existing.marker.dragging?.disable();
+        else {
+          existing.marker.dragging?.disable(); // Leaflet drops dragend here, so clear the flag
+          existing.dragging = false;
+        }
       } else {
         const marker = L.marker([mk.pos.lat, mk.pos.lng], {
           icon: iconFor(mk),
@@ -130,12 +134,17 @@ export function MapView(props: MapViewProps) {
           title: mk.title,
           zIndexOffset: mk.kind === "car" ? 1000 : mk.kind === "pickup" || mk.kind === "dropoff" ? 500 : 0
         }).addTo(m);
+        const entry = { marker, key: k, dragging: false };
+        marker.on("dragstart", () => {
+          entry.dragging = true;
+        });
         marker.on("dragend", () => {
+          entry.dragging = false;
           const ll = marker.getLatLng();
           const current = handlers.current.markers.find((x) => x.id === mk.id);
           current?.onDragEnd?.({ lat: ll.lat, lng: ll.lng });
         });
-        layers.current.set(mk.id, { marker, key: k });
+        layers.current.set(mk.id, entry);
       }
     }
     for (const [id, { marker }] of layers.current) {

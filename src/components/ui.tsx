@@ -48,7 +48,7 @@ export function StarInput({ value, onChange, disabled }: { value: number; onChan
           disabled={disabled}
           onClick={() => onChange(n)}
         >
-          ★
+          {n <= value ? "★" : "☆"}
         </button>
       ))}
     </div>

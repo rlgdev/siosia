@@ -61,7 +61,17 @@ function DriverMain() {
   }, [rideId, watched, api, t]);
 
   const pending = my?.pendingReceipt && my.pendingReceipt.role === "driver" && !dismissed.includes(my.pendingReceipt.id) ? my.pendingReceipt : null;
-  const summary = !ride ? (ended?.status === "completed" ? ended : pending) : null;
+  // A summary restored after a reload stays until Done (rating removes it from pendingReceipt).
+  useEffect(() => {
+    if (!ride && !ended && pending) setEnded(pending);
+  }, [ride, ended, pending]);
+  const summary = !ride && ended?.status === "completed" ? ended : null;
+
+  // A new offer must be visible: close any open panel (it would hide the card and its countdown).
+  const offerKey = offer?.id ?? null;
+  useEffect(() => {
+    if (offerKey && store.get().panel) store.closePanel();
+  }, [offerKey, store]);
 
   // Today's earnings on D1 (FR-027), refreshed after each trip.
   useEffect(() => {
@@ -179,6 +189,7 @@ function DriverMain() {
             {t(rt.online ? "driver.goOffline" : "driver.goOnline")}
           </button>
         </div>
+        {rt.autoOffline && !rt.online && <Notice kind="warn">{t("driver.autoOffline")}</Notice>}
         {(rt.geoStatus === "denied" || (error && !rt.online && error === t("err.not_online"))) && <Notice kind="warn">{t("geo.driverNeeds")}</Notice>}
         {error && error !== t("err.not_online") && <p className="form-error" role="alert">{error}</p>}
         {rt.online && !rt.fix && <p className="hint">{t("geo.waiting")}</p>}

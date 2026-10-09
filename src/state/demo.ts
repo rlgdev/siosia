@@ -17,10 +17,12 @@ async function ensureFleet(center: LatLng, cfg: ReturnType<typeof useApp>["cfg"]
   if (!cfg) return null;
   starting = (async () => {
     const { RobotFleet } = await import("../backend/mock/robots");
-    const count = Number(new URLSearchParams(location.search).get("robots") ?? "2");
-    const f = new RobotFleet({ ...cfg.deployment, inviteCode: cfg.mockInviteCode }, center, Math.min(4, Math.max(0, count)));
-    const ok = count > 0 && (await f.start());
-    fleet = ok ? f : null;
+    const count = Math.min(4, Math.max(0, Number(new URLSearchParams(location.search).get("robots") ?? "2") || 0));
+    if (count > 0) {
+      const f = new RobotFleet({ ...cfg.deployment, inviteCode: cfg.mockInviteCode }, center, count);
+      f.start(); // runs now, or as soon as the tab currently running the robots closes
+      fleet = f;
+    }
     starting = null;
     return fleet;
   })();

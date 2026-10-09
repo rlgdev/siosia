@@ -31,9 +31,18 @@ positions (FR-043). The server therefore never learns where drivers are except f
    position. Offers reach the driver as a `changed` event on `user:<id>`.
 
 Heartbeats also run every 4 s while online, so a driver who comes online or finishes a trip pulls
-open requests (§6 rule 4) and liveness is known (cards of a driver silent for 12 s are withdrawn;
-a ride whose driver is silent 60 s is re-dispatched). `driver_status` holds only `online` and
-`last_seen` — no coordinates.
+open requests (§6 rule 4) and liveness is known:
+
+| Silence | Effect |
+| --- | --- |
+| > 12 s | the driver's cards are withdrawn; a request from the same user is no longer refused (FR-005 applies to live sessions only) |
+| > 60 s, idle | the driver is set offline (a short screen lock is tolerated) |
+| > 60 s, accepted/arrived | the ride is re-dispatched without them (§12); an `in_progress` ride waits |
+
+A card withdrawn for a driver-side reason (went offline, went silent, won another ride) is offered
+again once the driver is eligible; a decline or a lapsed countdown is final for that dispatch round.
+`driver_status` holds only `online` and `last_seen` — no coordinates. Dispatch pings are never
+dropped on the client: a ping that arrives while a heartbeat is in flight triggers one more.
 
 ## Server-side guarantees
 
@@ -46,15 +55,22 @@ a ride whose driver is silent 60 s is re-dispatched). `driver_status` holds only
 - **Expiry** "on read": every API call runs `siosia_sweep()` (offer timeouts, 3-minute expiry,
   stale and lost drivers); `pg_cron` also runs it every 10 s when available.
 - **Clock skew**: countdowns use `serverNow` returned with every state (smoothed offset).
-- **Access**: tables are read-only for clients and filtered by RLS; realtime topics are private —
-  `ride:<id>` only for its two parties while active, `user:<id>` only for that user, `drivers`
-  presence writable only by online drivers.
+- **Access**: clients cannot read or write any table directly (RLS is enabled as a second line);
+  the functions return only what each party may see, so no other user's id ever reaches a client.
+  Realtime topics are private — `ride:<id>:<round>` only for that assignment's two parties while
+  active (a re-dispatch opens a new topic, so a removed driver hears nothing more), `user:<id>`
+  only for that user, `drivers` presence writable only by online drivers.
+- **Race-safe sweep**: expiry and lost-driver re-dispatch lock their candidate rows
+  (`FOR UPDATE SKIP LOCKED`) and update only if the ride is still in the expected status, so a
+  concurrent Accept, Start or Cancel always wins.
+- **Presence privacy**: nearby-car presence uses a random key per idle period, never the user id,
+  so a rider cannot follow one driver over time.
 
 ## Client cadences (budget levers, `src/core/defaults.ts`)
 
 | Stream | Cadence |
 | --- | --- |
-| Live position to the other party | every 3 s or 25 m, keep-alive 5 s, resend when the peer joins |
+| Live position to the other party | every 3 s or 25 m, keep-alive 5 s, immediate resend when the peer joins. A peer that leaves the channel loses its marker within 10 s; a silent rider's pin is also dropped after 10 s, while a silent driver stays as a greyed "last seen" car (§12 screen lock) |
 | Nearby-cars presence (coarse ~100 m) | every 30 s or 200 m, idle drivers only |
 | Driver heartbeat | every 4 s while online |
 | Rider state poll (backs up realtime, runs expiry) | every 5 s during an active request/ride |

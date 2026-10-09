@@ -6,7 +6,8 @@ import type { Role } from "../core/types";
 
 export interface SharingEntry {
   role: Role;
-  stop: () => void;
+  /** May reject (e.g. a driver cannot go offline during a trip); the banner shows why. */
+  stop: () => void | Promise<void>;
 }
 
 class SharingRegistry {
