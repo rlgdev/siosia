@@ -185,6 +185,10 @@ export const pl: Record<MessageKey, string> = {
   "driver.needVehicle": "Dodaj pojazd, aby zacząć wozić.",
   "driver.queued": "Oczekujące: +{n}",
   "driver.keepOpen": "Trzymaj Siosię otwartą z włączonym ekranem.",
+  "driver.pendingNearby": "Oczekujące zamówienia w pobliżu: {n}",
+  "driver.noPending": "Na razie brak oczekujących zamówień w pobliżu.",
+  "driver.pendingChecking": "Sprawdzam zamówienia w pobliżu…",
+  "driver.showRequests": "Pokaż zamówienia",
   "driver.autoOffline": "Przełączono Cię na offline po minucie bez połączenia (zablokowany ekran lub aplikacja w tle). Trzymaj Siosię otwartą z włączonym ekranem i przejdź online ponownie.",
 
   "offer.title": "Nowe zamówienie",

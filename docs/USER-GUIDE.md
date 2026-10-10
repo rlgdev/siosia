@@ -46,7 +46,10 @@ after the driver has arrived counts as a late cancellation (no fee).
 3. A request appears with a **chime**: rider, distance to pickup, trip and fare, and a **20-second
    countdown**. **Accept** or **Decline**. If another driver was faster you'll see *Taken by another
    driver*. Missed it? While the rider is still waiting it comes back after about 2 minutes;
-   *Decline* removes it for this request.
+   *Decline* hides it until you tap *Show requests* or go online again.
+   Requests waiting nearby (~8 km) are offered as soon as you go online — including ones you
+   declined or missed earlier. The main screen shows **Pending requests nearby: N**; tap **Show
+   requests** to see them all again.
 4. Drive to the pickup — **Navigate** opens Google Maps (Apple Maps on iPhone). You see the rider's
    live position while they share it.
 5. Tap **I've arrived** → when the rider is in, **Start trip** → at the destination
@@ -72,7 +75,7 @@ Need to cancel? *Cancel* → choose a reason; the rider is automatically offered
 | --- | --- |
 | "Service unavailable" | Tap *Retry*; if it stays, contact the organiser shown on that screen |
 | Location off / inaccurate | Allow location (see above); outdoors GPS is better; you can always place pins by hand |
-| Driver: no requests | Be online, app open, screen on, within ~8 km of riders |
+| Driver: no requests | Be online, app open, screen on, within ~8 km of riders; tap *Show requests* |
 | Rider: car doesn't move | The driver's screen may be locked — "last seen … s ago" is shown |
 | Two phones, one person | You can be a driver on one and a rider on another, but not both at once |
 
@@ -127,7 +130,10 @@ jako późne (bez opłat).
 3. Zamówienie pojawia się z **dźwiękiem**: pasażer, odległość do odbioru, kurs i cena oraz
    **20 sekund** na decyzję. **Przyjmij** lub **Odrzuć**. Jeśli ktoś był szybszy, zobaczysz
    *Przyjęte przez innego kierowcę*. Przegapione? Póki pasażer czeka, wróci po około 2 minutach;
-   *Odrzuć* usuwa je dla tego zamówienia.
+   *Odrzuć* ukrywa je, dopóki nie dotkniesz *Pokaż zamówienia* albo ponownie nie przejdziesz online.
+   Zamówienia czekające w pobliżu (~8 km) dostajesz od razu po przejściu online — także te
+   odrzucone lub przegapione wcześniej. Ekran główny pokazuje **Oczekujące zamówienia w pobliżu: N**;
+   dotknij **Pokaż zamówienia**, aby zobaczyć je wszystkie ponownie.
 4. Jedź do odbioru — **Nawiguj** otwiera Mapy Google (na iPhonie Mapy Apple). Widzisz pozycję
    pasażera, póki ją udostępnia.
 5. **Jestem na miejscu** → gdy pasażer wsiądzie, **Rozpocznij kurs** → u celu **Zakończ kurs**.
@@ -152,6 +158,6 @@ Musisz anulować? *Anuluj* → wybierz powód; kurs automatycznie trafia do inne
 | --- | --- |
 | „Usługa niedostępna” | *Spróbuj ponownie*; jeśli nie pomaga, skontaktuj się z organizatorem podanym na ekranie |
 | Lokalizacja wyłączona / niedokładna | Zezwól na lokalizację (wyżej); na zewnątrz GPS działa lepiej; pinezki zawsze można postawić ręcznie |
-| Kierowca: brak zamówień | Bądź online, aplikacja otwarta, ekran włączony, do ~8 km od pasażerów |
+| Kierowca: brak zamówień | Bądź online, aplikacja otwarta, ekran włączony, do ~8 km od pasażerów; dotknij *Pokaż zamówienia* |
 | Pasażer: auto stoi | Ekran kierowcy mógł się zablokować — widać „ostatnio widziany … s temu” |
 | Dwa telefony, jedna osoba | Możesz być kierowcą na jednym i pasażerem na drugim, ale nie jednocześnie |

@@ -183,6 +183,10 @@ export const en = {
   "driver.needVehicle": "Add your vehicle to start driving.",
   "driver.queued": "+{n} waiting",
   "driver.keepOpen": "Keep Siosia open with the screen on.",
+  "driver.pendingNearby": "Pending requests nearby: {n}",
+  "driver.noPending": "No pending requests nearby right now.",
+  "driver.pendingChecking": "Checking for requests nearby…",
+  "driver.showRequests": "Show requests",
   "driver.autoOffline": "You were set offline after a minute without connection (screen locked or app in the background). Keep Siosia open with the screen on, then go online again.",
 
   "offer.title": "New ride request",

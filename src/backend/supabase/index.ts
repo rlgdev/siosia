@@ -220,6 +220,9 @@ export class SupabaseBackend implements Backend {
   heartbeat(pos: LatLng | null) {
     return this.rpc<MyState>("siosia_heartbeat", { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null });
   }
+  refreshOffers(pos: LatLng) {
+    return this.rpc<MyState>("siosia_refresh_offers", { p_lat: pos.lat, p_lng: pos.lng });
+  }
   decideOffer(offerId: string, decision: OfferDecision) {
     return this.rpc<"won" | "ok">("siosia_decide_offer", { p_offer: offerId, p_decision: decision });
   }

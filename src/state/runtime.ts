@@ -11,7 +11,7 @@ import { CADENCE } from "../core/defaults";
 import { bearingDeg, coarse, distanceToPolylineM, haversineKm, haversineM, remainingKm } from "../core/geo";
 import { driverShares, riderMayShare } from "../core/lifecycle";
 import { PositionThrottle } from "../core/throttle";
-import type { DriverPos, LatLng, RideView, RiderPos } from "../core/types";
+import type { DriverPos, LatLng, MyState, RideView, RiderPos } from "../core/types";
 import { ServerError } from "../core/types";
 import { chime, keepScreenOn, unlockAudio } from "../services/device";
 import { geo, useGeo, type GeoFix } from "../services/geolocation";
@@ -102,6 +102,10 @@ export interface DriverRuntime {
   tripKm: number;
   /** The server set this driver offline (silent too long) without the driver asking for it. */
   autoOffline: boolean;
+  /** Pending requests within the dispatch radius (from the last heartbeat); null = unknown yet. */
+  nearbyRequests: number | null;
+  /** "Show requests": re-offer every pending request nearby, including earlier declines. */
+  refreshOffers: () => Promise<MyState | null>;
   goOnline: () => Promise<void>;
   goOffline: () => Promise<void>;
 }
@@ -147,6 +151,10 @@ export function useDriverRuntime(): DriverRuntime {
   const [riderPresent, setRiderPresent] = useState<boolean | null>(null);
   const [tripKm, setTripKm] = useState(0);
   const [autoOffline, setAutoOffline] = useState(false);
+  const [nearbyRequests, setNearbyRequests] = useState<number | null>(null);
+  useEffect(() => {
+    if (!online) setNearbyRequests(null);
+  }, [online]);
   const offlineByUser = useRef(false);
   const wasOnline = useRef(online);
   useEffect(() => {
@@ -168,6 +176,13 @@ export function useDriverRuntime(): DriverRuntime {
   const pendingBeat = useRef(false);
   /** Whether the last heartbeat carried a position (matching needs one). */
   const lastBeatHadPos = useRef(false);
+  /** Bumped by Show requests: a heartbeat answer that was in flight meanwhile is older — drop it. */
+  const refreshGen = useRef(0);
+  /** Count from a server answer: a number when it carried a position; otherwise unknown (or kept on a trip). */
+  const takeNearby = useCallback((my: MyState, idleNoFix: boolean) => {
+    if (typeof my.nearbyRequests === "number") setNearbyRequests(my.nearbyRequests);
+    else if (idleNoFix) setNearbyRequests(null);
+  }, []);
 
   /**
    * Heartbeat (matching + liveness). Periodic beats are floored at 1 s; forced beats (dispatch
@@ -188,8 +203,11 @@ export function useDriverRuntime(): DriverRuntime {
       try {
         const f = fixRef.current;
         lastBeatHadPos.current = !!f;
+        const gen = refreshGen.current;
         const my = await api.heartbeat(idleRef.current && f ? coarse(f) : null);
+        if (gen !== refreshGen.current) return; // a Show requests answer is newer
         store.applyMy(my, t0);
+        takeNearby(my, idleRef.current && !f);
       } catch {
         /* transient; the next beat retries */
       } finally {
@@ -200,7 +218,7 @@ export function useDriverRuntime(): DriverRuntime {
         }
       }
     },
-    [api, store]
+    [api, store, takeNearby]
   );
   beatRef.current = beat;
 
@@ -217,6 +235,17 @@ export function useDriverRuntime(): DriverRuntime {
     geo.seed(f);
     await store.refresh();
   }, [api, store]);
+
+  const refreshOffers = useCallback(async (): Promise<MyState | null> => {
+    const f = fixRef.current;
+    if (!f) return null;
+    const t0 = Date.now();
+    refreshGen.current++;
+    const my = await api.refreshOffers(coarse(f));
+    store.applyMy(my, t0);
+    takeNearby(my, false);
+    return my;
+  }, [api, store, takeNearby]);
 
   const goOffline = useCallback(async () => {
     offlineByUser.current = true;
@@ -389,7 +418,7 @@ export function useDriverRuntime(): DriverRuntime {
     });
   }, [rideId, rideStatus]);
 
-  return { online, fix, geoStatus, wakeOk, riderPos, riderStopped, riderPresent, tripKm, autoOffline, goOnline, goOffline };
+  return { online, fix, geoStatus, wakeOk, riderPos, riderStopped, riderPresent, tripKm, autoOffline, nearbyRequests, refreshOffers, goOnline, goOffline };
 }
 
 export function clearTripKm(rideId: string): void {

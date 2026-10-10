@@ -90,6 +90,8 @@ export interface Backend {
 
   setOnline(online: boolean): Promise<void>;
   heartbeat(pos: LatLng | null): Promise<MyState>;
+  /** "Show requests": re-offer every pending request near `pos`, including earlier declines. */
+  refreshOffers(pos: LatLng): Promise<MyState>;
   decideOffer(offerId: string, decision: OfferDecision): Promise<"won" | "ok">;
   advance(rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number): Promise<RideView>;
 

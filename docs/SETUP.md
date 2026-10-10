@@ -61,7 +61,7 @@ limit.
 ```sql
 update public.app_config set
   request_expiry_s = 1200,   -- how long a ride request waits for a driver: 30 s … 2 h (1200 = 20 min)
-  offer_retry_s    = 120,    -- re-offer a missed card after this many seconds (0 = never; Decline is always final)
+  offer_retry_s    = 120,    -- re-offer a missed card after this many seconds (0 = never; going online / Show requests always re-offer)
   offer_timeout_s  = 20,     -- countdown on each driver's offer card: 5 … 120 s
   no_show_wait_s   = 300,    -- wait at the pickup before "Rider no-show": 0 … 3600 s
   currency = 'PLN', fare_base = 5.00, fare_per_km = 2.50, fare_per_min = 0.50, fare_minimum = 10.00,

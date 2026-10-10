@@ -130,6 +130,9 @@ export class MockBackend implements Backend {
   heartbeat(pos: LatLng | null) {
     return this.call((e) => e.heartbeat(this.uid, pos));
   }
+  refreshOffers(pos: LatLng) {
+    return this.call((e) => e.refreshOffers(this.uid, pos));
+  }
   decideOffer(offerId: string, decision: OfferDecision) {
     return this.call((e) => e.decideOffer(this.uid, offerId, decision));
   }

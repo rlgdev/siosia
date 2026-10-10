@@ -105,8 +105,11 @@ check(ride.status === "requested" && ride.driver === null, `ride requested, fare
 const pingMs = await waitFor(() => pings.got.length > 0);
 check(pingMs >= 0, `driver pinged over realtime in ${pingMs} ms`);
 
-const st = await rpc(driver.c, "siosia_heartbeat", { p_lat: 51.509, p_lng: -0.13 });
-check(st.offer?.rideId === ride.id && !JSON.stringify(st.offer).includes("SMOKE1"), `offer pulled (${st.offer?.driverDistanceKm} km to pickup)`);
+const st0 = await rpc(driver.c, "siosia_heartbeat", { p_lat: 51.509, p_lng: -0.13 });
+check(st0.offer?.rideId === ride.id && !JSON.stringify(st0.offer).includes("SMOKE1"), `offer pulled (${st0.offer?.driverDistanceKm} km to pickup)`);
+await rpc(driver.c, "siosia_decide_offer", { p_offer: st0.offer.id, p_decision: "decline" });
+const st = await rpc(driver.c, "siosia_refresh_offers", { p_lat: 51.509, p_lng: -0.13 });
+check(st.offer?.id === st0.offer.id && st.nearbyRequests >= 1, `Show requests brings a declined request back (${st.nearbyRequests} pending nearby)`);
 const before = riderEvents.got.length;
 check((await rpc(driver.c, "siosia_decide_offer", { p_offer: st.offer.id, p_decision: "accept" })) === "won", "atomic accept won");
 const evMs = await waitFor(() => riderEvents.got.length > before);

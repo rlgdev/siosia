@@ -140,6 +140,47 @@ test("a request nobody accepts stays open 20 minutes, then expires and Try again
   await expect(rider.getByTestId("request-ride")).toBeVisible();
 });
 
+test("a driver who goes online later gets the waiting request; Show requests brings back a declined one", async ({ context }) => {
+  await isolate(context);
+  const rider = await context.newPage();
+  await onboard(rider, "Iga");
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 100, 60);
+  await rider.getByTestId("request-ride").click();
+  await expect(rider.getByText("No drivers nearby yet")).toBeVisible({ timeout: 8000 });
+
+  // The request was made before any driver was online: going online offers it automatically.
+  const driver = await context.newPage();
+  await driver.bringToFront(); // Chromium feeds GPS only to the focused page
+  await goOnlineAsDriver(driver, "Olek", "WX 777");
+  const card = driver.getByTestId("offer-card");
+  await expect(card).toBeVisible({ timeout: 5000 });
+  await expect(card).toContainText("Iga");
+  await driver.getByTestId("decline-offer").click();
+  await expect(card).toHaveCount(0);
+  await expect(driver.getByTestId("pending-nearby")).toHaveText("Pending requests nearby: 1");
+
+  // "Show requests" brings the declined request back at once.
+  await driver.getByTestId("show-requests").click();
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("Iga");
+
+  // So does going offline and online again.
+  await driver.getByTestId("decline-offer").click();
+  await expect(card).toHaveCount(0);
+  await driver.getByTestId("toggle-online").click();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
+  await driver.getByTestId("toggle-online").click();
+  await expect(card).toBeVisible({ timeout: 5000 });
+
+  // Once the rider cancels there is nothing left to show.
+  await rider.getByTestId("cancel-request").click();
+  await expect(card).toHaveCount(0, { timeout: 5000 });
+  await expect(driver.getByTestId("pending-nearby")).toHaveText("No pending requests nearby right now.", { timeout: 8000 });
+  await driver.getByTestId("show-requests").click();
+  await expect(driver.getByTestId("toast")).toHaveText("No pending requests nearby right now.");
+});
+
 test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {
   await isolate(context);
   const driver = await context.newPage();

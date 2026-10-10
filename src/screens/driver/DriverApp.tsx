@@ -87,6 +87,19 @@ function DriverMain() {
   // Going online needs a location fix first (goOnline throws not_online when location is denied).
   const toggleOnline = () => run(() => (rt.online ? rt.goOffline() : rt.goOnline()));
 
+  // "Show requests": bring back every pending request nearby, even ones declined or missed earlier.
+  const showRequests = () =>
+    run(async () => {
+      try {
+        const my = await rt.refreshOffers();
+        if (my && !my.offer) setToast(t("driver.noPending"));
+      } catch (e) {
+        // The server already set us offline, or a ride was assigned: show that state instead.
+        if (e instanceof ServerError && (e.code === "not_online" || e.code === "active_trip")) await store.refresh();
+        else throw e;
+      }
+    });
+
   const decide = useCallback(
     (decision: "accept" | "decline" | "timeout") =>
       run(async () => {
@@ -199,6 +212,26 @@ function DriverMain() {
           </Notice>
         )}
         {rt.online && rt.wakeOk && <p className="muted small">{t("driver.keepOpen")}</p>}
+        {rt.online && rt.fix && (
+          <div className="pending-row">
+            <span data-testid="pending-nearby" aria-live="polite">
+              {rt.nearbyRequests === null
+                ? t("driver.pendingChecking")
+                : rt.nearbyRequests > 0
+                  ? t("driver.pendingNearby", { n: rt.nearbyRequests })
+                  : t("driver.noPending")}
+            </span>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={busy}
+              onClick={() => void showRequests()}
+              data-testid="show-requests"
+            >
+              {t("driver.showRequests")}
+            </button>
+          </div>
+        )}
         {earn && (
           <div className="kv">
             <span>

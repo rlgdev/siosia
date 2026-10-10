@@ -646,6 +646,16 @@ body:has(.sharing-banner) .leaflet-top {
   align-items: center;
   gap: 12px;
 }
+.pending-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--bg);
+  font-weight: 600;
+}
 .dot {
   display: inline-block;
   width: 12px;

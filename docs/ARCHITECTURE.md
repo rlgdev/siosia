@@ -41,7 +41,12 @@ open requests (§6 rule 4) and liveness is known:
 
 A card withdrawn for a driver-side reason (went offline, went silent, won another ride) is offered
 again once the driver is eligible; a lapsed countdown comes back after `offer_retry_s`
-(0 = never); a decline is final for that dispatch round (a re-dispatched ride is a new round).
+(0 = never); a decline holds for the rest of that online session. Going online (offline → online)
+and **Show requests** (`siosia_refresh_offers`) clear the driver's declined/lapsed cards on open
+requests, so every pending request in range is offered again at once (one card, the rest queued).
+Only a driver who cancelled after accepting stays excluded from that ride. Heartbeats and Show
+requests also return `nearbyRequests` — open requests within the dispatch radius of the coarse
+position sent with that call (counted, never stored).
 `driver_status` holds only `online` and `last_seen` — no coordinates. Dispatch pings are never
 dropped on the client: a ping that arrives while a heartbeat is in flight triggers one more.
 
@@ -83,8 +88,13 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
 - **Requests stay open 20 minutes** (spec: 3 min), set per deployment by
   `app_config.request_expiry_s` (30 s – 2 h) — operator decision of 2026-10-10. Because requests
   live that long, a card a driver *let lapse* is offered to them again after
-  `app_config.offer_retry_s` (default 120 s, 0 = never) while the request is open; an explicit
-  Decline stays final for the dispatch round. The rider's screen shows until when it keeps looking.
+  `app_config.offer_retry_s` (default 120 s, 0 = never) while the request is open. The rider's
+  screen shows until when it keeps looking.
+- **Declines are not permanent** (spec §6: final) — operator decision of 2026-10-10. A driver who
+  goes online reviews every pending request nearby again, including ones they declined or missed
+  earlier, and **Show requests** on the driver screen does the same on demand, next to a live
+  count of pending requests nearby. Within one online session a Decline holds until the driver
+  taps Show requests.
 
 - Rider position is sent from **acceptance** (not while still `requested`): nobody can receive it
   before a driver is assigned, so sending earlier would only spend budget and widen exposure.

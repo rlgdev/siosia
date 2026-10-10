@@ -537,7 +537,7 @@ begin
            order by x.requested_at loop
     -- A card withdrawn for driver-side reasons (offline, silent, won another ride) is offered again
     -- once the driver is eligible (§6 rule 4). A card the driver let lapse comes back after
-    -- offer_retry_s (requests stay open long); an explicit Decline is final.
+    -- offer_retry_s (requests stay open long); a Decline holds until siosia_clear_decisions.
     v_old := null;
     v_old_status := null;
     v_old_decided := null;
@@ -551,11 +551,18 @@ begin
     continue when d > c.dispatch_radius_km;
     v_holding := exists (select 1 from offers where driver_id = p_driver and status = 'offered');
     if v_old is not null then
-      update offers set status = case when v_holding then 'queued' else 'offered' end,
-                        offered_at = case when v_holding then null else now() end,
-                        created_at = clock_timestamp(), decided_at = null,
-                        driver_distance_km = round(d::numeric, 1)
-       where id = v_old;
+      begin
+        update offers set status = case when v_holding then 'queued' else 'offered' end,
+                          offered_at = case when v_holding then null else now() end,
+                          created_at = clock_timestamp(), decided_at = null,
+                          driver_distance_km = round(d::numeric, 1)
+         where id = v_old;
+      exception when unique_violation then
+        -- Another transaction gave this driver a card meanwhile: queue this one behind it.
+        update offers set status = 'queued', offered_at = null, created_at = clock_timestamp(),
+                          decided_at = null, driver_distance_km = round(d::numeric, 1)
+         where id = v_old;
+      end;
       continue;
     end if;
     v_id := null;
@@ -572,10 +579,14 @@ begin
   end loop;
 end $$;
 
-create or replace function public.siosia_state_json(p_user uuid)
+-- p_lat/p_lng: the driver's coarse position sent with this call (heartbeat / Show requests), used
+-- only to count pending requests nearby and never stored. Older versions took (uuid) only.
+drop function if exists public.siosia_state_json(uuid);
+create or replace function public.siosia_state_json(p_user uuid, p_lat float8 default null, p_lng float8 default null)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
-declare r rides; o offers; p rides;
+declare r rides; o offers; p rides; c app_config;
 begin
+  select * into c from app_config where id = 1;
   select * into r from rides
    where status in ('requested','accepted','arrived','in_progress') and (rider_id = p_user or driver_id = p_user)
    order by requested_at desc limit 1;
@@ -592,7 +603,21 @@ begin
     'queuedOffers', (select count(*) from offers where driver_id = p_user and status = 'queued'),
     'driverOnline', coalesce((select online from driver_status where user_id = p_user), false),
     'hasVehicle', exists (select 1 from vehicles where user_id = p_user),
+    'nearbyRequests', case when p_lat is null or p_lng is null then null else
+      (select count(*) from rides x
+        where x.status = 'requested' and x.rider_id <> p_user and not (p_user = any (x.excluded))
+          and siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng) <= c.dispatch_radius_km) end,
     'pendingReceipt', case when p.id is null then null else siosia_ride_json(p, p_user) end);
+end $$;
+
+-- Declined / lapsed cards on still-open requests become offerable again (same round).
+create or replace function public.siosia_clear_decisions(p_driver uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  update offers o set status = 'withdrawn', decided_at = now()
+    from rides x
+   where o.ride_id = x.id and o.driver_id = p_driver and o.status in ('declined','timed_out')
+     and x.status = 'requested' and x.round = o.round;
 end $$;
 
 -- Caller checks shared by every client function. Returns an error code or null.
@@ -864,7 +889,7 @@ end $$;
 
 create or replace function public.siosia_set_online(p_online boolean)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_fresh boolean; v_was boolean;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
@@ -874,8 +899,13 @@ begin
     if exists (select 1 from rides where rider_id = v_uid and status in ('requested','accepted','arrived','in_progress')) then
       return siosia_err('active_ride');
     end if;
+    select online into v_was from driver_status where user_id = v_uid for update;
+    v_fresh := not coalesce(v_was, false);
     insert into driver_status (user_id, online, last_seen) values (v_uid, true, now())
     on conflict (user_id) do update set online = true, last_seen = now();
+    -- A new online session reviews every pending request nearby again — including ones this
+    -- driver declined or let lapse earlier.
+    if v_fresh then perform siosia_clear_decisions(v_uid); end if;
   else
     if exists (select 1 from rides where driver_id = v_uid and status in ('accepted','arrived','in_progress')) then
       return siosia_err('active_trip');
@@ -890,18 +920,42 @@ end $$;
 -- never written anywhere (FR-043). Returns the caller's state, like siosia_my_state().
 create or replace function public.siosia_heartbeat(p_lat float8, p_lng float8)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_idle boolean := false;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
+  -- Same per-driver lock as set_online / decide_offer / refresh_offers: one pull at a time.
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   update driver_status set last_seen = now() where user_id = v_uid and online;
   if found then
     perform siosia_sweep();
     if p_lat is not null and p_lng is not null and abs(p_lat) <= 90 and abs(p_lng) <= 180
        and not exists (select 1 from rides where driver_id = v_uid and status in ('accepted','arrived','in_progress')) then
+      v_idle := true;
       perform siosia_pull_offers(v_uid, p_lat, p_lng);
     end if;
   end if;
-  return siosia_ok(siosia_state_json(v_uid));
+  return siosia_ok(case when v_idle then siosia_state_json(v_uid, p_lat, p_lng) else siosia_state_json(v_uid) end);
+end $$;
+
+-- "Show requests": re-offer every pending request near the driver, including ones they declined
+-- or let lapse (one card at a time, the rest queued). Drivers who cancelled a ride stay excluded.
+create or replace function public.siosia_refresh_offers(p_lat float8, p_lng float8)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if p_lat is null or p_lng is null or abs(p_lat) > 90 or abs(p_lng) > 180 then return siosia_err('bad_input'); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  update driver_status set last_seen = now() where user_id = v_uid and online;
+  if not found then return siosia_err('not_online'); end if;
+  perform siosia_sweep();
+  if exists (select 1 from rides where driver_id = v_uid and status in ('accepted','arrived','in_progress')) then
+    return siosia_err('active_trip');
+  end if;
+  perform siosia_clear_decisions(v_uid);
+  perform siosia_pull_offers(v_uid, p_lat, p_lng);
+  perform siosia_notify(v_uid);
+  return siosia_ok(siosia_state_json(v_uid, p_lat, p_lng));
 end $$;
 
 create or replace function public.siosia_decide_offer(p_offer uuid, p_decision text)
@@ -947,8 +1001,8 @@ begin
       perform siosia_notify(r.rider_id);
     elsif o.status = 'withdrawn' or (o.status = 'timed_out' and p_decision = 'decline') then
       -- Decided after the card left the screen server-side (phone briefly offline, or a Decline
-      -- landing just after the countdown): a Decline is final; a timeout is like any lapsed card
-      -- and comes back after offer_retry_s.
+      -- landing just after the countdown): a Decline is recorded as such; a timeout is like any
+      -- lapsed card and comes back after offer_retry_s.
       update offers set status = case when p_decision = 'decline' then 'declined' else 'timed_out' end,
                         decided_at = now()
        where id = o.id;
@@ -1083,6 +1137,7 @@ grant execute on function public.siosia_request_ride(jsonb, jsonb, float8, float
 grant execute on function public.siosia_cancel_ride(uuid, text) to authenticated;
 grant execute on function public.siosia_set_online(boolean) to authenticated;
 grant execute on function public.siosia_heartbeat(float8, float8) to authenticated;
+grant execute on function public.siosia_refresh_offers(float8, float8) to authenticated;
 grant execute on function public.siosia_decide_offer(uuid, text) to authenticated;
 grant execute on function public.siosia_advance(uuid, text, float8) to authenticated;
 grant execute on function public.siosia_mark_paid(uuid) to authenticated;

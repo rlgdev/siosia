@@ -327,6 +327,42 @@ describe("SQL backend (PGlite)", () => {
     await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
   });
 
+  it("lets a driver going online, or tapping Show requests, review declined and missed requests again", async () => {
+    const at = [NEAR(0.03).lat, NEAR(0.03).lng];
+    const base = Number((await admin("select count(*) as n from public.rides where status = 'requested'")).rows[0].n);
+    const ride = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    await call(U.d3, "siosia_set_online", [true]);
+    const s = await call<Json>(U.d3, "siosia_heartbeat", at);
+    expect(s).toMatchObject({ offer: { rideId: ride.id }, nearbyRequests: base + 1 });
+    const id = (s.offer as Json).id;
+    await call(U.d3, "siosia_decide_offer", [id, "decline"]);
+    await call(U.d3, "siosia_set_online", [true]); // already online: the same session, the Decline holds
+    expect(await call<Json>(U.d3, "siosia_heartbeat", at)).toMatchObject({ offer: null, nearbyRequests: base + 1 });
+    expect((await call<Json>(U.d3, "siosia_my_state")).nearbyRequests).toBeNull(); // no position, no count
+    // A new online session reviews it again, automatically.
+    await call(U.d3, "siosia_set_online", [false]);
+    await call(U.d3, "siosia_set_online", [true]);
+    expect((await call<Json>(U.d3, "siosia_heartbeat", at)).offer).toMatchObject({ id, rideId: ride.id, status: "offered" });
+    // "Show requests" brings back a declined card at once …
+    await call(U.d3, "siosia_decide_offer", [id, "decline"]);
+    expect(await call<Json>(U.d3, "siosia_refresh_offers", at)).toMatchObject({ offer: { id, status: "offered" }, nearbyRequests: base + 1 });
+    // … and a lapsed one, without waiting for offer_retry_s.
+    await admin("update public.offers set status = 'timed_out', offered_at = null, decided_at = now() where id = $1", [id]);
+    expect(((await call<Json>(U.d3, "siosia_refresh_offers", at)).offer as Json).id).toBe(id);
+    expect((await call<Json>(U.rider2, "siosia_get_ride", [ride.id])).notifiedCount).toBe(1); // not double-counted
+    // Guards: offline, bad position, during a trip; the driver who cancelled stays excluded.
+    expect(await errorOf(call(U.d1, "siosia_refresh_offers", at))).toBe("not_online");
+    expect(await errorOf(call(U.d3, "siosia_refresh_offers", [100, 0]))).toBe("bad_input");
+    expect(await call(U.d3, "siosia_decide_offer", [id, "accept"])).toBe("won");
+    expect(await errorOf(call(U.d3, "siosia_refresh_offers", at))).toBe("active_trip");
+    expect((await call<Json>(U.d3, "siosia_heartbeat", at)).nearbyRequests).toBeNull(); // on a trip: no count
+    await call(U.d3, "siosia_cancel_ride", [ride.id, "other"]);
+    await call(U.d3, "siosia_set_online", [false]);
+    await call(U.d3, "siosia_set_online", [true]);
+    expect(await call<Json>(U.d3, "siosia_refresh_offers", at)).toMatchObject({ offer: null, nearbyRequests: base });
+    await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
+  });
+
   it("upgrades a database from the 3-minute version to 20 minutes once, never overriding a later choice", async () => {
     // Simulate the previous schema: no offer_retry_s column, the old default 180 in the row.
     await admin("alter table public.app_config drop column offer_retry_s");

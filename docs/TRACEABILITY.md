@@ -26,6 +26,7 @@ Every functional requirement of the spec (§7) mapped to an automated test or a 
 | 020 | Online switch, location, wake lock, S4 | e2e (S4 "online as a driver"); field step 1 |
 | 021 | 3 s / 25 m and 30 s / 200 m cadences | core "position throttling" |
 | 022 | Offer card, chime, 20 s countdown | components "D2" (countdown, timeout once); e2e accept |
+| 022+ | Going online / *Show requests* re-offer every pending request nearby (incl. declined), with a count | engine + sql "review declined and missed requests again"; e2e "goes online later … Show requests" |
 | 023 | Route to pickup then dropoff, rider pin | e2e; field steps 4–5b |
 | 024 | Arrived → Start → Complete, Navigate, Cancel reasons | e2e; engine/sql re-dispatch on cancel |
 | 025 | No-show only after 5 min | engine + sql (`too_early`) |

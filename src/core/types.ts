@@ -46,7 +46,8 @@ export interface Timers {
   expiryS: number;
   /**
    * A card a driver let lapse (no answer within offerS) is offered to them again after this many
-   * seconds while the request is still open (default 120; 0 = never). A Decline stays final.
+   * seconds while the request is still open (default 120; 0 = never). A Decline holds until the
+   * driver goes online again or taps Show requests.
    */
   retryS: number;
   /** Wait at pickup before No-show is allowed, seconds (default 300). */
@@ -166,6 +167,11 @@ export interface MyState {
   queuedOffers: number;
   driverOnline: boolean;
   hasVehicle: boolean;
+  /**
+   * Open requests within the dispatch radius of the position sent with this call (driver heartbeat
+   * or "Show requests"); null when the call carried no position (e.g. a plain state refresh).
+   */
+  nearbyRequests: number | null;
   /** Latest completed ride from the last 2 h that this user has not rated yet. */
   pendingReceipt: RideView | null;
 }

@@ -242,7 +242,7 @@ export class Engine {
 
   // ---------- reads ----------
 
-  myState(uid: string): MyState {
+  myState(uid: string, pos: LatLng | null = null): MyState {
     this.requireMember(uid);
     this.sweep();
     const ride = this.activeRideOf(uid);
@@ -256,6 +256,7 @@ export class Engine {
       queuedOffers: queued,
       driverOnline: !!driver?.online,
       hasVehicle: !!this.db.vehicles[uid],
+      nearbyRequests: pos && isValidLatLng(pos) ? this.countNearby(uid, pos) : null,
       pendingReceipt: this.pendingReceipt(uid)
     };
   }
@@ -407,7 +408,11 @@ export class Engine {
       if (!this.db.vehicles[uid]) throw new ServerError("no_vehicle");
       const active = this.activeRideOf(uid);
       if (active && active.riderId === uid) throw new ServerError("active_ride");
+      const fresh = !this.db.drivers[uid]?.online;
       this.db.drivers[uid] = { online: true, lastSeen: this.now };
+      // A new online session reviews every pending request nearby again — including ones this
+      // driver declined or let lapse earlier.
+      if (fresh) this.clearDecisions(uid);
     } else {
       const active = this.activeRideOf(uid);
       if (active && active.driverId === uid) throw new ServerError("active_trip");
@@ -424,12 +429,35 @@ export class Engine {
   heartbeat(uid: string, pos: LatLng | null): MyState {
     this.requireUser(uid);
     const d = this.db.drivers[uid];
+    let idlePos: LatLng | null = null;
     if (d?.online) {
       d.lastSeen = this.now;
       this.sweep();
-      if (pos && isValidLatLng(pos) && !this.activeRideOf(uid)) this.pullOffers(uid, pos);
+      if (pos && isValidLatLng(pos) && !this.activeRideOf(uid)) {
+        idlePos = pos;
+        this.pullOffers(uid, pos);
+      }
     }
-    return this.myState(uid);
+    return this.myState(uid, idlePos);
+  }
+
+  /**
+   * "Show requests": the driver asks to see every pending request nearby again. Earlier Declines
+   * and lapsed cards on open requests are cleared, then all requests in range are offered (one
+   * card at a time, the rest queued). Drivers who cancelled a ride after accepting stay excluded.
+   */
+  refreshOffers(uid: string, pos: LatLng): MyState {
+    this.requireUser(uid);
+    if (!isValidLatLng(pos)) throw new ServerError("bad_input");
+    const d = this.db.drivers[uid];
+    if (!d?.online) throw new ServerError("not_online");
+    d.lastSeen = this.now;
+    this.sweep();
+    if (this.activeDriverRideOf(uid)) throw new ServerError("active_trip");
+    this.clearDecisions(uid);
+    this.pullOffers(uid, pos);
+    this.effects.notify.add(uid);
+    return this.myState(uid, pos);
   }
 
   decideOffer(uid: string, offerId: string, decision: "accept" | "decline" | "timeout"): "won" | "ok" {
@@ -468,8 +496,8 @@ export class Engine {
       this.effects.notify.add(r?.riderId ?? uid);
     } else if (o.status === "withdrawn" || (o.status === "timed_out" && decision === "decline")) {
       // Decided after the card left the screen server-side (phone briefly offline, or a Decline
-      // landing just after the countdown): a Decline is final; a timeout is like any lapsed card
-      // and comes back after retryS.
+      // landing just after the countdown): a Decline is recorded as such; a timeout is like any
+      // lapsed card and comes back after retryS.
       o.status = decision === "decline" ? "declined" : "timed_out";
       o.decidedAt = this.now;
     }
@@ -604,7 +632,7 @@ export class Engine {
     for (const r of open) {
       // A card withdrawn for driver-side reasons (went offline, went silent, won another ride) is
       // offered again once the driver is eligible (§6 rule 4). A card the driver let lapse comes back
-      // after the retry window (requests stay open long); an explicit Decline is final.
+      // after the retry window (requests stay open long); a Decline holds until clearDecisions.
       const existing = Object.values(this.db.offers).find((o) => o.rideId === r.id && o.driverId === uid && o.round === r.round);
       if (existing && !this.reofferable(existing)) continue;
       const dist = haversineKm(pos, r.pickup);
@@ -637,6 +665,25 @@ export class Engine {
     }
   }
 
+  /** Declined / lapsed cards on still-open requests become offerable again (same round). */
+  private clearDecisions(uid: string): void {
+    for (const o of Object.values(this.db.offers)) {
+      if (o.driverId !== uid || (o.status !== "declined" && o.status !== "timed_out")) continue;
+      const r = this.db.rides[o.rideId];
+      if (r && r.status === "requested" && r.round === o.round) {
+        o.status = "withdrawn";
+        o.decidedAt = this.now;
+      }
+    }
+  }
+
+  /** Open requests this driver could be offered, within the dispatch radius of `pos`. */
+  private countNearby(uid: string, pos: LatLng): number {
+    return Object.values(this.db.rides).filter(
+      (r) => r.status === "requested" && r.riderId !== uid && !r.excluded.includes(uid) && haversineKm(pos, r.pickup) <= this.cfg.dispatchRadiusKm
+    ).length;
+  }
+
   private reofferable(o: OfferRow): boolean {
     if (o.status === "withdrawn") return true;
     const retryS = this.cfg.timers.retryS;
@@ -652,11 +699,16 @@ export class Engine {
     if (wasOffered) this.promote(o.driverId);
   }
 
+  private requestedAtOf(o: OfferRow): number {
+    return this.db.rides[o.rideId]?.requestedAt ?? 0;
+  }
+
   private promote(driverId: string): void {
     if (Object.values(this.db.offers).some((o) => o.driverId === driverId && o.status === "offered")) return;
     const queued = Object.values(this.db.offers)
       .filter((o) => o.driverId === driverId && o.status === "queued")
-      .sort((a, b) => a.createdAt - b.createdAt);
+      // Cards (re)activated in one call share createdAt; SQL orders them by request time then.
+      .sort((a, b) => a.createdAt - b.createdAt || this.requestedAtOf(a) - this.requestedAtOf(b));
     for (const q of queued) {
       const r = this.db.rides[q.rideId];
       if (r && r.status === "requested" && r.round === q.round) {

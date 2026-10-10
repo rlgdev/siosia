@@ -215,7 +215,7 @@ describe("liveness and re-offers (§6 rule 4, §12, US4-2)", () => {
     expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
   });
 
-  it("offers a lapsed card again after the retry window, but never a declined one", () => {
+  it("offers a lapsed card again after the retry window; a declined one only in a new online session", () => {
     const ride = request();
     const a = online("d1", near(1)).offer!;
     const b = online("d2", near(1)).offer!;
@@ -227,15 +227,16 @@ describe("liveness and re-offers (§6 rule 4, §12, US4-2)", () => {
     expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull(); // not yet
     now += 6_000;
     expect(at((e) => e.heartbeat("d1", near(1))).offer).toMatchObject({ id: a.id, rideId: ride.id, offeredAt: now });
-    at((e) => e.setOnline("d2", true)); // (silent meanwhile) — eligible again, yet:
-    expect(at((e) => e.heartbeat("d2", near(1))).offer).toBeNull(); // the decline stays final
+    expect(db.offers[b.id].status).toBe("declined");
+    at((e) => e.setOnline("d2", true)); // d2 went silent meanwhile (set offline) — a new session:
+    expect(at((e) => e.heartbeat("d2", near(1))).offer).toMatchObject({ id: b.id, rideId: ride.id }); // reviews it again
     expect(at((e) => e.getRide("rider", ride.id)).notifiedCount).toBe(2);
     // retryS = 0 disables re-offers: let the card lapse again, then compare both settings later.
-    const t1 = now + 125_000;
-    new Engine(db, CFG, t1).setOnline("d1", true);
+    now += CFG.timers.offerS * 1000;
+    at((e) => e.heartbeat("d1", null));
     expect(db.offers[a.id].status).toBe("timed_out");
     const copy = structuredClone(db);
-    const t2 = t1 + 200_000;
+    const t2 = now + 200_000;
     expect(new Engine(db, { ...CFG, timers: { ...CFG.timers, retryS: 0 } }, t2).heartbeat("d1", near(1)).offer).toBeNull();
     expect(new Engine(copy, CFG, t2).heartbeat("d1", near(1)).offer?.id).toBe(a.id);
   });
@@ -249,6 +250,79 @@ describe("liveness and re-offers (§6 rule 4, §12, US4-2)", () => {
     now += (CFG.timers.retryS + 1) * 1000;
     expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
     expect(at((e) => e.getRide("rider", ride.id)).expiresAt).toBe(ride.dispatchStartedAt + CFG.timers.expiryS * 1000);
+  });
+
+  it("lets a driver who goes online review declined and missed requests again", () => {
+    const ride = request();
+    const a = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", a.id, "decline"));
+    expect(at((e) => e.heartbeat("d1", near(1)))).toMatchObject({ offer: null, nearbyRequests: 1 });
+    at((e) => e.setOnline("d1", true)); // already online: the same session, the Decline holds
+    expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
+    at((e) => e.setOnline("d1", false));
+    expect(online("d1", near(1)).offer).toMatchObject({ id: a.id, rideId: ride.id, offeredAt: now });
+    expect(at((e) => e.getRide("rider", ride.id)).notifiedCount).toBe(1); // not a new notification
+    // A driver who cancelled after accepting is never offered that ride again.
+    at((e) => e.decideOffer("d1", a.id, "accept"));
+    at((e) => e.cancelRide("d1", ride.id, "other"));
+    at((e) => e.setOnline("d1", false));
+    expect(online("d1", near(1))).toMatchObject({ offer: null, nearbyRequests: 0 });
+    expect(at((e) => e.refreshOffers("d1", near(1))).offer).toBeNull();
+    expect(online("d2", near(1))).toMatchObject({ offer: { rideId: ride.id }, nearbyRequests: 1 });
+  });
+
+  it("brings back every pending request nearby on Show requests, declined or lapsed, and counts them", () => {
+    const r1 = request("rider");
+    now += 1000;
+    const r2 = request("rider2");
+    const s = online("d1", near(1));
+    expect(s).toMatchObject({ offer: { rideId: r1.id }, queuedOffers: 1, nearbyRequests: 2 });
+    at((e) => e.decideOffer("d1", s.offer!.id, "decline")); // r1 declined → r2 on screen
+    expect(at((e) => e.myState("d1"))).toMatchObject({ offer: { rideId: r2.id }, nearbyRequests: null }); // no position, no count
+    now += CFG.timers.offerS * 1000;
+    expect(at((e) => e.heartbeat("d1", near(1)))).toMatchObject({ offer: null, nearbyRequests: 2 }); // r2 lapsed
+    const back = at((e) => e.refreshOffers("d1", near(1)));
+    expect(back).toMatchObject({ offer: { rideId: r1.id, offeredAt: now }, queuedOffers: 1, nearbyRequests: 2 });
+    expect(at((e) => e.getRide("rider", r1.id)).notifiedCount).toBe(1);
+    expect(at((e) => e.getRide("rider2", r2.id)).notifiedCount).toBe(1);
+    // Out of range: nothing to show, nothing counted.
+    expect(online("far", near(12))).toMatchObject({ offer: null, nearbyRequests: 0 });
+    expect(at((e) => e.refreshOffers("far", near(12)))).toMatchObject({ offer: null, nearbyRequests: 0 });
+    // Guards: offline, bad position, during a trip.
+    expect(code(() => at((e) => e.refreshOffers("d2", near(1))))).toBe("not_online");
+    expect(code(() => at((e) => e.refreshOffers("d1", { lat: 120, lng: 0 })))).toBe("bad_input");
+    at((e) => e.decideOffer("d1", back.offer!.id, "accept"));
+    expect(code(() => at((e) => e.refreshOffers("d1", near(1))))).toBe("active_trip");
+    expect(at((e) => e.heartbeat("d1", near(1))).nearbyRequests).toBeNull(); // on a trip: no count
+  });
+
+  it("after Show requests, offers the brought-back requests oldest first, like the SQL", () => {
+    user("r3", "Iza");
+    const r1 = request("rider");
+    now += 1000;
+    const r2 = request("rider2");
+    now += 1000;
+    const r3 = request("r3");
+    now += 1000;
+    const s2 = online("d2", near(1)); // R1 on screen, R2 and R3 queued
+    at((e) => e.decideOffer("d2", s2.offer!.id, "decline"));
+    now += 1000;
+    expect(at((e) => e.decideOffer("d2", e.myState("d2").offer!.id, "accept"))).toBe("won"); // d2 takes R2
+    now += 1000;
+    expect(online("d1", near(1)).offer?.rideId).toBe(r1.id); // d1: cards for R1 and R3
+    now += 1000;
+    at((e) => e.cancelRide("d2", r2.id, "other")); // R2 re-dispatched: d1's card for it is created last
+    now += 1000;
+    at((e) => e.heartbeat("d1", near(1)));
+    for (let o = at((e) => e.myState("d1")).offer; o; o = at((e) => e.myState("d1")).offer) {
+      at((e) => e.decideOffer("d1", o!.id, "decline"));
+    }
+    const seen: string[] = [];
+    for (let s = at((e) => e.refreshOffers("d1", near(1))); s.offer; s = at((e) => e.myState("d1"))) {
+      seen.push(s.offer.rideId);
+      at((e) => e.decideOffer("d1", s.offer!.id, "decline"));
+    }
+    expect(seen).toEqual([r1.id, r2.id, r3.id]);
   });
 
   it("keeps a decision made on a withdrawn card final", () => {
