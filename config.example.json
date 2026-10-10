@@ -15,7 +15,7 @@
   "deployment": {
     "_comment": "Used by the demo (mock) backend only. The real backend reads tariff, timers and service area from the app_config table.",
     "tariff": { "base": 5, "perKm": 2.5, "perMin": 0.5, "minimum": 10, "currency": "PLN" },
-    "timers": { "offerS": 20, "expiryS": 180, "noShowS": 300 },
+    "timers": { "offerS": 20, "expiryS": 1200, "noShowS": 300, "retryS": 120 },
     "serviceArea": null,
     "dispatchRadiusKm": 8,
     "maxTripKm": 50,

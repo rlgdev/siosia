@@ -33,7 +33,7 @@ create table if not exists public.app_config (
   fare_per_min       numeric(10,2) not null default 0.50,
   fare_minimum       numeric(10,2) not null default 10.00,
   offer_timeout_s    int     not null default 20  check (offer_timeout_s between 5 and 120),
-  request_expiry_s   int     not null default 180 check (request_expiry_s between 30 and 1800),
+  request_expiry_s   int     not null default 1200 check (request_expiry_s between 30 and 7200),
   no_show_wait_s     int     not null default 300 check (no_show_wait_s between 0 and 3600),
   service_lat        double precision,
   service_lng        double precision,
@@ -43,6 +43,24 @@ create table if not exists public.app_config (
   timezone           text    not null default 'Europe/Warsaw',
   operator_contact   text    not null default ''
 );
+-- Upgrades for databases created by an earlier version of this file (idempotent):
+-- requests stay open 20 min by default (up to 2 h), and a lapsed card is re-offered after 2 min.
+alter table public.app_config alter column request_expiry_s set default 1200;
+alter table public.app_config drop constraint if exists app_config_request_expiry_s_check;
+alter table public.app_config add constraint app_config_request_expiry_s_check check (request_expiry_s between 30 and 7200);
+-- One-time data upgrade from the 3-minute version: a database without offer_retry_s still holds
+-- the old default 180, which moves to 20 min. Runs once (the column then exists), so a value an
+-- operator chooses later is never overwritten by re-running this file.
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'app_config' and column_name = 'offer_retry_s') then
+    update public.app_config set request_expiry_s = 1200 where id = 1 and request_expiry_s = 180;
+  end if;
+end $$;
+alter table public.app_config add column if not exists offer_retry_s int not null default 120;
+alter table public.app_config drop constraint if exists app_config_offer_retry_s_check;
+alter table public.app_config add constraint app_config_offer_retry_s_check check (offer_retry_s between 0 and 3600);
 insert into public.app_config (id) values (1) on conflict (id) do nothing;
 
 -- Secrets (one row). No policy → unreadable by clients.
@@ -296,6 +314,9 @@ returns jsonb language sql stable security definer set search_path = public as $
     'paid', r.paid, 'collected', r.collected,
     'notifiedCount', r.notified_count, 'redispatchCount', r.redispatch_count,
     'round', r.round,
+    -- When an open request expires (current config, exactly as the sweep applies it).
+    'expiresAt', siosia_ms(r.dispatch_started_at
+                           + make_interval(secs => (select c.request_expiry_s from app_config c where c.id = 1))),
     'rider', siosia_party(r.rider_id),
     'driver', case when r.driver_id is null then null
                    else siosia_party(r.driver_id) || jsonb_build_object('vehicle', siosia_vehicle_json(r.driver_id)) end,
@@ -508,18 +529,24 @@ end $$;
 create or replace function public.siosia_pull_offers(p_driver uuid, p_lat float8, p_lng float8)
 returns void language plpgsql security definer set search_path = public as $$
 declare c app_config; r record; d float8; v_holding boolean; v_id uuid; v_old uuid; v_old_status text;
+        v_old_decided timestamptz;
 begin
   select * into c from app_config where id = 1;
   for r in select x.id, x.round, x.pickup_lat, x.pickup_lng from rides x
            where x.status = 'requested' and x.rider_id <> p_driver and not (p_driver = any (x.excluded))
            order by x.requested_at loop
     -- A card withdrawn for driver-side reasons (offline, silent, won another ride) is offered again
-    -- once the driver is eligible (§6 rule 4); a decision (declined, timed out) is final.
+    -- once the driver is eligible (§6 rule 4). A card the driver let lapse comes back after
+    -- offer_retry_s (requests stay open long); an explicit Decline is final.
     v_old := null;
     v_old_status := null;
-    select id, status into v_old, v_old_status from offers
+    v_old_decided := null;
+    select id, status, decided_at into v_old, v_old_status, v_old_decided from offers
      where ride_id = r.id and driver_id = p_driver and round = r.round;
-    continue when v_old is not null and v_old_status <> 'withdrawn';
+    continue when v_old is not null
+      and not (v_old_status = 'withdrawn'
+               or (v_old_status = 'timed_out' and c.offer_retry_s > 0
+                   and v_old_decided <= now() - make_interval(secs => c.offer_retry_s)));
     d := siosia_km(p_lat, p_lng, r.pickup_lat, r.pickup_lng);
     continue when d > c.dispatch_radius_km;
     v_holding := exists (select 1 from offers where driver_id = p_driver and status = 'offered');
@@ -590,7 +617,8 @@ returns jsonb language sql stable security definer set search_path = public as $
   select jsonb_build_object(
     'tariff', jsonb_build_object('base', fare_base, 'perKm', fare_per_km, 'perMin', fare_per_min,
                                  'minimum', fare_minimum, 'currency', currency),
-    'timers', jsonb_build_object('offerS', offer_timeout_s, 'expiryS', request_expiry_s, 'noShowS', no_show_wait_s),
+    'timers', jsonb_build_object('offerS', offer_timeout_s, 'expiryS', request_expiry_s, 'noShowS', no_show_wait_s,
+                                 'retryS', offer_retry_s),
     'serviceArea', case when service_lat is null or service_lng is null or service_radius_km is null then null
                         else jsonb_build_object('lat', service_lat, 'lng', service_lng, 'radiusKm', service_radius_km) end,
     'dispatchRadiusKm', dispatch_radius_km,
@@ -917,9 +945,10 @@ begin
       end if;
       perform siosia_close_offer(o.id, case when p_decision = 'decline' then 'declined' else 'timed_out' end);
       perform siosia_notify(r.rider_id);
-    elsif o.status = 'withdrawn' then
-      -- Decided while the card was withdrawn (phone briefly offline): still final, so it is not
-      -- offered again when the driver becomes eligible (§6 rule 4).
+    elsif o.status = 'withdrawn' or (o.status = 'timed_out' and p_decision = 'decline') then
+      -- Decided after the card left the screen server-side (phone briefly offline, or a Decline
+      -- landing just after the countdown): a Decline is final; a timeout is like any lapsed card
+      -- and comes back after offer_retry_s.
       update offers set status = case when p_decision = 'decline' then 'declined' else 'timed_out' end,
                         decided_at = now()
        where id = o.id;

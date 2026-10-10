@@ -24,8 +24,9 @@ iPhone → *Settings → Privacy → Location Services → Safari Websites → W
    *Search*), or **long-press the map**, or use 📌 then tap the map. Pins can be dragged.
 3. You see distance, time and the **fixed price**. It never changes after you request. ("estimate"
    means the route service was unavailable and a straight-line estimate was used.)
-4. Tap **Request ride**. Nearby drivers are notified; the first to accept gets the ride.
-   Nobody within 3 minutes → *Try again*.
+4. Tap **Request ride**. Nearby drivers are notified; the first to accept gets the ride. The
+   request stays open for **20 minutes** (the screen shows until when) — drivers who come online
+   meanwhile get it too. Keep Siosia open to see the acceptance. Nobody by then → *Try again*.
 5. When a driver accepts you see their **nickname, rating, car and plate**, the car moving on the
    map and the arrival time. A green bar shows you are **sharing your location** with your driver —
    tap **Stop** any time (the driver then goes to your pickup pin).
@@ -44,7 +45,8 @@ after the driver has arrived counts as a late cancellation (no fee).
    browsers pause location when the screen locks. A green bar shows you are sharing your location.
 3. A request appears with a **chime**: rider, distance to pickup, trip and fare, and a **20-second
    countdown**. **Accept** or **Decline**. If another driver was faster you'll see *Taken by another
-   driver*.
+   driver*. Missed it? While the rider is still waiting it comes back after about 2 minutes;
+   *Decline* removes it for this request.
 4. Drive to the pickup — **Navigate** opens Google Maps (Apple Maps on iPhone). You see the rider's
    live position while they share it.
 5. Tap **I've arrived** → when the rider is in, **Start trip** → at the destination
@@ -102,7 +104,9 @@ odśwież stronę.
 3. Widzisz dystans, czas i **stałą cenę** — po zamówieniu się nie zmienia. („szacunek” oznacza, że
    serwis tras był niedostępny i użyto odległości w linii prostej).
 4. Dotknij **Zamów kurs**. Kierowcy w pobliżu dostają powiadomienie; kurs dostaje pierwszy, który
-   przyjmie. Nikt w 3 minuty → *Spróbuj ponownie*.
+   przyjmie. Zamówienie czeka **20 minut** (ekran pokazuje, do której) — dostają je też kierowcy,
+   którzy w tym czasie wejdą online. Trzymaj Siosię otwartą, aby zobaczyć przyjęcie. Nikt do tego
+   czasu → *Spróbuj ponownie*.
 5. Po przyjęciu widzisz **pseudonim, ocenę, samochód i numer rejestracyjny** kierowcy, auto na
    mapie i czas przyjazdu. Zielony pasek oznacza, że **udostępniasz lokalizację** kierowcy — w każdej
    chwili możesz dotknąć **Zatrzymaj** (kierowca pojedzie wtedy do pinezki odbioru).
@@ -122,7 +126,8 @@ jako późne (bez opłat).
    Zielony pasek oznacza udostępnianie lokalizacji.
 3. Zamówienie pojawia się z **dźwiękiem**: pasażer, odległość do odbioru, kurs i cena oraz
    **20 sekund** na decyzję. **Przyjmij** lub **Odrzuć**. Jeśli ktoś był szybszy, zobaczysz
-   *Przyjęte przez innego kierowcę*.
+   *Przyjęte przez innego kierowcę*. Przegapione? Póki pasażer czeka, wróci po około 2 minutach;
+   *Odrzuć* usuwa je dla tego zamówienia.
 4. Jedź do odbioru — **Nawiguj** otwiera Mapy Google (na iPhonie Mapy Apple). Widzisz pozycję
    pasażera, póki ją udostępnia.
 5. **Jestem na miejscu** → gdy pasażer wsiądzie, **Rozpocznij kurs** → u celu **Zakończ kurs**.

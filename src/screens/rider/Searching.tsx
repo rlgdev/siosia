@@ -3,9 +3,12 @@
 import { Money, Sheet, mmss, useElapsed } from "../../components/ui";
 import type { RideView } from "../../core/types";
 import { useI18n } from "../../i18n";
+import { useStore } from "../../state/store";
 
 interface Props {
   ride: RideView;
+  /** Server-clock time the request expires if nobody accepts (RideView.expiresAt). */
+  expiresAt: number;
   expired: boolean;
   nearbyCount: number;
   busy: boolean;
@@ -15,8 +18,11 @@ interface Props {
   onBack: () => void;
 }
 
-export function Searching({ ride, expired, nearbyCount, busy, error, onCancel, onTryAgain, onBack }: Props) {
-  const { t } = useI18n();
+export function Searching({ ride, expiresAt, expired, nearbyCount, busy, error, onCancel, onTryAgain, onBack }: Props) {
+  const { t, locale } = useI18n();
+  const store = useStore();
+  // Local wall-clock time of the server-side expiry (server clock → this device's clock).
+  const until = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(expiresAt - (store.serverNow() - Date.now()));
   const elapsed = useElapsed(expired ? null : ride.dispatchStartedAt);
   if (expired) {
     return (
@@ -49,6 +55,9 @@ export function Searching({ ride, expired, nearbyCount, busy, error, onCancel, o
         </div>
       </div>
       {ride.redispatchCount > 0 && ride.cancelReason !== "driver_lost" && <p className="hint">{t("search.driverCancelled")}</p>}
+      <p className="muted small" data-testid="search-until">
+        {t("search.until", { time: until })}
+      </p>
       {noDrivers && <p className="hint">{t("search.noDrivers")}</p>}
       <div className="trip-line">
         <span>{ride.pickup.label}</span>

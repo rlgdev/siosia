@@ -118,7 +118,7 @@ async function goOnlineAsDriver(driver: Page, nick: string, plate: string) {
   await expect(driver.getByTestId("driver-state")).toHaveText("Online");
 }
 
-test("a request nobody accepts expires after 3 minutes and Try again requests anew (US3-4)", async ({ context }) => {
+test("a request nobody accepts stays open 20 minutes, then expires and Try again requests anew (US3-4)", async ({ context }) => {
   await isolate(context);
   const rider = await context.newPage();
   await rider.clock.install(); // real time keeps flowing; fastForward jumps the server timers too
@@ -128,7 +128,11 @@ test("a request nobody accepts expires after 3 minutes and Try again requests an
   await rider.getByTestId("request-ride").click();
   await expect(rider.getByTestId("searching-title")).toBeVisible();
   await expect(rider.getByText("No drivers nearby yet")).toBeVisible({ timeout: 8000 });
-  await rider.clock.fastForward("03:05");
+  await expect(rider.getByTestId("search-until")).toContainText("We keep looking until");
+  await rider.clock.fastForward("10:00");
+  await rider.waitForTimeout(7000); // let the mock server sweep and the rider poll run at least once
+  await expect(rider.getByTestId("searching-title")).toBeVisible(); // still searching after 10 min
+  await rider.clock.fastForward("10:05");
   await expect(rider.getByText("No driver accepted your request.")).toBeVisible({ timeout: 10_000 });
   await rider.getByTestId("try-again").click();
   await expect(rider.getByTestId("searching-title")).toHaveText("Finding a driver…");

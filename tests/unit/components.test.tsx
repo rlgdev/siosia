@@ -35,6 +35,9 @@ function setup(lang: Lang, ui: ReactNode, backend?: Partial<Backend>) {
   );
 }
 
+/** A fixed request deadline (server clock), 10 min ahead. */
+const EXP = Date.now() + 600_000;
+
 const ride = (over: Partial<RideView> = {}): RideView => ({
   id: "r1",
   status: "requested",
@@ -61,6 +64,7 @@ const ride = (over: Partial<RideView> = {}): RideView => ({
   notifiedCount: 3,
   redispatchCount: 0,
   round: 1,
+  expiresAt: EXP,
   rider: { nickname: "Ola", rating: { mean: null, count: 0 } },
   driver: null,
   myRating: null,
@@ -96,14 +100,17 @@ describe("R2 Searching", () => {
   it("shows notified drivers and cancel, then Try again when expired", () => {
     const { rerender } = setup(
       "en",
-      <Searching ride={ride()} expired={false} nearbyCount={2} busy={false} error={null} onCancel={() => {}} onTryAgain={() => {}} onBack={() => {}} />
+      <Searching ride={ride()} expiresAt={EXP} expired={false} nearbyCount={2} busy={false} error={null} onCancel={() => {}} onTryAgain={() => {}} onBack={() => {}} />
     );
     expect(screen.getByText(/Drivers notified: 3/)).toBeInTheDocument();
+    // The deadline is server time, shown as this device's local wall clock.
+    const expected = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(EXP);
+    expect(screen.getByTestId("search-until")).toHaveTextContent(`We keep looking until ${expected}.`);
     expect(screen.getByTestId("cancel-request")).toBeEnabled();
     rerender(
       <StoreContext.Provider value={new AppStore()}>
         <I18nProvider lang="pl">
-          <Searching ride={ride({ status: "expired" })} expired nearbyCount={0} busy={false} error={null} onCancel={() => {}} onTryAgain={() => {}} onBack={() => {}} />
+          <Searching ride={ride({ status: "expired" })} expiresAt={Date.now()} expired nearbyCount={0} busy={false} error={null} onCancel={() => {}} onTryAgain={() => {}} onBack={() => {}} />
         </I18nProvider>
       </StoreContext.Provider>
     );

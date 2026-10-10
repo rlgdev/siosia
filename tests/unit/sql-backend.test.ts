@@ -102,7 +102,7 @@ beforeAll(async () => {
 describe("SQL backend (PGlite)", () => {
   it("serves the public config without the invite hash", async () => {
     const cfg = await as<Json>(U.stranger, "select public.siosia_config()");
-    expect(cfg).toMatchObject({ tariff: { currency: "PLN" }, timers: { offerS: 20, expiryS: 180, noShowS: 300 }, dispatchRadiusKm: 8 });
+    expect(cfg).toMatchObject({ tariff: { currency: "PLN" }, timers: { offerS: 20, expiryS: 1200, noShowS: 300, retryS: 120 }, dispatchRadiusKm: 8 });
     expect(JSON.stringify(cfg)).not.toMatch(/hash|\$2[aby]\$/);
     expect(await errorOf(as(U.stranger, "select * from public.app_secrets"))).toMatch(/permission denied/);
   });
@@ -251,9 +251,11 @@ describe("SQL backend (PGlite)", () => {
     expect(cols.filter((c) => /lat|lng/.test(c)).sort()).toEqual(["dropoff_lat", "dropoff_lng", "pickup_lat", "pickup_lng"]);
   });
 
-  it("expires an unaccepted request after 3 minutes on read (§6 rule 7)", async () => {
+  it("keeps a request open for request_expiry_s (20 min), then expires it on read (§6 rule 7)", async () => {
     const ride = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, true]);
-    await admin("update public.rides set dispatch_started_at = now() - interval '181 seconds' where id = $1", [ride.id]);
+    await admin("update public.rides set dispatch_started_at = now() - interval '1190 seconds' where id = $1", [ride.id]);
+    expect((await call<Json>(U.rider2, "siosia_my_state")).ride).toMatchObject({ id: ride.id, status: "requested" });
+    await admin("update public.rides set dispatch_started_at = now() - interval '1201 seconds' where id = $1", [ride.id]);
     const st = await call<Json>(U.rider2, "siosia_my_state");
     expect(st.ride).toBeNull();
     const after = await call<Json>(U.rider2, "siosia_get_ride", [ride.id]);
@@ -287,6 +289,11 @@ describe("SQL backend (PGlite)", () => {
     await call(U.d3, "siosia_decide_offer", [(b.offer as Json).id, "decline"]);
     const c = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
     expect(c.offer).toBeNull();
+    // A card the driver let lapse comes back after offer_retry_s; a declined one never does.
+    await admin("update public.offers set status = 'timed_out', decided_at = now() - interval '121 seconds' where id = $1", [(b.offer as Json).id]);
+    const again = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    expect(again.offer).toMatchObject({ id: (b.offer as Json).id, status: "offered" });
+    await call(U.d3, "siosia_decide_offer", [(b.offer as Json).id, "decline"]);
     // A decline tapped while the card was withdrawn (phone offline) is final as well.
     await admin("update public.offers set status = 'withdrawn' where id = $1", [(b.offer as Json).id]);
     await call(U.d3, "siosia_decide_offer", [(b.offer as Json).id, "decline"]);
@@ -304,6 +311,33 @@ describe("SQL backend (PGlite)", () => {
     expect(ride.status).toBe("requested");
     expect((await call<Json>(U.d1, "siosia_my_state")).driverOnline).toBe(false);
     await call(U.d1, "siosia_cancel_ride", [ride.id, null]);
+  });
+
+  it("records a Decline that lands just after the countdown and returns the request deadline", async () => {
+    const ride = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    expect(Number(ride.expiresAt) - Number(ride.dispatchStartedAt)).toBe(1200 * 1000);
+    await call(U.d3, "siosia_set_online", [true]);
+    const s = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    const id = (s.offer as Json).id;
+    await admin("update public.offers set offered_at = now() - interval '21 seconds' where id = $1", [id]);
+    await call(U.d3, "siosia_decide_offer", [id, "decline"]); // the sweep times it out first
+    expect((await admin("select status from public.offers where id = $1", [id])).rows[0]).toEqual({ status: "declined" });
+    await admin("update public.offers set decided_at = now() - interval '200 seconds' where id = $1", [id]);
+    expect((await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng])).offer).toBeNull();
+    await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
+  });
+
+  it("upgrades a database from the 3-minute version to 20 minutes once, never overriding a later choice", async () => {
+    // Simulate the previous schema: no offer_retry_s column, the old default 180 in the row.
+    await admin("alter table public.app_config drop column offer_retry_s");
+    await admin("update public.app_config set request_expiry_s = 180 where id = 1");
+    await db.exec(MIGRATION);
+    expect(await as<Json>(U.rider, "select public.siosia_config()")).toMatchObject({ timers: { expiryS: 1200, retryS: 120 } });
+    // An operator's later choice survives another re-run of the file.
+    await admin("update public.app_config set request_expiry_s = 180 where id = 1");
+    await db.exec(MIGRATION);
+    expect(await as<Json>(U.rider, "select public.siosia_config()")).toMatchObject({ timers: { expiryS: 180 } });
+    await admin("update public.app_config set request_expiry_s = 1200 where id = 1");
   });
 
   it("anonymises a deleted profile", async () => {

@@ -204,9 +204,9 @@ export function RiderApp() {
   let sheet;
   if (receipt) sheet = <AfterRide key={receipt.id} ride={receipt} onDone={doneReceipt} />;
   else if (expired)
-    sheet = <Searching ride={expired} expired nearbyCount={nearby.length} busy={busy} error={error} onCancel={cancel} onTryAgain={() => void tryAgain()} onBack={() => setEnded(null)} />;
+    sheet = <Searching ride={expired} expiresAt={expired.expiresAt} expired nearbyCount={nearby.length} busy={busy} error={error} onCancel={cancel} onTryAgain={() => void tryAgain()} onBack={() => setEnded(null)} />;
   else if (ride?.status === "requested")
-    sheet = <Searching ride={ride} expired={false} nearbyCount={nearby.length} busy={busy} error={error} onCancel={() => void cancel()} onTryAgain={() => {}} onBack={() => {}} />;
+    sheet = <Searching ride={ride} expiresAt={ride.expiresAt} expired={false} nearbyCount={nearby.length} busy={busy} error={error} onCancel={() => void cancel()} onTryAgain={() => {}} onBack={() => {}} />;
   else if (ride) sheet = <RiderActive ride={ride} rt={rt} route={live} busy={busy} error={error} onCancel={() => void cancel()} />;
   else
     sheet = (

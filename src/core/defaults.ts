@@ -1,9 +1,13 @@
 import type { DeploymentConfig } from "./types";
 
-/** Spec defaults (FR-050, §5 timers, §6 dispatch radius, Q3 max trip, Q6 tariff). */
+/**
+ * Defaults (FR-050 tariff, §5 timers, §6 dispatch radius, Q3 max trip, Q6 tariff). The request
+ * expiry is 20 min instead of the spec's 3 min (operator decision, 2026-10-10); with requests open
+ * that long, a driver who missed a card gets it again after 2 min.
+ */
 export const DEFAULT_CONFIG: DeploymentConfig = {
   tariff: { base: 5, perKm: 2.5, perMin: 0.5, minimum: 10, currency: "PLN" },
-  timers: { offerS: 20, expiryS: 180, noShowS: 300 },
+  timers: { offerS: 20, expiryS: 1200, noShowS: 300, retryS: 120 },
   serviceArea: null,
   dispatchRadiusKm: 8,
   maxTripKm: 50,

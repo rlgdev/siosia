@@ -466,9 +466,10 @@ export class Engine {
         return "ok"; // early client timer; the server clock decides
       this.closeOffer(o, decision === "decline" ? "declined" : "timed_out");
       this.effects.notify.add(r?.riderId ?? uid);
-    } else if (o.status === "withdrawn") {
-      // Decided while the card was withdrawn (e.g. the phone was briefly offline): still final,
-      // so it is not offered again when the driver becomes eligible (§6 rule 4).
+    } else if (o.status === "withdrawn" || (o.status === "timed_out" && decision === "decline")) {
+      // Decided after the card left the screen server-side (phone briefly offline, or a Decline
+      // landing just after the countdown): a Decline is final; a timeout is like any lapsed card
+      // and comes back after retryS.
       o.status = decision === "decline" ? "declined" : "timed_out";
       o.decidedAt = this.now;
     }
@@ -602,9 +603,10 @@ export class Engine {
       .sort((a, b) => a.requestedAt - b.requestedAt);
     for (const r of open) {
       // A card withdrawn for driver-side reasons (went offline, went silent, won another ride) is
-      // offered again once the driver is eligible (§6 rule 4); a decision (declined, timed out) is final.
+      // offered again once the driver is eligible (§6 rule 4). A card the driver let lapse comes back
+      // after the retry window (requests stay open long); an explicit Decline is final.
       const existing = Object.values(this.db.offers).find((o) => o.rideId === r.id && o.driverId === uid && o.round === r.round);
-      if (existing && existing.status !== "withdrawn") continue;
+      if (existing && !this.reofferable(existing)) continue;
       const dist = haversineKm(pos, r.pickup);
       if (dist > this.cfg.dispatchRadiusKm) continue;
       const holding = Object.values(this.db.offers).some((o) => o.driverId === uid && o.status === "offered");
@@ -633,6 +635,12 @@ export class Engine {
       this.effects.notify.add(uid);
       this.effects.notify.add(r.riderId);
     }
+  }
+
+  private reofferable(o: OfferRow): boolean {
+    if (o.status === "withdrawn") return true;
+    const retryS = this.cfg.timers.retryS;
+    return o.status === "timed_out" && retryS > 0 && o.decidedAt !== null && this.now >= o.decidedAt + retryS * 1000;
   }
 
   /** Close an offer and, if the driver now holds no card, promote their oldest queued one. */
@@ -759,6 +767,7 @@ export class Engine {
       notifiedCount: r.notifiedCount,
       redispatchCount: r.redispatchCount,
       round: r.round,
+      expiresAt: r.dispatchStartedAt + this.cfg.timers.expiryS * 1000,
       rider: this.party(r.riderId),
       driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.db.vehicles[r.driverId] ?? null } : null,
       myRating: mine ? mine.stars : null

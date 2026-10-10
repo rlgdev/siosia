@@ -39,7 +39,7 @@ what to copy. Phone-side instructions for your riders and drivers are in
 2. Open [`supabase/migrations/0001_siosia.sql`](../supabase/migrations/0001_siosia.sql), copy
    **all** of it, paste, press **Run**.
 3. Expect *Success. No rows returned.* (A notice about pg_cron is fine.) It created the tables,
-   the access rules (RLS), the server functions (atomic accept, 3-minute expiry, re-dispatch …),
+   the access rules (RLS), the server functions (atomic accept, request expiry, re-dispatch …),
    the private-realtime policies and two scheduled jobs.
 
 The script is safe to run again later (e.g. after an update).
@@ -53,15 +53,25 @@ select public.siosia_set_invite_code('WAW-PILOT-26');      -- FR-007: stored onl
 update public.app_config set operator_contact = 'Ola · ola@example.com' where id = 1;
 ```
 
-Optional — change the tariff, timers or service area (defaults: PLN, 5.00 + 2.50/km + 0.50/min,
-minimum 10.00; offer 20 s, expiry 3 min, no-show 5 min; dispatch radius 8 km; no area limit):
+Optional — change the tariff, timers or service area. Defaults: PLN, 5.00 + 2.50/km + 0.50/min,
+minimum 10.00; a request stays open **20 min**; each offer card counts down 20 s; a driver who
+let a card lapse gets it again after 2 min; no-show after 5 min; dispatch radius 8 km; no area
+limit.
 
 ```sql
 update public.app_config set
+  request_expiry_s = 1200,   -- how long a ride request waits for a driver: 30 s … 2 h (1200 = 20 min)
+  offer_retry_s    = 120,    -- re-offer a missed card after this many seconds (0 = never; Decline is always final)
+  offer_timeout_s  = 20,     -- countdown on each driver's offer card: 5 … 120 s
+  no_show_wait_s   = 300,    -- wait at the pickup before "Rider no-show": 0 … 3600 s
   currency = 'PLN', fare_base = 5.00, fare_per_km = 2.50, fare_per_min = 0.50, fare_minimum = 10.00,
   service_lat = 52.2297, service_lng = 21.0122, service_radius_km = 25   -- one city
 where id = 1;
 ```
+
+Changes take effect at once, **including for requests already waiting** — lowering
+`request_expiry_s` can expire them right away. Riders see the new deadline on their next refresh;
+other settings show in the apps after their next launch.
 
 ## 4. Authentication settings (4 min)
 

@@ -40,7 +40,8 @@ open requests (§6 rule 4) and liveness is known:
 | > 60 s, accepted/arrived | the ride is re-dispatched without them (§12); an `in_progress` ride waits |
 
 A card withdrawn for a driver-side reason (went offline, went silent, won another ride) is offered
-again once the driver is eligible; a decline or a lapsed countdown is final for that dispatch round.
+again once the driver is eligible; a lapsed countdown comes back after `offer_retry_s`
+(0 = never); a decline is final for that dispatch round (a re-dispatched ride is a new round).
 `driver_status` holds only `online` and `last_seen` — no coordinates. Dispatch pings are never
 dropped on the client: a ping that arrives while a heartbeat is in flight triggers one more.
 
@@ -52,7 +53,7 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
 - **Lifecycle**: every transition checks the current status and the caller (§5 table).
 - **Fare** computed in SQL from the estimate (never shorter than the straight line), frozen on the
   row; re-dispatch keeps it.
-- **Expiry** "on read": every API call runs `siosia_sweep()` (offer timeouts, 3-minute expiry,
+- **Expiry** "on read": every API call runs `siosia_sweep()` (offer timeouts, request expiry,
   stale and lost drivers); `pg_cron` also runs it every 10 s when available.
 - **Clock skew**: countdowns use `serverNow` returned with every state (smoothed offset).
 - **Access**: clients cannot read or write any table directly (RLS is enabled as a second line);
@@ -78,6 +79,12 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
 | Geocoding | explicit Search / pin drop only, ≤ 1 req/s, cached per session |
 
 ## Deviations from the spec, on purpose
+
+- **Requests stay open 20 minutes** (spec: 3 min), set per deployment by
+  `app_config.request_expiry_s` (30 s – 2 h) — operator decision of 2026-10-10. Because requests
+  live that long, a card a driver *let lapse* is offered to them again after
+  `app_config.offer_retry_s` (default 120 s, 0 = never) while the request is open; an explicit
+  Decline stays final for the dispatch round. The rider's screen shows until when it keeps looking.
 
 - Rider position is sent from **acceptance** (not while still `requested`): nobody can receive it
   before a driver is assigned, so sending earlier would only spend budget and widen exposure.

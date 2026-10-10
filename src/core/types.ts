@@ -42,8 +42,13 @@ export interface Tariff {
 export interface Timers {
   /** Offer card countdown, seconds (default 20). */
   offerS: number;
-  /** Request expiry without acceptance, seconds (default 180). */
+  /** How long a request stays open without acceptance, seconds (default 1200 = 20 min). */
   expiryS: number;
+  /**
+   * A card a driver let lapse (no answer within offerS) is offered to them again after this many
+   * seconds while the request is still open (default 120; 0 = never). A Decline stays final.
+   */
+  retryS: number;
   /** Wait at pickup before No-show is allowed, seconds (default 300). */
   noShowS: number;
 }
@@ -128,6 +133,8 @@ export interface RideView {
   redispatchCount: number;
   /** Dispatch round; the live channel is per (ride, round) so a removed driver loses access. */
   round: number;
+  /** When the request expires if still unaccepted (server clock; follows the current config). */
+  expiresAt: number;
   rider: PublicParty;
   driver: PublicDriver | null;
   /** Stars the viewer gave in this ride, if any. */

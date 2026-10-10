@@ -150,9 +150,10 @@ describe("cancellation, re-dispatch, expiry (§5, §12)", () => {
     expect(at((e) => e.getProfile("d1"))?.driverCancels).toBe(1);
   });
 
-  it("expires a request after 3 minutes even if nobody looks (server-side)", () => {
+  it("keeps a request open for the configured expiry (20 min by default), then expires it server-side", () => {
+    expect(CFG.timers.expiryS).toBe(1200);
     const ride = request();
-    now += 179_000;
+    now += CFG.timers.expiryS * 1000 - 1000;
     expect(at((e) => e.myState("rider")).ride?.status).toBe("requested");
     now += 2_000;
     at((e) => e.sweep());
@@ -212,6 +213,42 @@ describe("liveness and re-offers (§6 rule 4, §12, US4-2)", () => {
     expect(at((e) => e.getRide("rider", ride.id)).notifiedCount).toBe(1);
     at((e) => e.decideOffer("d1", b.id, "decline"));
     expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
+  });
+
+  it("offers a lapsed card again after the retry window, but never a declined one", () => {
+    const ride = request();
+    const a = online("d1", near(1)).offer!;
+    const b = online("d2", near(1)).offer!;
+    at((e) => e.decideOffer("d2", b.id, "decline"));
+    now += CFG.timers.offerS * 1000;
+    at((e) => e.heartbeat("d1", near(1))); // d1 let the card lapse → timed out
+    expect(db.offers[a.id].status).toBe("timed_out");
+    now += (CFG.timers.retryS - 5) * 1000;
+    expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull(); // not yet
+    now += 6_000;
+    expect(at((e) => e.heartbeat("d1", near(1))).offer).toMatchObject({ id: a.id, rideId: ride.id, offeredAt: now });
+    at((e) => e.setOnline("d2", true)); // (silent meanwhile) — eligible again, yet:
+    expect(at((e) => e.heartbeat("d2", near(1))).offer).toBeNull(); // the decline stays final
+    expect(at((e) => e.getRide("rider", ride.id)).notifiedCount).toBe(2);
+    // retryS = 0 disables re-offers: let the card lapse again, then compare both settings later.
+    const t1 = now + 125_000;
+    new Engine(db, CFG, t1).setOnline("d1", true);
+    expect(db.offers[a.id].status).toBe("timed_out");
+    const copy = structuredClone(db);
+    const t2 = t1 + 200_000;
+    expect(new Engine(db, { ...CFG, timers: { ...CFG.timers, retryS: 0 } }, t2).heartbeat("d1", near(1)).offer).toBeNull();
+    expect(new Engine(copy, CFG, t2).heartbeat("d1", near(1)).offer?.id).toBe(a.id);
+  });
+
+  it("records a Decline that lands just after the countdown, so the card never comes back", () => {
+    const ride = request();
+    const a = online("d1", near(1)).offer!;
+    now += CFG.timers.offerS * 1000 + 200; // the server timed the card out a moment ago…
+    at((e) => e.decideOffer("d1", a.id, "decline")); // …and then the Decline arrives
+    expect(db.offers[a.id].status).toBe("declined");
+    now += (CFG.timers.retryS + 1) * 1000;
+    expect(at((e) => e.heartbeat("d1", near(1))).offer).toBeNull();
+    expect(at((e) => e.getRide("rider", ride.id)).expiresAt).toBe(ride.dispatchStartedAt + CFG.timers.expiryS * 1000);
   });
 
   it("keeps a decision made on a withdrawn card final", () => {
