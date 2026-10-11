@@ -10,6 +10,7 @@
 //                                 means a new topic, so a removed driver hears nothing more.
 // Live positions only ever travel over realtime and are never stored (FR-043).
 
+import type { PushKind, PushParams } from "../../supabase/functions/_shared/push-text";
 import type {
   BookingInput,
   DeploymentConfig,
@@ -30,6 +31,13 @@ import type {
 } from "../core/types";
 
 export type BackendKind = "mock" | "supabase";
+
+/** A notification event for this user (demo backend; Supabase sends real Web Push instead). */
+export interface PushMessage {
+  kind: PushKind;
+  rideId: string;
+  params: PushParams;
+}
 export type Unsub = () => void;
 
 export interface RideChannelHandlers {
@@ -117,6 +125,11 @@ export interface Backend {
   rate(rideId: string, stars: number, comment: string): Promise<void>;
 
   onMyChanges(cb: () => void): Unsub;
+  /** Web Push subscription of this device (notifications). */
+  savePush(sub: { endpoint: string; p256dh: string; auth: string }): Promise<void>;
+  deletePush(endpoint: string): Promise<void>;
+  /** Demo backend only: notification events for this user, shown by the page. */
+  onPush?(cb: (m: PushMessage) => void): Unsub;
   onDriverPing(cb: () => void): Unsub;
   watchDrivers(cb: (drivers: DriverPresence[]) => void): Unsub;
   driverPresence(): DriverPresenceHandle;

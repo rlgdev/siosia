@@ -26,6 +26,8 @@ export interface AppConfig {
   map: MapEndpoints;
   /** Deployment config for the mock backend (Supabase reads its own from the database). */
   deployment: DeploymentConfig;
+  /** Web Push public key (VAPID). Empty = notifications not set up. Public by design. */
+  vapidPublicKey: string;
 }
 
 type RuntimeFile = Partial<Omit<AppConfig, "map" | "deployment">> & {
@@ -65,6 +67,7 @@ export function buildConfig(file: RuntimeFile | null, search: string): AppConfig
     mockInviteCode: file?.mockInviteCode ?? null,
     fallbackCenter: file?.fallbackCenter ?? { lat: 52.2297, lng: 21.0122 },
     map: { ...DEFAULT_MAP, ...(file?.map ?? {}) },
+    vapidPublicKey: str(file?.vapidPublicKey) || str(env.VITE_VAPID_PUBLIC_KEY),
     deployment: {
       ...DEFAULT_CONFIG,
       ...dep,

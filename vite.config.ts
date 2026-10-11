@@ -41,6 +41,8 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         cleanupOutdatedCaches: true,
+        // Web Push: show notifications and open the app on tap (public/push-sw.js).
+        importScripts: ["push-sw.js"],
         runtimeCaching: []
       }
     })

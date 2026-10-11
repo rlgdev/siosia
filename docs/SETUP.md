@@ -116,6 +116,53 @@ link itself like a key.
   leaves a master profile with ☰ → *Delete my profile* (it then needs the invite code or a link
   again).
 
+### Optional: rides booked in advance — timings
+
+Riders can book a ride for later; drivers take bookings ahead of time. Defaults (minutes / days):
+
+```sql
+update public.app_config set
+  booking_min_lead_min = 30,  -- earliest booking: 30 min from now
+  booking_max_days     = 30,  -- latest booking: 30 days ahead
+  booking_lead_min     = 30,  -- a taken booking starts (driver gets "Time to go") 30 min before
+  booking_open_min     = 20   -- an untaken booking goes to drivers nearby 20 min before
+where id = 1;
+```
+
+A booking whose rider or driver is still busy waits and gives up 15 minutes after its time.
+
+### Optional: notifications (Web Push) — 15 min
+
+Notifications tell riders when a driver takes their booking, is coming or has arrived, and tell
+drivers about new bookings and when it is time to go. On iPhone they work only in the **Home
+Screen app** (iOS 16.4 or newer) after the user taps *Turn on notifications* (☰ → *Siosia as an
+app*). Without this section Siosia works as before, just without notifications.
+
+1. **Keys** (once, on your computer): `npx web-push generate-vapid-keys`. Keep the **private**
+   key secret; the **public** key is fine to publish.
+2. **Website:** GitHub → repo → *Settings → Secrets and variables → Actions → Variables* →
+   add `VAPID_PUBLIC_KEY` = the public key. The next deploy includes it.
+3. **Sender** ([Supabase CLI](https://supabase.com/docs/guides/cli)), in this repository:
+   ```bash
+   supabase login
+   supabase link --project-ref <your project ref>
+   supabase secrets set VAPID_PUBLIC_KEY=<public> VAPID_PRIVATE_KEY=<private> VAPID_SUBJECT=mailto:<your email> PUSH_SECRET=<long random text>
+   supabase functions deploy push-dispatch --no-verify-jwt
+   ```
+4. **Schedule** — SQL editor (replace the two placeholders; `pg_net` is under *Database →
+   Extensions*):
+   ```sql
+   create extension if not exists pg_net;
+   select cron.schedule('siosia-push', '* * * * *', $$
+     select net.http_post(
+       url := 'https://<project ref>.supabase.co/functions/v1/push-dispatch',
+       headers := jsonb_build_object('x-push-secret', '<PUSH_SECRET>'))
+   $$);
+   ```
+   This sends queued notifications every minute. For instant ones add a *Database Webhook*
+   (Database → Webhooks) on **insert** into `push_outbox` calling the same URL with the header
+   `x-push-secret`.
+
 ## 4. Authentication settings (4 min)
 
 1. **Authentication → Sign In / Providers** (sometimes *Providers*): turn **Allow anonymous

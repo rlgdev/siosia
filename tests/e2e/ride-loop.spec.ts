@@ -323,6 +323,7 @@ test("a rider books a ride for later; a driver takes it in advance; the rider se
   await rider.getByTestId("my-bookings-link").click();
   await expect(rider.getByTestId("booking")).toContainText("Waiting for a driver");
 
+  await expect(driver.getByTestId("push-toast")).toContainText("New booking"); // the demo shows notifications in the app
   await expect(driver.getByTestId("bookings-row")).toContainText("1 to take", { timeout: 8000 });
   await driver.getByTestId("open-bookings").click();
   const offer = driver.getByTestId("open-booking");
@@ -330,12 +331,23 @@ test("a rider books a ride for later; a driver takes it in advance; the rider se
   await offer.getByTestId("take-booking").click();
   await expect(driver.getByTestId("my-booking")).toContainText("Ola");
 
+  await expect(rider.getByTestId("push-toast")).toContainText("Adam will drive you");
   await expect(rider.getByTestId("booking-driver")).toContainText("Driver: Adam", { timeout: 35_000 });
   await expect(rider.getByTestId("booking-driver")).toContainText("WX 4242");
   await rider.getByTestId("cancel-booking").click();
   await rider.getByRole("button", { name: "Yes" }).click();
   await expect(rider.getByText("No upcoming bookings.")).toBeVisible();
   await expect(driver.getByText("No upcoming bookings.")).toBeVisible({ timeout: 35_000 });
+});
+
+test("the menu offers notifications next to the app install steps", async ({ context }) => {
+  await isolate(context);
+  const page = await context.newPage();
+  await onboard(page, "Ola");
+  await page.getByRole("button", { name: "Profile" }).click();
+  // Headless Chromium reports notifications as blocked; the on/off flow is unit-tested (push.test.ts).
+  await expect(page.getByTestId("push-section")).toContainText("Notifications");
+  await expect(page.getByTestId("push-state")).not.toBeEmpty();
 });
 
 test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {

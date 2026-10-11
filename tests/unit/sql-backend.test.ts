@@ -531,6 +531,49 @@ describe("SQL backend (PGlite)", () => {
     expect((await call<Json>(B2, "siosia_get_ride", [free.id])).status).toBe("expired");
   });
 
+  it("queues notifications only for people who turned them on, in their language", async () => {
+    const B1 = "00000000-0000-4000-8000-000000000041";
+    const B2 = "00000000-0000-4000-8000-000000000042";
+    const BD = "00000000-0000-4000-8000-000000000043";
+    const sub = (n: string) => [`https://push.example/${n}`, "p".repeat(40), "a".repeat(16)];
+    expect(await errorOf(call(B1, "siosia_save_push", ["http://insecure/x", "p".repeat(40), "a".repeat(16)]))).toBe("bad_input");
+    await call(B1, "siosia_save_push", sub("b1"));
+    await call(BD, "siosia_save_push", sub("bd"));
+    await call(B1, "siosia_save_profile", ["Bella", "pl"]);
+    expect(await errorOf(as(B1, "select * from public.push_outbox"))).toMatch(/permission denied/);
+    expect(await errorOf(as(B1, "select * from public.push_subscriptions"))).toMatch(/permission denied/);
+    await admin("delete from public.push_outbox");
+    const outbox = async () =>
+      (await admin("select user_id, kind, lang, tz, params from public.push_outbox order by id")).rows.map((r) => ({
+        user: r.user_id === B1 ? "B1" : r.user_id === BD ? "BD" : String(r.user_id),
+        kind: r.kind,
+        lang: r.lang,
+        tz: r.tz,
+        params: r.params
+      }));
+    const at = (min: number) => new Date(Date.now() + min * 60_000).toISOString();
+    const b = await call<Json>(B1, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(120)]);
+    expect(await outbox()).toEqual([{ user: "BD", kind: "booking_new", lang: "en", tz: "Europe/Warsaw", params: expect.objectContaining({ pickup: "Centrum" }) }]);
+    await admin("delete from public.push_outbox");
+    await call(BD, "siosia_claim_booking", [b.id]);
+    expect(await outbox()).toEqual([{ user: "B1", kind: "booking_taken", lang: "pl", tz: "Europe/Warsaw", params: expect.objectContaining({ driver: "Bogdan" }) }]);
+    await admin("delete from public.push_outbox");
+    await admin("update public.rides set scheduled_for = now() + interval '29 minutes' where id = $1", [b.id]);
+    await call(B1, "siosia_my_state");
+    expect((await outbox()).map((r) => `${r.kind}>${r.user}`)).toEqual(["time_to_go>BD", "driver_coming>B1"]);
+    await admin("delete from public.push_outbox");
+    // Someone without a subscription gets nothing queued.
+    const b2 = await call<Json>(B2, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(300)]);
+    await admin("delete from public.push_outbox");
+    await call(U.d3, "siosia_claim_booking", [b2.id]);
+    expect(await outbox()).toEqual([]);
+    // Turning them off removes this device.
+    await call(BD, "siosia_delete_push", ["https://push.example/bd"]);
+    expect((await admin("select count(*)::int as n from public.push_subscriptions where user_id = $1", [BD])).rows[0]).toEqual({ n: 0 });
+    await call(B1, "siosia_cancel_ride", [b.id, null]);
+    await call(B2, "siosia_cancel_ride", [b2.id, null]);
+  });
+
   it("moves a profile into the app with a one-time code (iOS Home Screen apps have their own storage)", async () => {
     const APP = "00000000-0000-4000-8000-000000000031";
     const APP2 = "00000000-0000-4000-8000-000000000032";

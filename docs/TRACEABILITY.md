@@ -27,6 +27,9 @@ Every functional requirement of the spec (§7) mapped to an automated test or a 
 | 021 | 3 s / 25 m and 30 s / 200 m cadences | core "position throttling" |
 | 022 | Offer card, chime, 20 s countdown | components "D2" (countdown, timeout once); e2e accept |
 | 007+ | Master-profile link: shared identity (nickname, icon), no invite, one role — rider (fixed fare, default places) or driver (preset car) | engine + sql "master profile", "one role"; e2e "Toria link", "Roman link", "wrong master-profile link", "asks before replacing" |
+| app+ | iOS Home Screen app: one-time move code (profile, history, vehicle, master link) | engine + sql "moving a profile"; e2e "one-time code moves a profile" |
+| book+ | Book for later; drivers take ahead; start / open / give up timings; cancel; give back | engine "rides booked in advance"; sql "books rides in advance", "starts a taken booking"; e2e "books a ride for later" |
+| push+ | Notifications: who hears what, queue only for subscribers, EN/PL texts, sender retries/drops | engine "notifications"; sql "queues notifications"; push.test.ts; e2e booking banners |
 | 022+ | Going online / *Show requests* re-offer every pending request nearby (incl. declined), with a count | engine + sql "review declined and missed requests again"; e2e "goes online later … Show requests" |
 | 023 | Route to pickup then dropoff, rider pin | e2e; field steps 4–5b |
 | 024 | Arrived → Start → Complete, Navigate, Cancel reasons | e2e; engine/sql re-dispatch on cancel |

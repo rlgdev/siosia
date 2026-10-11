@@ -162,6 +162,31 @@ create table if not exists public.account_transfers (
   created_at timestamptz not null default now()
 );
 
+-- Notifications (Web Push). A device that turned them on keeps its subscription here; events are
+-- queued in push_outbox and sent by the Edge Function push-dispatch (VAPID keys live there).
+create table if not exists public.push_subscriptions (
+  endpoint   text primary key check (char_length(endpoint) between 10 and 1000),
+  user_id    uuid not null references auth.users (id) on delete cascade,
+  p256dh     text not null check (char_length(p256dh) between 10 and 200),
+  auth       text not null check (char_length(auth) between 8 and 100),
+  created_at timestamptz not null default now()
+);
+create index if not exists push_subscriptions_user_idx on public.push_subscriptions (user_id);
+
+create table if not exists public.push_outbox (
+  id         bigserial primary key,
+  user_id    uuid not null,
+  kind       text not null,
+  ride_id    uuid,
+  params     jsonb not null default '{}',
+  lang       text not null default 'en',
+  tz         text not null default 'Europe/Warsaw',
+  created_at timestamptz not null default now(),
+  sent_at    timestamptz,
+  attempts   int not null default 0
+);
+create index if not exists push_outbox_pending_idx on public.push_outbox (id) where sent_at is null;
+
 create table if not exists public.invite_failures (
   user_id uuid not null,
   at      timestamptz not null default now()
@@ -260,6 +285,8 @@ alter table public.offers          enable row level security;
 alter table public.ratings         enable row level security;
 alter table public.master_profiles enable row level security;
 alter table public.account_transfers enable row level security;
+alter table public.push_subscriptions enable row level security;
+alter table public.push_outbox enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -267,8 +294,15 @@ grant usage on schema public to anon, authenticated;
 
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
               public.memberships, public.invite_failures, public.rides, public.offers, public.ratings,
-              public.master_profiles, public.account_transfers
+              public.master_profiles, public.account_transfers, public.push_subscriptions, public.push_outbox
   from anon, authenticated;
+-- The sender (Edge Function, service role) reads the queue and the subscriptions.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant select, update, delete on public.push_outbox, public.push_subscriptions to service_role;
+  end if;
+end $$;
 -- No direct table access at all: clients use the functions below, which return only what each
 -- party may see (raw tables would expose other users' ids, e.g. rides.driver_id / excluded).
 
@@ -451,6 +485,23 @@ begin
   if p_user is not null then perform siosia_send('user:' || p_user::text, 'changed'); end if;
 end $$;
 
+-- Queue a notification for a user who turned them on (in their language and the deployment's
+-- time zone). Sent by the Edge Function push-dispatch.
+create or replace function public.siosia_push(p_user uuid, p_kind text, p_ride uuid, p_params jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user) then return; end if;
+  insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
+  values (p_user, p_kind, p_ride, coalesce(p_params, '{}'::jsonb),
+          coalesce((select language from profiles where user_id = p_user), 'en'),
+          coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
+end $$;
+
+create or replace function public.siosia_nick(p_user uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select nickname from profiles where user_id = p_user), '');
+$$;
+
 create or replace function public.siosia_rides_trigger()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
@@ -589,15 +640,21 @@ begin
         for o in select id from offers where driver_id = r.driver_id and status in ('offered','queued') order by status desc loop
           perform siosia_close_offer(o.id, 'withdrawn');
         end loop;
+        perform siosia_push(r.driver_id, 'time_to_go', r.id,
+                            jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'rider', siosia_nick(r.rider_id)));
+        perform siosia_push(r.rider_id, 'driver_coming', r.id,
+                            jsonb_build_object('at', r.scheduled_for, 'driver', siosia_nick(r.driver_id)));
       elsif r.driver_id is null and not v_rider_busy then
         update rides set status = 'requested', dispatch_started_at = now(), notified_count = 0
          where id = r.id and status = 'scheduled';
+        perform siosia_push(r.rider_id, 'booking_open', r.id, jsonb_build_object('at', r.scheduled_for));
       elsif now() > r.scheduled_for + interval '15 minutes' then
         if v_rider_busy then
           perform siosia_end_ride(r.id, 'expired', 'system', null, array['scheduled']);
         else
           update rides set status = 'requested', driver_id = null, dispatch_started_at = now(), notified_count = 0
            where id = r.id and status = 'scheduled';
+          perform siosia_push(r.rider_id, 'booking_open', r.id, jsonb_build_object('at', r.scheduled_for));
         end if;
       end if;
     exception when unique_violation then
@@ -958,6 +1015,7 @@ begin
     set via_master = case when memberships.via_master is null then null else excluded.via_master end;
   delete from memberships where user_id = v_old;
   delete from account_transfers where user_id = v_old;
+  delete from push_subscriptions where user_id = v_old;
   perform siosia_notify(v_old);
   perform siosia_notify(v_uid);
   return siosia_ok(siosia_profile_json(v_uid));
@@ -1087,6 +1145,7 @@ begin
   perform siosia_go_offline(v_uid);
   delete from vehicles where user_id = v_uid;
   delete from memberships where user_id = v_uid;
+  delete from push_subscriptions where user_id = v_uid;
   update profiles set nickname = 'Deleted user', deleted = true, master_id = null where user_id = v_uid;
   return siosia_ok('true'::jsonb);
 end $$;
@@ -1250,6 +1309,15 @@ begin
           coalesce(v_fixed, siosia_fare(v_km::numeric, v_min::numeric)), c.currency,
           v_fixed is null and coalesce(p_fare_is_estimate, false))
   returning * into r;
+  -- Everyone who can take it and turned notifications on hears about it.
+  insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
+  select distinct s.user_id, 'booking_new', r.id,
+         jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label),
+         p.language, c.timezone
+    from push_subscriptions s
+    join vehicles v on v.user_id = s.user_id
+    join profiles p on p.user_id = s.user_id and not p.deleted
+   where s.user_id <> v_uid and siosia_master_role(s.user_id) is distinct from 'rider';
   return siosia_ok(siosia_ride_json(r, v_uid));
 end $$;
 
@@ -1303,6 +1371,8 @@ begin
   end if;
   update rides set driver_id = v_uid where id = p_ride and status = 'scheduled' and driver_id is null;
   if not found then return siosia_err('taken'); end if;
+  perform siosia_push(r.rider_id, 'booking_taken', r.id,
+                      jsonb_build_object('at', r.scheduled_for, 'driver', siosia_nick(v_uid)));
   return siosia_ok('"won"'::jsonb);
 end $$;
 
@@ -1320,6 +1390,35 @@ begin
     update profiles set driver_cancels = driver_cancels + 1 where user_id = v_uid;
   end if;
   update rides set driver_id = null where id = p_ride;
+  perform siosia_push(r.rider_id, 'booking_released', r.id, jsonb_build_object('at', r.scheduled_for));
+  return siosia_ok('true'::jsonb);
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- Notifications: this device's Web Push subscription
+-- ---------------------------------------------------------------------------------------------
+
+create or replace function public.siosia_save_push(p_endpoint text, p_p256dh text, p_auth text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true);
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if coalesce(p_endpoint, '') !~ '^https://' or char_length(p_endpoint) > 1000
+     or char_length(coalesce(p_p256dh, '')) not between 10 and 200 or char_length(coalesce(p_auth, '')) not between 8 and 100 then
+    return siosia_err('bad_input');
+  end if;
+  insert into push_subscriptions (endpoint, user_id, p256dh, auth) values (p_endpoint, auth.uid(), p_p256dh, p_auth)
+  on conflict (endpoint) do update set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth,
+                                       created_at = now();
+  return siosia_ok('true'::jsonb);
+end $$;
+
+create or replace function public.siosia_delete_push(p_endpoint text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(false);
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  delete from push_subscriptions where endpoint = p_endpoint and user_id = auth.uid();
   return siosia_ok('true'::jsonb);
 end $$;
 
@@ -1337,6 +1436,8 @@ begin
       update profiles set rider_cancels = rider_cancels + 1 where user_id = v_uid;
     end if;
     perform siosia_end_ride(r.id, 'cancelled', 'rider', null, array['scheduled']);
+    perform siosia_push(r.driver_id, 'booking_cancelled', r.id,
+                        jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label));
     return siosia_ok('true'::jsonb);
   elsif r.driver_id = v_uid and r.status = 'scheduled' then
     return siosia_release_booking(r.id);
@@ -1467,6 +1568,7 @@ begin
     update offers set status = 'won', decided_at = now() where id = o.id;
     perform siosia_withdraw_ride_offers(o.ride_id);
     perform siosia_drop_cards(v_uid);
+    perform siosia_push(r.rider_id, 'driver_coming', r.id, jsonb_build_object('driver', siosia_nick(v_uid)));
     return siosia_ok('"won"'::jsonb);
   elsif p_decision in ('decline','timeout') then
     if o.status in ('offered','queued') then
@@ -1510,6 +1612,7 @@ begin
   if r.driver_id is distinct from v_uid then return siosia_err('forbidden'); end if;
   if r.status = 'accepted' and p_to = 'arrived' then
     update rides set status = 'arrived', arrived_at = now() where id = p_ride returning * into r;
+    perform siosia_push(r.rider_id, 'driver_arrived', r.id, jsonb_build_object('driver', siosia_nick(v_uid)));
   elsif r.status = 'arrived' and p_to = 'in_progress' then
     update rides set status = 'in_progress', started_at = now() where id = p_ride returning * into r;
   elsif r.status = 'in_progress' and p_to = 'completed' then
@@ -1584,6 +1687,8 @@ returns void language plpgsql security definer set search_path = public as $$
 begin
   delete from rides where coalesce(ended_at, requested_at) < now() - interval '12 months';
   delete from invite_failures where at < now() - interval '1 day';
+  delete from push_outbox where created_at < now() - interval '2 days';
+  delete from account_transfers where expires_at < now();
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
@@ -1621,6 +1726,8 @@ grant execute on function public.siosia_bookings() to authenticated;
 grant execute on function public.siosia_open_bookings(float8, float8) to authenticated;
 grant execute on function public.siosia_claim_booking(uuid) to authenticated;
 grant execute on function public.siosia_release_booking(uuid) to authenticated;
+grant execute on function public.siosia_save_push(text, text, text) to authenticated;
+grant execute on function public.siosia_delete_push(text) to authenticated;
 grant execute on function public.siosia_set_online(boolean) to authenticated;
 grant execute on function public.siosia_heartbeat(float8, float8) to authenticated;
 grant execute on function public.siosia_refresh_offers(float8, float8) to authenticated;

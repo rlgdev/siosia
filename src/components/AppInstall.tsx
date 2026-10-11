@@ -2,7 +2,8 @@
 // session — so a one-time code moves the profile (with its history, vehicle and master link) into
 // the app. The same code moves a profile to another phone.
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { disablePush, enablePush, pushState, type PushState } from "../services/push";
 import { useI18n } from "../i18n";
 import { isIOS, isStandalone, readPref, writePref } from "../services/device";
 import { useApp, useStore } from "../state/store";
@@ -64,7 +65,91 @@ export function AppSection() {
           {error}
         </p>
       )}
+      <Notifications />
     </section>
+  );
+}
+
+function usePush(): [PushState | null, () => Promise<void>, () => Promise<void>] {
+  const app = useApp();
+  const store = useStore();
+  const [state, setState] = useState<PushState | null>(null);
+  const key = app.cfg?.vapidPublicKey ?? "";
+  useEffect(() => {
+    void pushState(store.api, key).then(setState, () => setState("unsupported"));
+  }, [store, key]);
+  return [
+    state,
+    async () => setState(await enablePush(store.api, key)),
+    async () => setState(await disablePush(store.api))
+  ];
+}
+
+const PUSH_TEXT: Record<PushState, "push.needsApp" | "push.unsupported" | "push.notConfigured" | "push.blocked" | "push.off" | "push.on"> = {
+  "needs-app": "push.needsApp",
+  unsupported: "push.unsupported",
+  "not-configured": "push.notConfigured",
+  blocked: "push.blocked",
+  off: "push.off",
+  on: "push.on"
+};
+
+/** Notifications for this phone: what they are for, and on / off. */
+function Notifications() {
+  const { t } = useI18n();
+  const [state, enable, disable] = usePush();
+  const [busy, run, error] = useBusy();
+  if (!state) return null;
+  return (
+    <div className="stack" data-testid="push-section">
+      <h4>{t("push.title")}</h4>
+      <p className="muted small" data-testid="push-state">
+        {t(PUSH_TEXT[state])}
+      </p>
+      {state === "off" && (
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void run(enable)} data-testid="push-enable">
+          {t("push.enable")}
+        </button>
+      )}
+      {state === "on" && (
+        <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void run(disable)} data-testid="push-disable">
+          {t("push.disable")}
+        </button>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Ride / Drive sheets: one tap to turn notifications on where they can work (not dismissed). */
+export function PushPrompt() {
+  const { t } = useI18n();
+  const [state, enable] = usePush();
+  const [busy, run] = useBusy();
+  const [hidden, setHidden] = useState(() => readPref<boolean>("pushPrompt.dismissed", false));
+  if (hidden || state !== "off") return null;
+  return (
+    <Notice kind="info">
+      <span>🔔 {t("push.prompt")}</span>{" "}
+      <button type="button" className="btn btn-link" disabled={busy} onClick={() => void run(enable)} data-testid="push-prompt-enable">
+        {t("push.enable")}
+      </button>
+      <button
+        type="button"
+        className="btn btn-link"
+        aria-label={t("common.close")}
+        onClick={() => {
+          writePref("pushPrompt.dismissed", true);
+          setHidden(true);
+        }}
+      >
+        ×
+      </button>
+    </Notice>
   );
 }
 

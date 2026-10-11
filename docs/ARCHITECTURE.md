@@ -105,6 +105,21 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
   its preset `vehicle`. The other party sees the icon next to the nickname and as the map marker.
   The fragment never reaches the web server and is removed from the address bar on arrival.
 
+- **Home Screen app on iOS** (operator request of 2026-10-11): iOS gives a Home Screen web app its
+  own storage, so the browser's anonymous session is not there. A one-time **move code**
+  (`account_transfers`, SHA-256, 30 min, rate-limited like invite codes) moves the profile, history,
+  ratings, vehicle and master link to the app's account (`siosia_redeem_transfer`). Web apps get no
+  background execution on iOS; drivers keep the app open while on duty.
+- **Rides booked in advance** (operator request of 2026-10-11): status `scheduled` with
+  `scheduled_for`; drivers take bookings (`driver_id` while still scheduled, no overlaps); the sweep
+  starts a taken booking (`accepted`, driver on duty) `booking_lead_min` before, opens an untaken one
+  to normal dispatch `booking_open_min` before, and gives up 15 min after the booked time.
+- **Notifications** (Web Push): `push_subscriptions` per device, events queued in `push_outbox` by
+  the server functions and the sweep (only for users with a subscription), sent by the Edge Function
+  `push-dispatch` (VAPID secrets there) every minute or on insert. Texts EN/PL live in
+  `supabase/functions/_shared/push-text.ts`, shared with the demo backend, which shows its events in
+  the page.
+
 - Rider position is sent from **acceptance** (not while still `requested`): nobody can receive it
   before a driver is assigned, so sending earlier would only spend budget and widen exposure.
 - An extra offer status `queued` implements "one card at a time, others queue" (§6 rule 5).

@@ -191,6 +191,12 @@ export class SupabaseBackend implements Backend {
   async releaseBooking(rideId: string) {
     await this.rpc("siosia_release_booking", { p_ride: rideId });
   }
+  async savePush(sub: { endpoint: string; p256dh: string; auth: string }) {
+    await this.rpc("siosia_save_push", { p_endpoint: sub.endpoint, p_p256dh: sub.p256dh, p_auth: sub.auth });
+  }
+  async deletePush(endpoint: string) {
+    await this.rpc("siosia_delete_push", { p_endpoint: endpoint });
+  }
   createTransfer() {
     return this.rpc<{ code: string; expiresAt: number }>("siosia_create_transfer");
   }

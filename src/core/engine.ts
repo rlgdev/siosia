@@ -10,6 +10,7 @@
 // position as a parameter; the server creates an offer when that driver is eligible (§6). Driver
 // positions are therefore never stored (FR-043) — they exist only as call arguments.
 
+import type { PushKind, PushParams } from "../../supabase/functions/_shared/push-text";
 import { DEFAULT_CONFIG, SERVER } from "./defaults";
 import { computeFare } from "./fare";
 import { haversineKm, isValidLatLng } from "./geo";
@@ -186,11 +187,21 @@ export interface EngineConfig extends DeploymentConfig {
   masters?: MasterProfile[];
 }
 
+/** A notification for one user (Supabase: push_outbox → Web Push; demo: shown by the browser). */
+export interface PushEvent {
+  userId: string;
+  kind: PushKind;
+  rideId: string;
+  params: PushParams;
+}
+
 export interface Effects {
   /** Users whose state changed (→ realtime "changed" on topic user:<id>). */
   notify: Set<string>;
   /** A request opened or re-opened (→ data-less "ping" on topic "drivers"). */
   pingDrivers: boolean;
+  /** Notifications to send (only users who turned them on get them). */
+  push: PushEvent[];
 }
 
 export const normalizeInvite = (code: string) => code.trim().toUpperCase().replace(/\s+/g, "");
@@ -198,7 +209,7 @@ export const normalizeInvite = (code: string) => code.trim().toUpperCase().repla
 const NICK_RE = /^.{2,20}$/u;
 
 export class Engine {
-  readonly effects: Effects = { notify: new Set(), pingDrivers: false };
+  readonly effects: Effects = { notify: new Set(), pingDrivers: false, push: [] };
   private readonly cfg: EngineConfig;
 
   constructor(
@@ -609,6 +620,10 @@ export class Engine {
     ride.dispatchStartedAt = t;
     this.db.rides[ride.id] = ride;
     this.effects.notify.add(uid);
+    // Everyone who can take it hears about it (Supabase: only those with notifications on).
+    for (const d of Object.keys(this.db.vehicles))
+      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider")
+        this.pushTo(d, "booking_new", ride, { pickup: ride.pickup.label, dropoff: ride.dropoff.label });
     return this.rideView(ride, uid);
   }
 
@@ -655,6 +670,7 @@ export class Engine {
     if (clash) throw new ServerError("overlap");
     r.driverId = uid;
     this.notifyRide(r);
+    this.pushTo(r.riderId, "booking_taken", r, { driver: this.db.users[uid].nickname });
     return "won";
   }
 
@@ -669,6 +685,7 @@ export class Engine {
     r.driverId = null;
     this.effects.notify.add(uid);
     this.effects.notify.add(r.riderId);
+    this.pushTo(r.riderId, "booking_released", r, {});
   }
 
   cancelRide(uid: string, rideId: string, reason?: string): void {
@@ -685,6 +702,7 @@ export class Engine {
     const u = this.db.users[r.riderId];
     if (r.status === "scheduled") {
       if (u && (r.scheduledFor ?? 0) - this.now < SERVER.lateBookingChangeS * 1000) u.riderCancels++;
+      if (r.driverId) this.pushTo(r.driverId, "booking_cancelled", r, { pickup: r.pickup.label });
       this.endRide(r, "cancelled", "rider", null);
       return;
     }
@@ -806,6 +824,7 @@ export class Engine {
       for (const other of Object.values(this.db.offers))
         if (other.driverId === uid && (other.status === "offered" || other.status === "queued")) this.closeOffer(other, "withdrawn");
       this.notifyRide(r);
+      this.pushTo(r.riderId, "driver_coming", r, { driver: this.db.users[uid].nickname });
       return "won";
     }
     if (o.status === "offered" || o.status === "queued") {
@@ -836,7 +855,10 @@ export class Engine {
       (r.status === "in_progress" && to === "completed");
     if (!legal) throw new ServerError("illegal_transition");
     r.status = to;
-    if (to === "arrived") r.arrivedAt = this.now;
+    if (to === "arrived") {
+      r.arrivedAt = this.now;
+      this.pushTo(r.riderId, "driver_arrived", r, { driver: this.db.users[uid].nickname });
+    }
     if (to === "in_progress") r.startedAt = this.now;
     if (to === "completed") {
       r.endedAt = this.now;
@@ -956,6 +978,8 @@ export class Engine {
     for (const o of Object.values(this.db.offers))
       if (o.driverId === driverId && (o.status === "offered" || o.status === "queued")) this.closeOffer(o, "withdrawn");
     this.notifyRide(r);
+    this.pushTo(driverId, "time_to_go", r, { pickup: r.pickup.label, rider: this.db.users[r.riderId]?.nickname ?? "" });
+    this.pushTo(r.riderId, "driver_coming", r, { driver: this.db.users[driverId]?.nickname ?? "" });
   }
 
   /** Unclaimed (or its driver still busy): the booking becomes a normal request. */
@@ -968,6 +992,11 @@ export class Engine {
     this.effects.pingDrivers = true;
     this.effects.notify.add(r.riderId);
     if (had) this.effects.notify.add(had);
+    this.pushTo(r.riderId, "booking_open", r, {});
+  }
+
+  private pushTo(userId: string, kind: PushKind, r: RideRow, params: PushParams): void {
+    this.effects.push.push({ userId, kind, rideId: r.id, params: { at: r.scheduledFor ?? null, ...params } });
   }
 
   /** When an open request expires; a booked one waits at least until 15 min after its time. */

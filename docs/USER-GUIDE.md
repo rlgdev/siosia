@@ -10,7 +10,7 @@ Chrome (Android) or Safari (iOS). No app store, no account, no payment details.
 1. Open the link. Enter the **invite code** (once per phone).
 2. Choose a **nickname** (2–20 characters). That's your whole profile — no name, phone or email.
 3. Optional: **install it** like an app — Android Chrome: menu ⋮ → *Add to Home screen*;
-   iPhone Safari: Share → *Add to Home Screen*.
+   iPhone: see *Siosia as an app on iPhone* below (the app needs a one-time code).
 4. Language: English or Polski on the start screen (it follows your phone by default).
 
 When asked, **allow location**. If you said no by mistake:
@@ -67,6 +67,35 @@ it on that phone.
 
 Need to cancel? *Cancel* → choose a reason; the rider is automatically offered to another driver.
 **Rider no-show** becomes available 5 minutes after *I've arrived*.
+
+## Siosia as an app on iPhone — and notifications
+
+An app added to the iPhone Home Screen keeps its **own** storage, separate from Safari and Chrome:
+it does not see the profile you used in the browser. So move it once:
+
+1. In Siosia in the browser: ☰ → **Siosia as an app** → *Show code for the app* (valid 30 min).
+2. Share (⎙) → **Add to Home Screen**.
+3. Open Siosia from the Home Screen → *Moving from the browser or another phone?* → enter the
+   code. Your profile, history, car and (for a master profile) its link move into the app; the
+   browser then starts fresh. The same code moves a profile to another phone. A master-profile
+   link pasted there works too.
+4. In the app: ☰ → **Turn on notifications** (iPhone: iOS 16.4 or newer).
+
+Web apps cannot run in the background on iPhone: while driving keep Siosia open with the screen
+on. Notifications still arrive when the app is closed.
+
+## Booking a ride for later
+
+*Ride* → set pickup and destination → **Later** → pick the time (30 minutes to 30 days ahead) →
+**Book for …**. The price is fixed when you book. *My bookings* shows each one — with the driver,
+car and plate once a driver took it — and lets you **cancel**. A driver who took it starts 30
+minutes before (you get *Driver is on the way*); if nobody took it, it goes to drivers nearby 20
+minutes before.
+
+**Drivers:** the main screen shows *Booked rides: N to take* → **Browse** → *To take* lists the
+bookings with the distance from you → **Take this ride**. *Yours* shows when to leave; **Give
+back** if you can't (within an hour of the ride it counts as a cancellation). Siosia notifies you
+when it is **time to go** — keep the app open from then on.
 
 ## Privacy
 
@@ -157,6 +186,35 @@ potwierdzenie zastępuje go na tym telefonie.
 
 Musisz anulować? *Anuluj* → wybierz powód; kurs automatycznie trafia do innego kierowcy.
 **Pasażer się nie pojawił** jest dostępne 5 minut po *Jestem na miejscu*.
+
+## Siosia jako aplikacja na iPhonie — i powiadomienia
+
+Aplikacja dodana do ekranu początkowego iPhone'a ma **własną** pamięć, oddzielną od Safari i
+Chrome: nie widzi profilu z przeglądarki. Przenieś go raz:
+
+1. W Siosi w przeglądarce: ☰ → **Siosia jako aplikacja** → *Pokaż kod dla aplikacji* (ważny 30 min).
+2. Udostępnij (⎙) → **Do ekranu początkowego**.
+3. Otwórz Siosię z ekranu początkowego → *Przenosisz profil z przeglądarki lub innego telefonu?* →
+   wpisz kod. Profil, historia, samochód i (dla profilu Master) jego link przejdą do aplikacji;
+   przeglądarka zacznie od nowa. Ten sam kod przenosi profil na inny telefon. Wklejony link do
+   profilu Master też działa.
+4. W aplikacji: ☰ → **Włącz powiadomienia** (iPhone: iOS 16.4 lub nowszy).
+
+Aplikacje webowe nie działają w tle na iPhonie: podczas jazdy trzymaj Siosię otwartą z włączonym
+ekranem. Powiadomienia przychodzą także przy zamkniętej aplikacji.
+
+## Rezerwacja kursu na później
+
+*Jadę* → ustaw odbiór i cel → **Później** → wybierz godzinę (od 30 minut do 30 dni naprzód) →
+**Zarezerwuj na …**. Cena jest ustalana przy rezerwacji. *Moje rezerwacje* pokazują każdą — z
+kierowcą, samochodem i numerem, gdy kierowca ją weźmie — i pozwalają ją **anulować**. Kierowca,
+który ją wziął, rusza 30 minut wcześniej (dostaniesz *Kierowca jest w drodze*); jeśli nikt jej nie
+weźmie, trafi do kierowców w pobliżu 20 minut wcześniej.
+
+**Kierowcy:** ekran główny pokazuje *Rezerwacje: N do wzięcia* → **Przeglądaj** → *Do wzięcia*
+z odległością od Ciebie → **Biorę ten kurs**. *Twoje* pokazują, kiedy wyjechać; **Oddaj**, jeśli
+nie możesz (na mniej niż godzinę przed kursem liczy się to jako anulowanie). Siosia powiadomi Cię,
+gdy **czas jechać** — od tej chwili trzymaj aplikację otwartą.
 
 ## Prywatność
 

@@ -1,6 +1,6 @@
 // R1 Rider home sheet: pickup (GPS, pin, address), dropoff (pin, address), estimate, Request ride.
 
-import { AppHint } from "../../components/AppInstall";
+import { AppHint, PushPrompt } from "../../components/AppInstall";
 import { useState, type FormEvent } from "react";
 import { MasterChip } from "../../components/ProfileIcon";
 import { Money, Notice, Sheet, fmtKm, fmtMin } from "../../components/ui";
@@ -60,6 +60,7 @@ export function RiderHome(p: Props) {
   return (
     <Sheet>
       <AppHint />
+      <PushPrompt />
       <MasterChip />
       {p.notice && (
         <Notice kind="warn">

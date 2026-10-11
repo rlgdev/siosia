@@ -4,7 +4,9 @@
 
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { createBackend } from "../backend";
-import type { Backend } from "../backend/types";
+import type { Backend, PushMessage } from "../backend/types";
+import { pushText } from "../../supabase/functions/_shared/push-text";
+import { showLocal } from "../services/push";
 import { loadConfig, type AppConfig } from "../config";
 import { CADENCE } from "../core/defaults";
 import type { DeploymentConfig, Lang, Mode, MyState, Profile, Vehicle } from "../core/types";
@@ -40,6 +42,8 @@ export interface AppSnapshot {
   masterConfirm: string | null;
   /** A move code waiting for the user to confirm merging it into the profile already here. */
   moveConfirm: string | null;
+  /** A notification shown inside the app while it is in front (demo backend). */
+  pushToast: { title: string; body: string } | null;
 }
 
 const INITIAL: AppSnapshot = {
@@ -59,7 +63,8 @@ const INITIAL: AppSnapshot = {
   bootError: null,
   linkNotice: null,
   masterConfirm: null,
-  moveConfirm: null
+  moveConfirm: null,
+  pushToast: null
 };
 
 const MASTER_KEY = "siosia.masterToken";
@@ -365,6 +370,7 @@ export class AppStore {
   private listen(): void {
     this.unsubs.forEach((u) => u());
     this.unsubs = [this.api.onMyChanges(() => this.requestRefresh())];
+    if (this.api.onPush) this.unsubs.push(this.api.onPush((m) => void this.showPush(m)));
     if (this.pollTimer) clearInterval(this.pollTimer);
     // Backstop for missed realtime events; also runs the server-side expiry check on read (§6.7).
     this.pollTimer = setInterval(() => {
@@ -372,6 +378,17 @@ export class AppStore {
       const busy = !!my && (!!my.ride || !!my.offer);
       if (busy && !this.snap.my?.driverOnline) void this.refresh().catch(() => {});
     }, CADENCE.pollActiveMs);
+  }
+
+  /** Demo backend: a notification event — a banner in the app, or a system one in the background. */
+  private async showPush(m: PushMessage): Promise<void> {
+    const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.rideId);
+    if (typeof document !== "undefined" && document.visibilityState === "visible") this.patch({ pushToast: { title: text.title, body: text.body } });
+    else await showLocal(text.title, text.body, text.tag);
+  }
+
+  clearPushToast(): void {
+    if (this.snap.pushToast) this.patch({ pushToast: null });
   }
 
   /** Coalesces bursts of realtime events into one fetch. */

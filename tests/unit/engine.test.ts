@@ -592,6 +592,48 @@ describe("rides booked in advance", () => {
   });
 });
 
+describe("notifications (who hears what)", () => {
+  const MIN = 60_000;
+  const ev = (fn: (e: Engine) => unknown): string[] => {
+    const e = new Engine(db, CFG, now);
+    fn(e);
+    return e.effects.push.map((p) => `${p.kind}>${p.userId}`);
+  };
+
+  it("tells the right person at each step of a booking and of a ride", () => {
+    let id = "";
+    const trip = { pickup: PICKUP, dropoff: DROPOFF, estKm: 3.42, estMin: 8.6, fareIsEstimate: false };
+    expect(ev((e) => (id = e.bookRide("rider", { ...trip, scheduledFor: now + 120 * MIN }).id))).toEqual([
+      "booking_new>d1",
+      "booking_new>d2",
+      "booking_new>d3",
+      "booking_new>far"
+    ]);
+    expect(ev((e) => e.claimBooking("d1", id))).toEqual(["booking_taken>rider"]);
+    expect(ev((e) => e.releaseBooking("d1", id))).toEqual(["booking_released>rider"]);
+    ev((e) => e.claimBooking("d2", id));
+    const t = db.rides[id].scheduledFor!;
+    now = t - 30 * MIN;
+    const start = new Engine(db, CFG, now);
+    start.sweep();
+    expect(start.effects.push.map((p) => `${p.kind}>${p.userId}`)).toEqual(["time_to_go>d2", "driver_coming>rider"]);
+    expect(start.effects.push[0].params).toMatchObject({ at: t, pickup: "Centrum", rider: "Ola" });
+    expect(ev((e) => e.advance("d2", id, "arrived"))).toEqual(["driver_arrived>rider"]);
+    // A ride right now: accepting tells the rider.
+    request("rider2");
+    const o = online("d3", near(3)).offer!;
+    expect(ev((e) => e.decideOffer("d3", o.id, "accept"))).toEqual(["driver_coming>rider2"]);
+    // The rider cancels a taken booking: its driver hears it; an untaken one opening: its rider.
+    user("x", "Xena");
+    const b2 = at((e) => e.bookRide("x", { ...trip, scheduledFor: now + 300 * MIN }));
+    at((e) => e.claimBooking("d1", b2.id));
+    expect(ev((e) => e.cancelRide("x", b2.id))).toEqual(["booking_cancelled>d1"]);
+    const b3 = at((e) => e.bookRide("x", { ...trip, scheduledFor: now + 400 * MIN }));
+    now = b3.scheduledFor! - 20 * MIN;
+    expect(ev((e) => e.sweep())).toContain("booking_open>x");
+  });
+});
+
 describe("moving a profile into the app (iOS Home Screen apps have their own storage)", () => {
   it("moves profile, history, ratings and vehicle to the app once; the browser starts fresh", () => {
     const ride = request();

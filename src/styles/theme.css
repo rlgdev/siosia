@@ -698,6 +698,15 @@ body:has(.sharing-banner) .leaflet-top {
   text-align: center;
   cursor: pointer;
 }
+.push-toast {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  font-weight: 500;
+}
+.push-toast strong {
+  font-weight: 800;
+}
 .when-row {
   display: flex;
   flex-wrap: wrap;

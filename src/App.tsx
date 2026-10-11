@@ -46,6 +46,25 @@ function MasterConfirm() {
   );
 }
 
+/** A notification while the app is in front (demo backend). Tap to close. */
+function PushToast() {
+  const app = useApp();
+  const store = useStore();
+  const p = app.pushToast;
+  useEffect(() => {
+    if (!p) return;
+    const id = setTimeout(() => store.clearPushToast(), 8000);
+    return () => clearTimeout(id);
+  }, [p, store]);
+  if (!p) return null;
+  return (
+    <div className="toast toast-wide push-toast" role="status" data-testid="push-toast" onClick={() => store.clearPushToast()}>
+      <strong>{p.title}</strong>
+      <span>{p.body}</span>
+    </div>
+  );
+}
+
 /** Says once whether a master-profile link worked. */
 function LinkToast() {
   const { t } = useI18n();
@@ -100,6 +119,7 @@ function Screens() {
       {!app.online && <OfflineBanner />}
       {main}
       <LinkToast />
+      <PushToast />
       <MasterConfirm />
       <MoveConfirm />
       {app.phase === "ready" && app.panel === "profile" && <ProfilePanel />}

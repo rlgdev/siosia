@@ -16,7 +16,7 @@ import type {
   SharingStop,
   Vehicle
 } from "../../core/types";
-import type { Backend, DriverPresenceHandle, OfferDecision, RideChannel, RideChannelHandlers, Unsub } from "../types";
+import type { Backend, DriverPresenceHandle, OfferDecision, PushMessage, RideChannel, RideChannelHandlers, Unsub } from "../types";
 import { getBus, type MockBus } from "./bus";
 import { withDb } from "./store";
 
@@ -72,6 +72,7 @@ export class MockBackend implements Backend {
       const fx = (engine as Engine | null)?.effects;
       if (fx) {
         for (const u of fx.notify) this.bus.publish(`user:${u}`, "changed", {}, SERVER_CLIENT);
+        for (const p of fx.push) this.bus.publish(`user:${p.userId}`, "push", { kind: p.kind, rideId: p.rideId, params: p.params }, SERVER_CLIENT);
         if (fx.pingDrivers) this.bus.publish("drivers", "ping", {}, SERVER_CLIENT);
       }
     }
@@ -179,6 +180,16 @@ export class MockBackend implements Backend {
   onMyChanges(cb: () => void): Unsub {
     return this.bus.subscribe(`user:${this.uid}`, this.clientId, () => cb());
   }
+
+  onPush(cb: (m: PushMessage) => void): Unsub {
+    return this.bus.subscribe(`user:${this.uid}`, this.clientId, (event, payload) => {
+      if (event === "push") cb(payload as PushMessage);
+    });
+  }
+  async savePush() {
+    /* the demo shows its events itself */
+  }
+  async deletePush() {}
 
   onDriverPing(cb: () => void): Unsub {
     return this.bus.subscribe("drivers", this.clientId, (event) => {
