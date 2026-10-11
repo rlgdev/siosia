@@ -1,5 +1,6 @@
 // S1 Home: Ride or Drive, nickname, language, optional sign-in.
 
+import { AppHint } from "../components/AppInstall";
 import { ProfileIcon } from "../components/ProfileIcon";
 import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
@@ -18,6 +19,7 @@ export function Home() {
         </div>
       </header>
       {app.cfg?.backend === "mock" && <p className="notice notice-info">{t("demo.banner")}</p>}
+      <AppHint />
       <div className="mode-cards">
         {app.profile?.masterRole !== "driver" && (
           <button type="button" className="mode-card" onClick={() => store.setMode("ride")} data-testid="mode-ride">

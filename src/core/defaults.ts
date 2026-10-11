@@ -26,6 +26,8 @@ export const SERVER = {
   /** pendingReceipt shows completed rides that ended within this window. */
   pendingReceiptS: 2 * 3600,
   historyLimit: 50,
+  /** A "move to the app" code works this long, once. */
+  transferS: 30 * 60,
   ratingWindow: 20,
   ratingMinCount: 3
 } as const;

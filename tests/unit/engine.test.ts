@@ -16,6 +16,7 @@ const near = (km: number, bearing = 0): LatLng => destination(PICKUP, bearing, k
 let db: DbState;
 let now: number;
 const at = <T>(fn: (e: Engine) => T): T => fn(new Engine(db, CFG, now));
+const code_ = (fn: () => unknown): string => code(fn);
 const code = (fn: () => unknown): string => {
   try {
     fn();
@@ -490,6 +491,59 @@ describe("master profiles (shared rider link, fixed fare)", () => {
     expect(off((e) => e.requestRide("d3", trip(10, 20))).fare).toBe(40);
     // Switched on again: the link phones are back.
     expect(M((e) => e.isMember("m5"))).toBe(true);
+  });
+});
+
+describe("moving a profile into the app (iOS Home Screen apps have their own storage)", () => {
+  it("moves profile, history, ratings and vehicle to the app once; the browser starts fresh", () => {
+    const ride = request();
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    for (const to of ["arrived", "in_progress", "completed"] as const) at((e) => e.advance("d1", ride.id, to, 3));
+    at((e) => e.rate("rider", ride.id, 5, ""));
+    at((e) => e.rate("d1", ride.id, 4, ""));
+    at((e) => e.setOnline("d1", false));
+    const { code, expiresAt } = at((e) => e.createTransfer("d1"));
+    expect(code).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+    expect(expiresAt).toBe(now + 30 * 60_000);
+    // The app is a new account that has not even entered the invite code.
+    expect(code_(() => at((e) => e.redeemTransfer("app", "WRONG-CODE", "dev-app")))).toBe("bad_transfer");
+    const p = at((e) => e.redeemTransfer("app", code.toLowerCase().replace("-", " "), "dev-app"));
+    expect(p).toMatchObject({ userId: "app", nickname: "D1", rating: { count: 1 } });
+    expect(at((e) => e.isMember("app", "dev-app"))).toBe(true);
+    expect(at((e) => e.getVehicle("app"))?.plate).toBe("WX D1");
+    expect(at((e) => e.history("app"))[0]).toMatchObject({ id: ride.id, role: "driver", status: "completed" });
+    expect(at((e) => e.getRide("rider", ride.id)).driver?.nickname).toBe("D1");
+    expect(at((e) => e.getProfile("d1"))).toBeNull();
+    expect(at((e) => e.isMember("d1"))).toBe(false);
+    expect(code_(() => at((e) => e.redeemTransfer("app2", code, "dev-app2")))).toBe("bad_transfer"); // once only
+    // Expired codes do not work.
+    const late = at((e) => e.createTransfer("rider")).code;
+    now += 31 * 60_000;
+    expect(code_(() => at((e) => e.redeemTransfer("app3", late, "dev-app3")))).toBe("bad_transfer");
+  });
+
+  it("asks before merging into a profile already in the app, refuses during a ride, rate-limits guesses", () => {
+    const { code } = at((e) => e.createTransfer("rider"));
+    expect(code_(() => at((e) => e.redeemTransfer("rider2", code, "dev-r2")))).toBe("has_profile");
+    request("rider2");
+    expect(code_(() => at((e) => e.redeemTransfer("rider2", code, "dev-r2", true)))).toBe("active_ride");
+    at((e) => e.cancelRide("rider2", Object.values(db.rides)[0].id));
+    expect(at((e) => e.redeemTransfer("rider2", code, "dev-r2", true))).toMatchObject({ userId: "rider2", nickname: "Ola" });
+    for (let i = 0; i < 10; i++) code_(() => at((e) => e.redeemTransfer("x", "AAAA-AAAA", "dev-x")));
+    const next = at((e) => e.createTransfer("rider2")).code;
+    expect(code_(() => at((e) => e.redeemTransfer("x", next, "dev-x")))).toBe("rate_limited");
+  });
+
+  it("keeps a master profile's link membership when it moves into the app", () => {
+    const M = [{ id: "toria", token: "tok-toria-0123456789", nickname: "Toria", icon: null, fixedFare: 18, role: "rider" as const }];
+    const E = <T>(fn: (e: Engine) => T): T => fn(new Engine(db, { ...CFG, masters: M }, now));
+    E((e) => e.joinMaster("t1", "tok-toria-0123456789", "dev-t1", "en"));
+    const { code } = E((e) => e.createTransfer("t1"));
+    expect(E((e) => e.redeemTransfer("t2", code, "dev-t2"))).toMatchObject({ nickname: "Toria", masterId: "toria", fixedFare: 18 });
+    expect(E((e) => e.isMember("t2", "dev-t2"))).toBe(true);
+    expect(db.members.t2).toBeUndefined(); // still only through the link: switching it off ends access
+    expect(new Engine(db, { ...CFG, masters: M.map((m) => ({ ...m, active: false })) }, now).isMember("t2")).toBe(false);
   });
 });
 

@@ -12,6 +12,22 @@ import { RiderApp } from "./screens/rider/RiderApp";
 import { Confirm } from "./components/ui";
 import { AppStore, StoreContext, useApp, useStore } from "./state/store";
 
+/** A move code on an app that already has a profile: merge only after a clear yes. */
+function MoveConfirm() {
+  const { t } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  return (
+    <Confirm
+      open={!!app.moveConfirm && app.phase !== "loading"}
+      message={t("move.confirm", { name: app.profile?.nickname ?? "" })}
+      confirmLabel={t("move.confirmYes")}
+      onConfirm={() => void store.confirmMove()}
+      onCancel={() => store.cancelMove()}
+    />
+  );
+}
+
 /** A master link on a phone that already has a profile: replace it only after a clear yes. */
 function MasterConfirm() {
   const { t } = useI18n();
@@ -35,7 +51,7 @@ function LinkToast() {
   const app = useApp();
   const store = useStore();
   const n = app.linkNotice;
-  const visible = !!n && (n !== "joined" || app.phase === "ready");
+  const visible = !!n && ((n !== "joined" && n !== "moved") || app.phase === "ready");
   useEffect(() => {
     if (!visible) return;
     const id = setTimeout(() => store.clearLinkNotice(), 7000);
@@ -46,6 +62,8 @@ function LinkToast() {
     <div className="toast toast-wide" role="status" data-testid="link-toast" onClick={() => store.clearLinkNotice()}>
       {n === "joined"
         ? t("master.joined", { name: app.profile?.nickname ?? "" })
+        : n === "moved"
+          ? t("move.done", { name: app.profile?.nickname ?? "" })
         : n === "link_failed"
           ? t("master.failed")
           : t(`err.${n}` as MessageKey)}
@@ -82,6 +100,7 @@ function Screens() {
       {main}
       <LinkToast />
       <MasterConfirm />
+      <MoveConfirm />
       {app.phase === "ready" && app.panel === "profile" && <ProfilePanel />}
       {app.phase === "ready" && app.panel === "history" && <HistoryPanel earnings={false} />}
       {app.phase === "ready" && app.panel === "earnings" && <HistoryPanel earnings />}

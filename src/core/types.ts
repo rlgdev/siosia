@@ -262,6 +262,7 @@ export type ServerErrorCode =
   | "no_account"
   | "not_enabled"
   | "bad_link"
+  | "bad_transfer"
   | "has_profile"
   | "rider_only"
   | "driver_only"

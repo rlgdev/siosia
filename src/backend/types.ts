@@ -78,6 +78,10 @@ export interface Backend {
    * has_profile when this account already has another profile, unless `replace` (user confirmed).
    */
   joinMaster(token: string, deviceId: string, language: Lang, replace?: boolean): Promise<Profile>;
+  /** A one-time code (30 min) that moves this profile to another app or phone. */
+  createTransfer(): Promise<{ code: string; expiresAt: number }>;
+  /** Takes over the profile behind a move code; has_profile unless `replace` (user confirmed). */
+  redeemTransfer(code: string, deviceId: string, replace?: boolean): Promise<Profile>;
 
   getProfile(): Promise<Profile | null>;
   saveProfile(nickname: string, language: Lang): Promise<Profile>;

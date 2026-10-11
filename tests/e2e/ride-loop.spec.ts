@@ -279,6 +279,31 @@ test("a master link on a phone with its own profile asks before replacing it", a
   await expect(page.getByTestId("master-chip")).toContainText("Toria");
 });
 
+test("a one-time code moves a profile into another app (the iOS Home Screen app has its own storage)", async ({ context }) => {
+  await isolate(context);
+  const browser = await context.newPage();
+  await onboard(browser, "Ola");
+  await browser.getByRole("button", { name: "Profile" }).click();
+  const section = browser.getByTestId("app-section");
+  await expect(section).toContainText("Siosia as an app");
+  await section.getByTestId("show-transfer-code").click();
+  const code = (await browser.getByTestId("transfer-code").textContent())!.trim();
+  expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+
+  // Another tab is another account here — like the Home Screen app on an iPhone.
+  const appPage = await context.newPage();
+  await appPage.goto("/?robots=0");
+  await appPage.getByText("Moving from the browser or another phone?").click();
+  await appPage.getByTestId("move-code").fill(code.toLowerCase());
+  await appPage.getByTestId("move-submit").click();
+  await expect(appPage.getByTestId("link-toast")).toHaveText("Your profile Ola is now in this app.");
+  await expect(appPage.getByRole("heading", { name: "Hi, Ola" })).toBeVisible();
+
+  // The browser starts fresh.
+  await browser.reload();
+  await expect(browser.getByLabel("Nickname")).toBeVisible();
+});
+
 test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {
   await isolate(context);
   const driver = await context.newPage();

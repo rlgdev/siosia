@@ -143,6 +143,15 @@ begin
   end if;
 end $$;
 
+-- "Move to the app" codes (iOS Home Screen apps have their own storage): one-time, 30 minutes,
+-- stored as a SHA-256 of the normalised code.
+create table if not exists public.account_transfers (
+  code_hash  text primary key,
+  user_id    uuid not null references auth.users (id) on delete cascade,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.invite_failures (
   user_id uuid not null,
   at      timestamptz not null default now()
@@ -234,6 +243,7 @@ alter table public.rides           enable row level security;
 alter table public.offers          enable row level security;
 alter table public.ratings         enable row level security;
 alter table public.master_profiles enable row level security;
+alter table public.account_transfers enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -241,7 +251,7 @@ grant usage on schema public to anon, authenticated;
 
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
               public.memberships, public.invite_failures, public.rides, public.offers, public.ratings,
-              public.master_profiles
+              public.master_profiles, public.account_transfers
   from anon, authenticated;
 -- No direct table access at all: clients use the functions below, which return only what each
 -- party may see (raw tables would expose other users' ids, e.g. rides.driver_id / excluded).
@@ -811,6 +821,85 @@ begin
   return siosia_ok(siosia_profile_json(v_uid));
 end $$;
 
+-- A one-time code (30 min) that lets another app or phone take over this profile.
+create or replace function public.siosia_create_transfer()
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+  v_alpha text := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; v_raw text := ''; b bytea := gen_random_bytes(8);
+  v_exp timestamptz := now() + interval '30 minutes';
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  delete from account_transfers where user_id = v_uid or expires_at < now();
+  for i in 0..7 loop
+    v_raw := v_raw || substr(v_alpha, (get_byte(b, i) % 32) + 1, 1);
+  end loop;
+  insert into account_transfers (code_hash, user_id, expires_at)
+  values (encode(digest(v_raw, 'sha256'), 'hex'), v_uid, v_exp);
+  return siosia_ok(jsonb_build_object('code', substr(v_raw, 1, 4) || '-' || substr(v_raw, 5, 4),
+                                      'expiresAt', siosia_ms(v_exp)));
+end $$;
+
+-- Redeems a code on this app/phone: the old account's profile, vehicle, history, ratings and master
+-- link move here (the old app starts fresh). Another profile here is merged into it only when the
+-- user confirmed (p_replace). Wrong codes count as failed invite attempts.
+create or replace function public.siosia_redeem_transfer(p_code text, p_device text, p_replace boolean)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_uid uuid := auth.uid(); t account_transfers; v_old uuid; v_via text; v_hash text;
+begin
+  if v_uid is null then return siosia_err('forbidden'); end if;
+  if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
+  if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
+    return siosia_err('rate_limited');
+  end if;
+  v_hash := encode(digest(upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g')), 'sha256'), 'hex');
+  select * into t from account_transfers where code_hash = v_hash and expires_at > now();
+  v_old := t.user_id;
+  if v_old is null or not exists (select 1 from profiles where user_id = v_old and not deleted) then
+    insert into invite_failures (user_id) values (v_uid);
+    return siosia_err('bad_transfer');
+  end if;
+  if v_old = v_uid then
+    delete from account_transfers where code_hash = v_hash;
+    return siosia_ok(siosia_profile_json(v_uid));
+  end if;
+  -- Both accounts, always in the same order (no deadlock with a concurrent move).
+  perform pg_advisory_xact_lock(hashtextextended(least(v_old, v_uid)::text, 7));
+  perform pg_advisory_xact_lock(hashtextextended(greatest(v_old, v_uid)::text, 7));
+  perform siosia_sweep();
+  if exists (select 1 from rides where status in ('requested','accepted','arrived','in_progress')
+             and (rider_id in (v_old, v_uid) or driver_id in (v_old, v_uid))) then
+    return siosia_err('active_ride');
+  end if;
+  if not coalesce(p_replace, false) and exists (select 1 from profiles where user_id = v_uid and not deleted) then
+    return siosia_err('has_profile');
+  end if;
+  perform siosia_go_offline(v_old);
+  perform siosia_go_offline(v_uid);
+  update rides set rider_id = v_uid where rider_id = v_old;
+  update rides set driver_id = v_uid where driver_id = v_old;
+  update rides set excluded = array_replace(excluded, v_old, v_uid) where v_old = any (excluded);
+  update offers set driver_id = v_uid where driver_id = v_old;
+  update ratings set from_user = v_uid where from_user = v_old;
+  update ratings set to_user = v_uid where to_user = v_old;
+  delete from profiles where user_id = v_uid;
+  update profiles set user_id = v_uid where user_id = v_old;
+  if exists (select 1 from vehicles where user_id = v_old) then
+    delete from vehicles where user_id = v_uid;
+    update vehicles set user_id = v_uid where user_id = v_old;
+  end if;
+  delete from driver_status where user_id = v_old;
+  -- This device becomes a member the way the old account was: invite code first, else its link.
+  select via_master into v_via from memberships where user_id = v_old order by via_master nulls first limit 1;
+  insert into memberships (user_id, device_id, via_master) values (v_uid, p_device, v_via)
+  on conflict (user_id, device_id) do update
+    set via_master = case when memberships.via_master is null then null else excluded.via_master end;
+  delete from memberships where user_id = v_old;
+  delete from account_transfers where user_id = v_old;
+  perform siosia_notify(v_old);
+  perform siosia_notify(v_uid);
+  return siosia_ok(siosia_profile_json(v_uid));
+end $$;
+
 -- Operator only (SQL editor): create or update a master profile and (re)set its link token. The
 -- link is <app URL>#master=<token>; setting a new token makes the old link stop working.
 --   p_role 'rider': p_fixed_fare (null = tariff), p_pickup / p_dropoff {lat, lng, label} defaults.
@@ -1316,6 +1405,8 @@ end $$;
 grant execute on function public.siosia_config() to anon, authenticated;
 grant execute on function public.siosia_join(text, text) to authenticated;
 grant execute on function public.siosia_join_master(text, text, text, boolean) to authenticated;
+grant execute on function public.siosia_create_transfer() to authenticated;
+grant execute on function public.siosia_redeem_transfer(text, text, boolean) to authenticated;
 grant execute on function public.siosia_is_member(text) to authenticated;
 grant execute on function public.siosia_get_profile() to authenticated;
 grant execute on function public.siosia_save_profile(text, text) to authenticated;

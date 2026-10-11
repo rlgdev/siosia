@@ -698,6 +698,34 @@ body:has(.sharing-banner) .leaflet-top {
   text-align: center;
   cursor: pointer;
 }
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+.transfer-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.transfer-code strong {
+  font-size: 1.6rem;
+  letter-spacing: 0.12em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.move-here {
+  margin-top: 16px;
+  width: 100%;
+  max-width: 420px;
+  text-align: left;
+}
+.move-here summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 0;
+}
 .pending-row {
   display: flex;
   justify-content: space-between;

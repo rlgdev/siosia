@@ -465,6 +465,35 @@ describe("SQL backend (PGlite)", () => {
     expect(await errorOf(call(R1, "siosia_set_online", [true]))).toBe("rider_only");
   });
 
+  it("moves a profile into the app with a one-time code (iOS Home Screen apps have their own storage)", async () => {
+    const APP = "00000000-0000-4000-8000-000000000031";
+    const APP2 = "00000000-0000-4000-8000-000000000032";
+    for (const id of [APP, APP2]) await admin("insert into auth.users (id) values ($1)", [id]);
+    const before = await call<Json>(U.d2, "siosia_get_profile");
+    const rides = ((await call<Json[]>(U.d2, "siosia_history")) ?? []).length;
+    const { code, expiresAt } = await call<Json>(U.d2, "siosia_create_transfer");
+    expect(code).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+    expect(Number(expiresAt) - Date.now()).toBeGreaterThan(29 * 60_000);
+    expect(JSON.stringify((await admin("select * from public.account_transfers")).rows)).not.toContain(String(code));
+    expect(await errorOf(as(U.d2, "select * from public.account_transfers"))).toMatch(/permission denied/);
+    expect(await errorOf(call(APP, "siosia_redeem_transfer", ["WRONG-CODE", "dev-app", false]))).toBe("bad_transfer");
+    // The app account has never entered the invite code: the code is enough.
+    const p = await call<Json>(APP, "siosia_redeem_transfer", [String(code).toLowerCase().replace("-", " "), "dev-app", false]);
+    expect(p).toMatchObject({ userId: APP, nickname: before.nickname, rating: before.rating });
+    expect(await as(APP, "select public.siosia_is_member('dev-app')")).toBe(true);
+    expect(((await call<Json[]>(APP, "siosia_history")) ?? []).length).toBe(rides);
+    expect((await call<Json>(APP, "siosia_get_vehicle"))).toMatchObject({ plate: "WX 0003" });
+    expect(await errorOf(call(U.d2, "siosia_my_state"))).toBe("not_member"); // the browser starts fresh
+    expect(await errorOf(call(APP2, "siosia_redeem_transfer", [code, "dev-app2", false]))).toBe("bad_transfer"); // once only
+    // Into an app that already has a profile: only with a yes (then merged).
+    await call(APP2, "siosia_join", ["pilot 2026", "dev-app2"]);
+    await call(APP2, "siosia_save_profile", ["Tester", "en"]);
+    const again = String((await call<Json>(APP, "siosia_create_transfer")).code);
+    expect(await errorOf(call(APP2, "siosia_redeem_transfer", [again, "dev-app2", false]))).toBe("has_profile");
+    expect(await call<Json>(APP2, "siosia_redeem_transfer", [again, "dev-app2", true])).toMatchObject({ userId: APP2, nickname: before.nickname });
+    expect(((await call<Json[]>(APP2, "siosia_history")) ?? []).length).toBe(rides);
+  });
+
   it("upgrades a database from the 3-minute version to 20 minutes once, never overriding a later choice", async () => {
     // Simulate the previous schema: no offer_retry_s column, the old default 180 in the row.
     await admin("alter table public.app_config drop column offer_retry_s");

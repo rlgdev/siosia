@@ -163,7 +163,13 @@ export interface DbState {
   offers: Record<string, OfferRow>;
   ratings: RatingRow[];
   inviteFails: Record<string, number[]>;
+  /** "Move to the app" codes (normalised, no dash) → owner and expiry. Supabase keeps a hash. */
+  transfers?: Record<string, { userId: string; expiresAt: number }>;
 }
+
+/** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
+export const TRANSFER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export const normalizeTransfer = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 export function emptyDb(): DbState {
   return { version: 1, seq: 0, users: {}, vehicles: {}, drivers: {}, members: {}, rides: {}, offers: {}, ratings: [], inviteFails: {} };
@@ -260,6 +266,80 @@ export class Engine {
 
   private masterDef(id: string | null | undefined): MasterProfile | null {
     return id ? (this.cfg.masters ?? []).find((m) => m.id === id) ?? null : null;
+  }
+
+  // ---------- moving a profile to another app / phone (iOS Home Screen apps have own storage) ----------
+
+  /** A one-time code that lets another app or phone take over this profile (30 min). */
+  createTransfer(uid: string): { code: string; expiresAt: number } {
+    this.requireUser(uid);
+    const all = (this.db.transfers ??= {});
+    for (const [k, t] of Object.entries(all)) if (t.userId === uid || t.expiresAt <= this.now) delete all[k];
+    let raw = "";
+    for (let i = 0; i < 8; i++) raw += TRANSFER_ALPHABET[Math.floor(Math.random() * TRANSFER_ALPHABET.length)];
+    const expiresAt = this.now + SERVER.transferS * 1000;
+    all[raw] = { userId: uid, expiresAt };
+    return { code: `${raw.slice(0, 4)}-${raw.slice(4)}`, expiresAt };
+  }
+
+  /**
+   * Redeems a code on this app/phone: its profile, vehicle, history, ratings and master link move
+   * to this account (the old app starts fresh). Another profile here is merged into it only after
+   * the user confirms (`replace`). Wrong codes count as failed invite attempts.
+   */
+  redeemTransfer(uid: string, code: string, deviceId: string, replace = false): Profile {
+    if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
+    const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
+    if (fails.length >= 10) throw new ServerError("rate_limited");
+    const key = normalizeTransfer(code);
+    const t = this.db.transfers?.[key];
+    const old = t && t.expiresAt > this.now ? t.userId : null;
+    if (!old || !this.db.users[old] || this.db.users[old].deleted) {
+      this.db.inviteFails[uid] = [...fails, this.now];
+      throw new ServerError("bad_transfer");
+    }
+    if (old === uid) {
+      delete this.db.transfers![key];
+      return this.getProfile(uid)!;
+    }
+    this.sweep();
+    if (this.activeRideOf(old) || this.activeRideOf(uid)) throw new ServerError("active_ride");
+    const mine = this.db.users[uid];
+    if (!replace && mine && !mine.deleted) throw new ServerError("has_profile");
+    this.goOffline(old);
+    this.goOffline(uid);
+    for (const r of Object.values(this.db.rides)) {
+      if (r.riderId === old) r.riderId = uid;
+      if (r.driverId === old) r.driverId = uid;
+      r.excluded = r.excluded.map((x) => (x === old ? uid : x));
+    }
+    for (const o of Object.values(this.db.offers)) if (o.driverId === old) o.driverId = uid;
+    for (const g of this.db.ratings) {
+      if (g.fromUser === old) g.fromUser = uid;
+      if (g.toUser === old) g.toUser = uid;
+    }
+    this.db.users[uid] = { ...this.db.users[old], id: uid };
+    delete this.db.users[old];
+    if (this.db.vehicles[old]) {
+      this.db.vehicles[uid] = this.db.vehicles[old];
+      delete this.db.vehicles[old];
+    }
+    delete this.db.drivers[old];
+    // This device becomes a member the way the old account was: invite code first, else its link.
+    const viaLink = Object.values(this.db.linkMembers?.[old] ?? {})[0] ?? null;
+    if ((this.db.members[old] ?? []).length > 0 || !viaLink) {
+      const devices = this.db.members[uid] ?? [];
+      if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+    } else {
+      const links = (this.db.linkMembers ??= {});
+      links[uid] = { ...(links[uid] ?? {}), [deviceId]: viaLink };
+    }
+    delete this.db.members[old];
+    if (this.db.linkMembers) delete this.db.linkMembers[old];
+    for (const [k, x] of Object.entries(this.db.transfers ?? {})) if (x.userId === old) delete this.db.transfers![k];
+    this.effects.notify.add(old);
+    this.effects.notify.add(uid);
+    return this.getProfile(uid)!;
   }
 
   /** The master profile this user rides as, while it is switched on (fixed fare, icon). */

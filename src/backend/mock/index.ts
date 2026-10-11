@@ -91,6 +91,12 @@ export class MockBackend implements Backend {
   join(code: string, deviceId: string) {
     return this.call((e) => e.join(this.uid, code, deviceId));
   }
+  createTransfer() {
+    return this.call((e) => e.createTransfer(this.uid));
+  }
+  redeemTransfer(code: string, deviceId: string, replace = false) {
+    return this.call((e) => e.redeemTransfer(this.uid, code, deviceId, replace));
+  }
   joinMaster(token: string, deviceId: string, language: Lang, replace = false) {
     return this.call((e) => e.joinMaster(this.uid, token, deviceId, language, replace));
   }

@@ -1,5 +1,6 @@
 // S2 Profile: nickname, language, account linking (US8), vehicle, switch mode, own stats, privacy.
 
+import { AppSection } from "../components/AppInstall";
 import { useEffect, useState } from "react";
 import type { AccountInfo } from "../backend/types";
 import { MasterChip } from "../components/ProfileIcon";
@@ -87,6 +88,8 @@ export function ProfilePanel() {
           </div>
         )}
       </section>
+
+      <AppSection />
 
       <section className="card stack">
         <h3>{t("profile.mode")}</h3>

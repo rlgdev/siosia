@@ -16,7 +16,7 @@ import { deviceId, readPref, unsupportedFeatures, writePref } from "../services/
 
 export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nickname" | "ready";
 /** Outcome of opening a master-profile link, shown once. */
-export type LinkNotice = "joined" | "bad_link" | "rate_limited" | "active_trip" | "active_ride" | "link_failed";
+export type LinkNotice = "joined" | "moved" | "bad_link" | "rate_limited" | "active_trip" | "active_ride" | "link_failed";
 export type Panel = "profile" | "history" | "vehicle" | "earnings" | null;
 
 export interface AppSnapshot {
@@ -38,6 +38,8 @@ export interface AppSnapshot {
   linkNotice: LinkNotice | null;
   /** A master link waiting for the user to confirm replacing their profile on this phone. */
   masterConfirm: string | null;
+  /** A move code waiting for the user to confirm merging it into the profile already here. */
+  moveConfirm: string | null;
 }
 
 const INITIAL: AppSnapshot = {
@@ -56,7 +58,8 @@ const INITIAL: AppSnapshot = {
   missing: [],
   bootError: null,
   linkNotice: null,
-  masterConfirm: null
+  masterConfirm: null,
+  moveConfirm: null
 };
 
 const MASTER_KEY = "siosia.masterToken";
@@ -202,6 +205,52 @@ export class AppStore {
     this.patch({ masterConfirm: null });
     await this.openMaster(token, this.snap.uid, true);
     if (this.snap.linkNotice === "joined") await this.afterMember();
+  }
+
+  /**
+   * Takes over a profile on this app/phone: a move code from another app (the iOS Home Screen app
+   * has its own storage), or a pasted profile link (…#master=…).
+   */
+  async redeemCode(input: string): Promise<void> {
+    const link = /(?:^|[#&?])master=([A-Za-z0-9_-]{16,128})/.exec(input.trim());
+    if (link && this.snap.uid) {
+      await this.openMaster(link[1], this.snap.uid, false);
+      if (this.snap.linkNotice === "joined") await this.afterMember();
+      return;
+    }
+    try {
+      await this.api.redeemTransfer(input, deviceId(), false);
+    } catch (e) {
+      if (e instanceof ServerError && e.code === "has_profile") {
+        this.patch({ moveConfirm: input });
+        return;
+      }
+      throw e;
+    }
+    await this.afterMoved();
+  }
+
+  async confirmMove(): Promise<void> {
+    const code = this.snap.moveConfirm;
+    if (!code) return;
+    this.patch({ moveConfirm: null });
+    try {
+      await this.api.redeemTransfer(code, deviceId(), true);
+    } catch (e) {
+      this.patch({ linkNotice: e instanceof ServerError && e.code === "active_ride" ? "active_ride" : "link_failed" });
+      return;
+    }
+    await this.afterMoved();
+  }
+
+  cancelMove(): void {
+    this.patch({ moveConfirm: null });
+  }
+
+  private async afterMoved(): Promise<void> {
+    writePref(`mode.${this.snap.uid}`, null);
+    this.patch({ linkNotice: "moved" });
+    await this.afterMember();
   }
 
   cancelMaster(): void {

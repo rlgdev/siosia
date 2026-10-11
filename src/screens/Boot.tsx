@@ -1,6 +1,7 @@
 // Boot screens: loading, unsupported browser (NFR-09), backend unavailable (S3, D-04), invite code
 // (FR-007) and nickname (FR-002 — the only thing a rider ever has to provide).
 
+import { MoveHere } from "../components/AppInstall";
 import { useState, type FormEvent } from "react";
 import { useBusy } from "../components/ui";
 import { useI18n } from "../i18n";
@@ -78,6 +79,7 @@ export function InviteScreen() {
           {t("invite.submit")}
         </button>
       </form>
+      <MoveHere />
     </main>
   );
 }
@@ -115,6 +117,7 @@ export function NicknameScreen() {
           {t("common.continue")}
         </button>
       </form>
+      <MoveHere />
     </main>
   );
 }

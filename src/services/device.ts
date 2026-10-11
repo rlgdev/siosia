@@ -80,6 +80,11 @@ export const isIOS = () =>
   typeof navigator !== "undefined" &&
   (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
 
+/** Opened from the Home Screen (installed app) rather than in a browser tab. */
+export const isStandalone = () =>
+  typeof window !== "undefined" &&
+  (window.matchMedia?.("(display-mode: standalone)").matches === true || (navigator as Navigator & { standalone?: boolean }).standalone === true);
+
 export function navigationUrl(to: LatLng, mode: "driving" | "walking" = "driving"): string {
   if (isIOS()) return `https://maps.apple.com/?daddr=${to.lat},${to.lng}&dirflg=${mode === "walking" ? "w" : "d"}`;
   return `https://www.google.com/maps/dir/?api=1&destination=${to.lat},${to.lng}&travelmode=${mode}`;

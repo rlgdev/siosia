@@ -1,5 +1,6 @@
 // Driver mode: D1 dashboard with the online switch, D2 offer overlay, D3 trip, D4 summary.
 
+import { AppHint } from "../../components/AppInstall";
 import { useCallback, useEffect, useState } from "react";
 import { MapView, type MapMarker } from "../../components/MapView";
 import { Money, Notice, Sheet, TopBar, useBusy } from "../../components/ui";
@@ -184,6 +185,7 @@ function DriverMain() {
             </button>
           </Notice>
         )}
+        <AppHint />
         <MasterChip />
         <div className="online-row">
           <div>

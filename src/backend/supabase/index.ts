@@ -167,6 +167,12 @@ export class SupabaseBackend implements Backend {
   async join(code: string, deviceId: string) {
     await this.rpc("siosia_join", { p_code: code, p_device: deviceId });
   }
+  createTransfer() {
+    return this.rpc<{ code: string; expiresAt: number }>("siosia_create_transfer");
+  }
+  redeemTransfer(code: string, deviceId: string, replace = false) {
+    return this.rpc<Profile>("siosia_redeem_transfer", { p_code: code, p_device: deviceId, p_replace: replace });
+  }
   joinMaster(token: string, deviceId: string, language: Lang, replace = false) {
     return this.rpc<Profile>("siosia_join_master", { p_token: token, p_device: deviceId, p_language: language, p_replace: replace });
   }
