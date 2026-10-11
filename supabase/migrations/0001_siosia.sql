@@ -82,9 +82,10 @@ create table if not exists public.profiles (
   deleted        boolean not null default false
 );
 
--- Master profiles (operator decision of 2026-10-11): a shared rider identity opened by a dedicated
--- link …/#master=<token>. Only the SHA-256 of the token is stored. Every device that opens the link
--- becomes this profile — nickname and icon, rider only, every ride at fixed_fare.
+-- Master profiles (operator decision of 2026-10-11): a shared identity opened by a dedicated link
+-- …/#master=<token>. Only the SHA-256 of the token is stored. Every device that opens the link
+-- becomes this profile (nickname, icon) in one role: a RIDER profile rides only, every ride at
+-- fixed_fare, with default pickup/dropoff; a DRIVER profile drives only, with a preset vehicle.
 create table if not exists public.master_profiles (
   id         text primary key check (id ~ '^[a-z0-9-]{2,30}$'),
   token_hash text not null unique,
@@ -94,6 +95,13 @@ create table if not exists public.master_profiles (
   active     boolean not null default true,
   created_at timestamptz not null default now()
 );
+alter table public.master_profiles add column if not exists role text not null default 'rider';
+alter table public.master_profiles drop constraint if exists master_profiles_role_check;
+alter table public.master_profiles add constraint master_profiles_role_check check (role in ('rider', 'driver'));
+alter table public.master_profiles add column if not exists default_pickup jsonb;
+alter table public.master_profiles add column if not exists default_dropoff jsonb;
+-- Driver profiles: {make, model, colour, seats, plate?}; without a plate each phone adds its own.
+alter table public.master_profiles add column if not exists vehicle jsonb;
 alter table public.profiles add column if not exists master_id text;
 
 create table if not exists public.vehicles (
@@ -303,6 +311,13 @@ returns jsonb language sql stable security definer set search_path = public as $
     'count', (select n from total));
 $$;
 
+-- The role ('rider' / 'driver') of the master profile a user joined, switched on or not.
+create or replace function public.siosia_master_role(p_user uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select m.role from profiles p join master_profiles m on m.id = p.master_id
+   where p.user_id = p_user and not p.deleted;
+$$;
+
 -- The active master profile a user joined through its link (null row when none).
 create or replace function public.siosia_master_of(p_user uuid)
 returns public.master_profiles language sql stable security definer set search_path = public as $$
@@ -331,8 +346,12 @@ returns jsonb language sql stable security definer set search_path = public as $
     'riderCancels', rider_cancels, 'driverCancels', driver_cancels, 'lateCancels', late_cancels,
     'rating', siosia_rating(user_id),
     'masterId', master_id,
+    'masterRole', siosia_master_role(p_user),
     'icon', (siosia_master_of(p_user)).icon,
-    'fixedFare', (siosia_master_of(p_user)).fixed_fare)
+    'fixedFare', case when (siosia_master_of(p_user)).role = 'rider' then (siosia_master_of(p_user)).fixed_fare end,
+    'defaultPickup', case when (siosia_master_of(p_user)).role = 'rider' then (siosia_master_of(p_user)).default_pickup end,
+    'defaultDropoff', case when (siosia_master_of(p_user)).role = 'rider' then (siosia_master_of(p_user)).default_dropoff end,
+    'masterVehicle', case when (siosia_master_of(p_user)).role = 'driver' then (siosia_master_of(p_user)).vehicle end)
   from profiles where user_id = p_user and not deleted;
 $$;
 
@@ -730,6 +749,23 @@ begin
   return siosia_ok('true'::jsonb);
 end $$;
 
+-- A driver master's complete vehicle (with plate) on a user's account.
+create or replace function public.siosia_apply_master_vehicle(p_user uuid, v jsonb)
+returns void language sql security definer set search_path = public as $$
+  insert into vehicles (user_id, make, model, colour, plate, seats)
+  values (p_user, v ->> 'make', v ->> 'model', v ->> 'colour', upper(v ->> 'plate'), (v ->> 'seats')::int)
+  on conflict (user_id) do update set make = excluded.make, model = excluded.model, colour = excluded.colour,
+                                      plate = excluded.plate, seats = excluded.seats, updated_at = now();
+$$;
+
+-- A place {lat, lng, label} as stored for default pickups / dropoffs (null is fine).
+create or replace function public.siosia_valid_place(p jsonb)
+returns boolean language sql immutable as $$
+  select p is null or (jsonb_typeof(p -> 'lat') = 'number' and jsonb_typeof(p -> 'lng') = 'number'
+                       and abs((p ->> 'lat')::float8) <= 90 and abs((p ->> 'lng')::float8) <= 180
+                       and char_length(coalesce(p ->> 'label', '')) between 1 and 120);
+$$;
+
 -- Opens a master profile from its link: this device's user becomes that profile (nickname, icon,
 -- fixed fare, rider only). The link replaces the invite code; wrong tokens count as failed invite
 -- attempts (same rate limit).
@@ -770,28 +806,58 @@ begin
   insert into profiles (user_id, nickname, language, master_id)
   values (v_uid, m.nickname, case when p_language = 'pl' then 'pl' else 'en' end, m.id)
   on conflict (user_id) do update set nickname = excluded.nickname, master_id = excluded.master_id, deleted = false;
+  if m.role = 'driver' and m.vehicle ? 'plate' then perform siosia_apply_master_vehicle(v_uid, m.vehicle); end if;
   perform siosia_notify(v_uid);
   return siosia_ok(siosia_profile_json(v_uid));
 end $$;
 
 -- Operator only (SQL editor): create or update a master profile and (re)set its link token. The
 -- link is <app URL>#master=<token>; setting a new token makes the old link stop working.
-create or replace function public.siosia_set_master(p_id text, p_token text, p_nickname text, p_icon text, p_fixed_fare numeric)
+--   p_role 'rider': p_fixed_fare (null = tariff), p_pickup / p_dropoff {lat, lng, label} defaults.
+--   p_role 'driver': p_vehicle {make, model, colour, seats, plate?}.
+drop function if exists public.siosia_set_master(text, text, text, text, numeric);
+create or replace function public.siosia_set_master(p_id text, p_token text, p_nickname text, p_icon text, p_fixed_fare numeric,
+                                                    p_role text default 'rider', p_pickup jsonb default null,
+                                                    p_dropoff jsonb default null, p_vehicle jsonb default null)
 returns text language plpgsql security definer set search_path = public, extensions as $$
-declare v_hash text := encode(digest(btrim(coalesce(p_token, '')), 'sha256'), 'hex');
+declare v_hash text := encode(digest(btrim(coalesce(p_token, '')), 'sha256'), 'hex'); u record;
 begin
   if btrim(coalesce(p_token, '')) !~ '^[A-Za-z0-9_-]{16,128}$' then
     raise exception 'The link token must be 16-128 characters: letters, digits, - or _';
   end if;
+  if p_role is null or p_role not in ('rider', 'driver') then raise exception 'p_role must be rider or driver'; end if;
+  if not siosia_valid_place(p_pickup) or not siosia_valid_place(p_dropoff) then
+    raise exception 'A place is {"lat": number, "lng": number, "label": "1-120 characters"}';
+  end if;
+  if p_vehicle is not null and (
+       char_length(coalesce(p_vehicle ->> 'make', '')) not between 1 and 30
+       or char_length(coalesce(p_vehicle ->> 'model', '')) not between 1 and 30
+       or char_length(coalesce(p_vehicle ->> 'colour', '')) not between 1 and 20
+       or jsonb_typeof(p_vehicle -> 'seats') <> 'number' or (p_vehicle ->> 'seats')::numeric not between 1 and 6
+       or (p_vehicle ? 'plate' and char_length(coalesce(p_vehicle ->> 'plate', '')) not between 2 and 12)) then
+    raise exception 'A vehicle is {"make", "model", "colour", "seats": 1-6, "plate"?: 2-12 characters}';
+  end if;
   -- A new token retires the old link: phones that joined only through it must open the new one.
   delete from memberships mb using master_profiles m
    where mb.via_master = m.id and m.id = p_id and m.token_hash <> v_hash;
-  insert into master_profiles (id, token_hash, nickname, icon, fixed_fare, active)
+  insert into master_profiles (id, token_hash, nickname, icon, fixed_fare, active, role, default_pickup, default_dropoff, vehicle)
   values (p_id, v_hash, btrim(p_nickname), nullif(btrim(coalesce(p_icon, '')), ''),
-          p_fixed_fare, true)
+          p_fixed_fare, true, p_role, p_pickup, p_dropoff, p_vehicle)
   on conflict (id) do update set token_hash = excluded.token_hash, nickname = excluded.nickname, icon = excluded.icon,
-                                  fixed_fare = excluded.fixed_fare, active = true;
+                                  fixed_fare = excluded.fixed_fare, active = true, role = excluded.role,
+                                  default_pickup = excluded.default_pickup, default_dropoff = excluded.default_dropoff,
+                                  vehicle = excluded.vehicle;
   update profiles set nickname = btrim(p_nickname) where master_id = p_id and not deleted;
+  -- Phones already on this profile follow its role: riders leave the driver seat; drivers get the
+  -- preset vehicle when it is complete.
+  for u in select user_id from profiles where master_id = p_id and not deleted loop
+    if p_role = 'rider' and not exists (select 1 from rides where driver_id = u.user_id
+                                         and status in ('accepted','arrived','in_progress')) then
+      perform siosia_go_offline(u.user_id);
+    elsif p_role = 'driver' and p_vehicle ? 'plate' then
+      perform siosia_apply_master_vehicle(u.user_id, p_vehicle);
+    end if;
+  end loop;
   return format('Master profile %s is ready. Share <app URL>#master=<token>.', p_id);
 end $$;
 
@@ -840,7 +906,7 @@ declare v_err text := siosia_guard(true);
   v_colour text := btrim(coalesce(p_colour, '')); v_plate text := upper(btrim(coalesce(p_plate, '')));
 begin
   if v_err is not null then return siosia_err(v_err); end if;
-  if exists (select 1 from profiles where user_id = auth.uid() and master_id is not null) then return siosia_err('rider_only'); end if;
+  if siosia_master_role(auth.uid()) = 'rider' then return siosia_err('rider_only'); end if;
   if char_length(v_make) not between 1 and 30 or char_length(v_model) not between 1 and 30
      or char_length(v_colour) not between 1 and 20 or char_length(v_plate) not between 2 and 12
      or p_seats is null or p_seats not between 1 and 6 then
@@ -929,6 +995,7 @@ declare
   plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
+  if siosia_master_role(v_uid) = 'driver' then return siosia_err('driver_only'); end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   if exists (select 1 from rides where status in ('requested','accepted','arrived','in_progress')
@@ -964,7 +1031,7 @@ begin
   if v_km > c.max_trip_km then return siosia_err('too_far'); end if;
   v_min := greatest(1, p_est_min);
   -- A master profile rides at its fixed fare, whatever the route.
-  v_fixed := (siosia_master_of(v_uid)).fixed_fare;
+  v_fixed := case when (siosia_master_of(v_uid)).role = 'rider' then (siosia_master_of(v_uid)).fixed_fare end;
   insert into rides (rider_id, pickup_lat, pickup_lng, pickup_label, dropoff_lat, dropoff_lng, dropoff_label,
                      est_km, est_min, fare, currency, fare_is_estimate)
   values (v_uid, plat, plng, left(coalesce(p_pickup ->> 'label', ''), 120),
@@ -1019,7 +1086,7 @@ begin
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   if p_online then
-    if exists (select 1 from profiles where user_id = v_uid and master_id is not null) then return siosia_err('rider_only'); end if;
+    if siosia_master_role(v_uid) = 'rider' then return siosia_err('rider_only'); end if;
     if not exists (select 1 from vehicles where user_id = v_uid) then return siosia_err('no_vehicle'); end if;
     if exists (select 1 from rides where rider_id = v_uid and status in ('requested','accepted','arrived','in_progress')) then
       return siosia_err('active_ride');

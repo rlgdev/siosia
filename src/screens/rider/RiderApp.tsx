@@ -1,7 +1,7 @@
 // Rider mode. One persistent map; the sheet below it switches between R1 → R2 → R3 → R4 following
 // the server state of the rider's ride. Terminal states are fetched once the active ride disappears.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapMarker } from "../../components/MapView";
 import { TopBar, useBusy } from "../../components/ui";
 import { haversineKm, haversineM } from "../../core/geo";
@@ -39,9 +39,34 @@ export function RiderApp() {
   const ride = my?.ride && my.ride.role === "rider" ? my.ride : null;
   const gps = useGeo(true);
 
-  const [pickup, setPickup] = useState<Place | null>(null);
-  const [pickupSource, setPickupSource] = useState<"gps" | "manual">("gps");
-  const [dropoff, setDropoff] = useState<Place | null>(null);
+  // A rider master profile starts every ride from its default places (the rider can change them).
+  const defPickup = app.profile?.defaultPickup ?? null;
+  const defDropoff = app.profile?.defaultDropoff ?? null;
+  const [pickup, setPickup] = useState<Place | null>(defPickup);
+  const [pickupSource, setPickupSource] = useState<"gps" | "manual">(defPickup ? "manual" : "gps");
+  const [dropoff, setDropoff] = useState<Place | null>(defDropoff);
+  const resetToDefaults = () => {
+    if (defPickup) {
+      setPickup(defPickup);
+      setPickupSource("manual");
+    }
+    setDropoff(defDropoff);
+  };
+  const defaultsKey = JSON.stringify([defPickup, defDropoff]);
+  const firstDefaults = useRef(true);
+  useEffect(() => {
+    // The profile changed under this screen (e.g. a master link was just confirmed).
+    if (firstDefaults.current) {
+      firstDefaults.current = false;
+      return;
+    }
+    if (defPickup) {
+      setPickup(defPickup);
+      setPickupSource("manual");
+    }
+    if (defDropoff) setDropoff(defDropoff);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultsKey]);
   const [pickMode, setPickMode] = useState<Field | null>(null);
   const [watched, setWatched] = useState<string | null>(null);
   const [ended, setEnded] = useState<RideView | null>(null);
@@ -167,7 +192,7 @@ export function RiderApp() {
     setDismissed(next);
     writePref(`dismissedReceipts.${app.uid}`, next);
     setEnded(null);
-    setDropoff(null);
+    resetToDefaults();
   };
 
   // ---------- map scene ----------
@@ -190,7 +215,8 @@ export function RiderApp() {
     fitKey = `draft:${pu ? `${pu.lat.toFixed(3)},${pu.lng.toFixed(3)}` : ""}|${dr ? `${dr.lat.toFixed(4)},${dr.lng.toFixed(4)}` : ""}`;
   } else if (ride) {
     const stale = rt.driverSeenAt !== null && Date.now() - rt.driverSeenAt > 10_000;
-    if (rt.driverPos) markers.push({ id: "car", kind: "car", pos: rt.driverPos, heading: rt.driverPos.heading, stale, title: ride.driver?.nickname });
+    if (rt.driverPos)
+      markers.push({ id: "car", kind: "car", pos: rt.driverPos, heading: rt.driverPos.heading, stale, title: ride.driver?.nickname, icon: ride.driver?.icon });
     if (ride.status !== "in_progress") markers.push({ id: "pickup", kind: "pickup", pos: ride.pickup });
     markers.push({ id: "dropoff", kind: "dropoff", pos: ride.dropoff });
     if (fix && ride.status !== "in_progress") markers.push({ id: "me", kind: "me", pos: fix });

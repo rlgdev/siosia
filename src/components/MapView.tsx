@@ -19,7 +19,7 @@ export interface MapMarker {
   draggable?: boolean;
   onDragEnd?: (p: LatLng) => void;
   title?: string;
-  /** Profile icon id: a rider with one is drawn as that icon instead of the dot. */
+  /** Profile icon id: a rider or driver with one is drawn as that icon instead of the dot / car. */
   icon?: string | null;
 }
 
@@ -62,8 +62,18 @@ function iconFor(m: MapMarker): L.DivIcon {
     case "nearby":
       return L.divIcon({ className: "car car-nearby", html: `<span style="transform:rotate(${rot}deg)">${NEARBY_SVG}</span>`, iconSize: [26, 26], iconAnchor: [13, 13] });
     case "car":
-    default:
+    default: {
+      // A side-view profile icon faces the way the car drives (left or right).
+      const def = profileIcon(m.icon);
+      if (def)
+        return L.divIcon({
+          className: `rider-icon car-icon${m.stale ? " is-stale" : ""}`,
+          html: `<span style="transform:scaleX(${rot > 180 && rot < 360 ? -1 : 1})">${def.svg}</span>`,
+          iconSize: [64, 32],
+          iconAnchor: [32, 16]
+        });
       return L.divIcon({ className: `car${m.stale ? " is-stale" : ""}`, html: `<span class="car-rot" style="transform:rotate(${rot}deg)">${CAR_SVG}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] });
+    }
   }
 }
 

@@ -179,8 +179,8 @@ export class AppStore {
   private async openMaster(token: string, uid: string, replace: boolean): Promise<void> {
     clearMasterToken();
     try {
-      await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
-      writePref(`mode.${uid}`, "ride");
+      const p = await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
+      writePref(`mode.${uid}`, p.masterRole === "driver" ? "drive" : "ride");
       this.patch({ linkNotice: "joined", masterConfirm: null });
     } catch (e) {
       const code = e instanceof ServerError ? e.code : null;
@@ -228,12 +228,13 @@ export class AppStore {
   private initialMode(): Mode | null {
     const key = `mode.${this.snap.uid}`;
     let mode: Mode | null = readPref<Mode | null>(key, null);
-    // A master profile is a rider profile: it always opens in Ride.
-    if (this.snap.profile?.masterId) mode = "ride";
+    // A master profile has one role: it always opens in that mode.
+    const role = this.snap.profile?.masterRole ?? null;
+    if (role) mode = role === "driver" ? "drive" : "ride";
     if (typeof location !== "undefined") {
       const url = new URL(location.href);
       const fromUrl = url.searchParams.get("mode");
-      if ((fromUrl === "ride" || fromUrl === "drive") && !this.snap.profile?.masterId) mode = fromUrl;
+      if ((fromUrl === "ride" || fromUrl === "drive") && !role) mode = fromUrl;
       if (url.searchParams.has("mode")) {
         url.searchParams.delete("mode");
         history.replaceState(history.state, "", url);
@@ -265,7 +266,8 @@ export class AppStore {
 
   /** The chosen mode is remembered per user on this device (§3: mode is per device session). */
   setMode(mode: Mode | null): void {
-    if (mode === "drive" && this.snap.profile?.masterId) return; // rider-only profile
+    const role = this.snap.profile?.masterRole ?? null;
+    if (role && mode !== null && mode !== (role === "driver" ? "drive" : "ride")) return; // one-role profile
     writePref(`mode.${this.snap.uid}`, mode);
     this.patch({ mode, panel: null });
   }

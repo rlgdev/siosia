@@ -12,6 +12,7 @@ import { useApp, useStore } from "../../state/store";
 import { AfterRide } from "../AfterRide";
 import { DriverTrip } from "./DriverTrip";
 import { OfferCard } from "./OfferCard";
+import { MasterChip } from "../../components/ProfileIcon";
 import { VehicleSetup } from "./VehicleForm";
 
 export function DriverApp() {
@@ -183,6 +184,7 @@ function DriverMain() {
             </button>
           </Notice>
         )}
+        <MasterChip />
         <div className="online-row">
           <div>
             <span className={`dot ${rt.online ? "dot-on" : "dot-off"}`} aria-hidden="true" />

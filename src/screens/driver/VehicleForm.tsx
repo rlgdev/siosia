@@ -10,7 +10,10 @@ export function VehicleForm({ onSaved }: { onSaved?: () => void }) {
   const { t } = useI18n();
   const app = useApp();
   const store = useStore();
-  const [v, setV] = useState<Vehicle>(app.vehicle ?? { make: "", model: "", colour: "", plate: "", seats: 4 });
+  const preset = app.profile?.masterVehicle;
+  const [v, setV] = useState<Vehicle>(
+    app.vehicle ?? (preset ? { ...preset, plate: preset.plate ?? "" } : { make: "", model: "", colour: "", plate: "", seats: 4 })
+  );
   const [busy, run, error] = useBusy();
   const set = (k: keyof Vehicle) => (e: ChangeEvent<HTMLInputElement>) =>
     setV({ ...v, [k]: k === "seats" ? Number(e.target.value) : e.target.value });

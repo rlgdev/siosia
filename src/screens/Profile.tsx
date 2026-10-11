@@ -99,12 +99,12 @@ export function ProfilePanel() {
           </Notice>
         )}
         <div className="row">
-          {app.mode !== "ride" && (
+          {app.mode !== "ride" && !p?.masterRole && (
             <button type="button" className="btn btn-secondary" onClick={() => switchTo("ride")}>
               {t("profile.toRide")}
             </button>
           )}
-          {app.mode !== "drive" && !p?.masterId && (
+          {app.mode !== "drive" && !p?.masterRole && (
             <button type="button" className="btn btn-secondary" onClick={() => switchTo("drive")}>
               {t("profile.toDrive")}
             </button>

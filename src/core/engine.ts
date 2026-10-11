@@ -49,8 +49,9 @@ export interface UserRow {
 }
 
 /**
- * A master profile: a shared rider identity opened by a dedicated link. Every device that opens the
- * link becomes this profile — its nickname and icon, rider only, every ride at `fixedFare`.
+ * A master profile: a shared identity opened by a dedicated link. Every device that opens the link
+ * becomes this profile (nickname, icon) in one role — a rider profile rides only, every ride at
+ * `fixedFare`, starting from `pickup` / `dropoff`; a driver profile drives only, with `vehicle`.
  * (Supabase keeps these in master_profiles with only a hash of the token.)
  */
 export interface MasterProfile {
@@ -61,12 +62,34 @@ export interface MasterProfile {
   fixedFare: number | null;
   /** Switched off: the link stops working, phones that joined only through it lose access. */
   active?: boolean;
+  /** Default "rider". */
+  role?: "rider" | "driver";
+  pickup?: Place | null;
+  dropoff?: Place | null;
+  vehicle?: (Omit<Vehicle, "plate"> & { plate?: string }) | null;
 }
 
 /** Master profiles of the in-browser demo (links: …?backend=mock#master=demo-master / demo-roman). */
 export const DEMO_MASTERS: MasterProfile[] = [
-  { id: "master", token: "demo-master", nickname: "Master Rider", icon: null, fixedFare: 18 },
-  { id: "roman", token: "demo-roman", nickname: "Roman", icon: "taycan-ct-green", fixedFare: 18 }
+  {
+    id: "master",
+    token: "demo-master",
+    nickname: "Toria",
+    icon: null,
+    fixedFare: 18,
+    role: "rider",
+    pickup: { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269, Stare Babice" },
+    dropoff: { lat: 52.2663135, lng: 20.814317, label: "Husarska 16, Lipków" }
+  },
+  {
+    id: "roman",
+    token: "demo-roman",
+    nickname: "Roman",
+    icon: "taycan-ct-green",
+    fixedFare: null,
+    role: "driver",
+    vehicle: { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", seats: 4 }
+  }
 ];
 
 export interface DriverRow {
@@ -228,6 +251,9 @@ export class Engine {
     this.db.users[uid] = existing
       ? { ...existing, nickname: m.nickname, masterId: m.id, deleted: false }
       : { id: uid, nickname: m.nickname, language: language === "pl" ? "pl" : "en", createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, masterId: m.id };
+    // A driver profile with a complete vehicle (plate included) puts it on this account.
+    const v = m.role === "driver" ? m.vehicle : null;
+    if (v?.plate) this.db.vehicles[uid] = { ...v, plate: v.plate.toUpperCase() };
     this.effects.notify.add(uid);
     return this.getProfile(uid)!;
   }
@@ -242,7 +268,19 @@ export class Engine {
     return m && m.active !== false ? m : null;
   }
 
-  /** The master profile this user joined (rider only, nickname locked), switched on or not. */
+  /** The active rider master profile of this user (fixed fare, default places). */
+  private riderMaster(uid: string): MasterProfile | null {
+    const m = this.masterOf(uid);
+    return m && (m.role ?? "rider") === "rider" ? m : null;
+  }
+
+  /** Role of the master profile this user joined, switched on or not. */
+  private linkedRole(uid: string): "rider" | "driver" | null {
+    const id = this.linkedMaster(uid);
+    return id ? this.masterDef(id)?.role ?? "rider" : null;
+  }
+
+  /** The master profile this user joined (one role, nickname locked), switched on or not. */
   private linkedMaster(uid: string): string | null {
     const u = this.db.users[uid];
     return u && !u.deleted ? u.masterId ?? null : null;
@@ -271,8 +309,12 @@ export class Engine {
       lateCancels: u.lateCancels,
       rating: this.rating(uid),
       masterId: this.linkedMaster(uid),
+      masterRole: this.linkedRole(uid),
       icon: this.masterOf(uid)?.icon ?? null,
-      fixedFare: this.masterOf(uid)?.fixedFare ?? null
+      fixedFare: this.riderMaster(uid)?.fixedFare ?? null,
+      defaultPickup: this.riderMaster(uid)?.pickup ?? null,
+      defaultDropoff: this.riderMaster(uid)?.dropoff ?? null,
+      masterVehicle: (this.masterOf(uid)?.role === "driver" && this.masterOf(uid)?.vehicle) || null
     };
   }
 
@@ -296,7 +338,7 @@ export class Engine {
 
   saveVehicle(uid: string, v: Vehicle): Vehicle {
     this.requireUser(uid);
-    if (this.linkedMaster(uid)) throw new ServerError("rider_only");
+    if (this.linkedRole(uid) === "rider") throw new ServerError("rider_only");
     const clean: Vehicle = {
       make: v.make.trim(),
       model: v.model.trim(),
@@ -390,6 +432,7 @@ export class Engine {
 
   requestRide(uid: string, input: RideRequestInput): RideView {
     this.requireUser(uid);
+    if (this.linkedRole(uid) === "driver") throw new ServerError("driver_only");
     this.sweep();
     if (this.activeRideOf(uid)) throw new ServerError("active_ride");
     const asDriver = this.db.drivers[uid];
@@ -411,7 +454,7 @@ export class Engine {
     if (estKm > this.cfg.maxTripKm) throw new ServerError("too_far");
     const estMin = Math.max(1, input.estMin);
     // A master profile rides at its fixed fare, whatever the route.
-    const fixed = this.masterOf(uid)?.fixedFare ?? null;
+    const fixed = this.riderMaster(uid)?.fixedFare ?? null;
     const ride: RideRow = {
       id: this.nextId("r"),
       riderId: uid,
@@ -493,7 +536,7 @@ export class Engine {
     this.requireUser(uid);
     this.sweep();
     if (online) {
-      if (this.linkedMaster(uid)) throw new ServerError("rider_only");
+      if (this.linkedRole(uid) === "rider") throw new ServerError("rider_only");
       if (!this.db.vehicles[uid]) throw new ServerError("no_vehicle");
       const active = this.activeRideOf(uid);
       if (active && active.riderId === uid) throw new ServerError("active_ride");

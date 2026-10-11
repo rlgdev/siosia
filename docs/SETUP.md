@@ -73,28 +73,39 @@ Changes take effect at once, **including for requests already waiting** — lowe
 `request_expiry_s` can expire them right away. Riders see the new deadline on their next refresh;
 other settings show in the apps after their next launch.
 
-### Optional: master profiles — shared rider links with a fixed fare
+### Optional: master profiles — shared links for a rider or a driver
 
-A master profile is a rider identity you share as a link. Whoever opens the link becomes that
-rider on their phone — no invite code, no nickname step — with the nickname and icon you chose,
-**rider only**, and **every ride at the fixed fare** (whatever the distance). Several phones can
-use one link at the same time; each phone keeps its own rides.
+A master profile is an identity you share as a link. Whoever opens the link becomes that profile
+on their phone — no invite code, no nickname step — with the nickname and icon you chose, in
+**one role**:
+
+- a **rider** profile rides only, **every ride at the fixed fare** (whatever the distance) and
+  starting from a **default pickup and dropoff** (the rider can still change them);
+- a **driver** profile drives only, with a **preset car** (without a plate, each phone adds the
+  plate once). Riders see its icon on the driver card and as the car on their map.
+
+Several phones can use one link at the same time; each phone keeps its own rides.
 
 Pick a random token of 16–128 characters using only letters, digits, `-` and `_` (other
 characters are refused because they break in links), then in the SQL editor:
 
 ```sql
--- id, link token, nickname, icon (null or 'taycan-ct-green'), fixed fare in your currency
-select public.siosia_set_master('master', '<long random token>', 'Master Rider', null, 18);
-select public.siosia_set_master('roman',  '<another token>',     'Roman', 'taycan-ct-green', 18);
+-- id, link token, nickname, icon (null or 'taycan-ct-green'), fixed fare, role, pickup, dropoff, car
+select public.siosia_set_master('master', '<long random token>', 'Toria', null, 18, 'rider',
+  '{"lat": 52.2504843, "lng": 20.8253459, "label": "Warszawska 269, Stare Babice"}',
+  '{"lat": 52.2663135, "lng": 20.814317,  "label": "Husarska 16, Lipków"}');
+select public.siosia_set_master('roman', '<another token>', 'Roman', 'taycan-ct-green', null, 'driver',
+  null, null, '{"make": "Porsche", "model": "Taycan Cross Turismo", "colour": "Green", "seats": 4}');
+-- add "plate": "WX 12345" to the car to preset the plate for every phone on that profile
 ```
 
 The link is your site address plus `#master=<token>`, e.g.
 `https://<you>.github.io/siosia/#master=<token>`. Only a SHA-256 of the token is stored; keep the
 link itself like a key.
 
-- **Change name, icon or fare:** run `siosia_set_master` again with the same token — applies at
-  once to every phone on that profile.
+- **Change name, icon, fare, places, car or role:** run `siosia_set_master` again with the
+  **same token** — the link stays the same and the change applies at once to every phone on that
+  profile (turning a driver profile into a rider profile takes its phones offline).
 - **Replace a leaked link:** run it with a **new token**. The old link stops working and phones
   that joined only through it are signed out of Siosia until they open the new link.
 - **Switch a profile off:** `update public.master_profiles set active = false where id = 'roman';`

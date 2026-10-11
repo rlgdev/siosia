@@ -422,6 +422,49 @@ describe("SQL backend (PGlite)", () => {
     expect((await admin("select count(*)::int as n from pg_constraint where conname in ('profiles_master_id_fkey', 'memberships_via_master_fkey')")).rows[0]).toEqual({ n: 2 });
   });
 
+  it("gives master profiles one role: Toria rides from default places at a fixed fare, Roman drives a preset car", async () => {
+    const T1 = "00000000-0000-4000-8000-000000000021";
+    const R1 = "00000000-0000-4000-8000-000000000022";
+    for (const id of [T1, R1]) await admin("insert into auth.users (id) values ($1)", [id]);
+    const PU = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269, Stare Babice" };
+    const DO = { lat: 52.2663135, lng: 20.814317, label: "Husarska 16, Lipków" };
+    const CAR = { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", seats: 4 };
+    await admin("select public.siosia_set_master('toria', 'toria-link-token-0123456789', 'Toria', null, 18, 'rider', $1::jsonb, $2::jsonb)", [
+      JSON.stringify(PU),
+      JSON.stringify(DO)
+    ]);
+    await admin("select public.siosia_set_master('romand', 'romand-link-token-0123456789', 'Roman', 'taycan-ct-green', null, 'driver', null, null, $1::jsonb)", [
+      JSON.stringify(CAR)
+    ]);
+    expect(await errorOf(admin("select public.siosia_set_master('x1', 'xxxxx-link-token-0123456789', 'X', null, null, 'pilot')"))).toMatch(/rider or driver/);
+    expect(await errorOf(admin(`select public.siosia_set_master('x1', 'xxxxx-link-token-0123456789', 'X', null, null, 'rider', '{"lat": 1}'::jsonb)`))).toMatch(/A place is/);
+    expect(await errorOf(admin(`select public.siosia_set_master('x1', 'xxxxx-link-token-0123456789', 'X', null, null, 'driver', null, null, '{"make": "Kia"}'::jsonb)`))).toMatch(/A vehicle is/);
+    const t = await call<Json>(T1, "siosia_join_master", ["toria-link-token-0123456789", "dev-t1", "pl", false]);
+    expect(t).toMatchObject({ nickname: "Toria", masterRole: "rider", fixedFare: 18, defaultPickup: PU, defaultDropoff: DO, masterVehicle: null });
+    const r = await call<Json>(R1, "siosia_join_master", ["romand-link-token-0123456789", "dev-r1", "pl", false]);
+    expect(r).toMatchObject({ nickname: "Roman", masterRole: "driver", icon: "taycan-ct-green", fixedFare: null, defaultPickup: null, masterVehicle: CAR });
+    expect(await errorOf(call(R1, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]))).toBe("driver_only");
+    expect(await errorOf(call(R1, "siosia_set_online", [true]))).toBe("no_vehicle");
+    await call(R1, "siosia_save_vehicle", ["Porsche", "Taycan Cross Turismo", "Green", "WX 5555", 4]);
+    await call(R1, "siosia_set_online", [true]);
+    const ride = await call<Json>(T1, "siosia_request_ride", [PU, DO, 3, 7, false]);
+    expect(Number(ride.fare)).toBe(18);
+    const s = await call<Json>(R1, "siosia_heartbeat", [PU.lat, PU.lng]);
+    expect(s.offer).toMatchObject({ rideId: ride.id, rider: { nickname: "Toria" } });
+    expect(await call(R1, "siosia_decide_offer", [(s.offer as Json).id, "accept"])).toBe("won");
+    expect((await call<Json>(T1, "siosia_get_ride", [ride.id])).driver).toMatchObject({ nickname: "Roman", icon: "taycan-ct-green", vehicle: { plate: "WX 5555" } });
+    await call(T1, "siosia_cancel_ride", [ride.id, null]);
+    // A complete preset car reaches every phone on the profile; turning it into a rider profile
+    // takes its phones out of the driver seat.
+    await admin("select public.siosia_set_master('romand', 'romand-link-token-0123456789', 'Roman', 'taycan-ct-green', null, 'driver', null, null, $1::jsonb)", [
+      JSON.stringify({ ...CAR, plate: "wx 1234" })
+    ]);
+    expect(await call<Json>(R1, "siosia_get_vehicle")).toMatchObject({ plate: "WX 1234" });
+    await admin("select public.siosia_set_master('romand', 'romand-link-token-0123456789', 'Roman', null, null, 'rider')");
+    expect((await call<Json>(R1, "siosia_my_state")).driverOnline).toBe(false);
+    expect(await errorOf(call(R1, "siosia_set_online", [true]))).toBe("rider_only");
+  });
+
   it("upgrades a database from the 3-minute version to 20 minutes once, never overriding a later choice", async () => {
     // Simulate the previous schema: no offer_retry_s column, the old default 180 in the row.
     await admin("alter table public.app_config drop column offer_retry_s");

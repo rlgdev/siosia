@@ -93,8 +93,15 @@ export interface Profile {
   driverCancels: number;
   lateCancels: number;
   rating: RatingSummary;
-  /** Set when this device uses a shared master profile (opened from its link): rider only. */
+  /** Set when this device uses a shared master profile (opened from its link). */
   masterId: string | null;
+  /** The master profile's one role: a rider profile cannot drive, a driver profile cannot ride. */
+  masterRole: "rider" | "driver" | null;
+  /** Rider master profiles: where a new ride starts and ends unless the rider changes it. */
+  defaultPickup: Place | null;
+  defaultDropoff: Place | null;
+  /** Driver master profiles: the preset vehicle (plate may be missing — then each phone adds it). */
+  masterVehicle: (Omit<Vehicle, "plate"> & { plate?: string }) | null;
   /** Profile icon id (see components/profileIcons.ts), from the master profile; null = none. */
   icon: string | null;
   /** Every ride of a master profile costs exactly this (deployment currency); null = tariff. */
@@ -257,6 +264,7 @@ export type ServerErrorCode =
   | "bad_link"
   | "has_profile"
   | "rider_only"
+  | "driver_only"
   | "unavailable";
 
 export class ServerError extends Error {

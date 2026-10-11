@@ -181,37 +181,73 @@ test("a driver who goes online later gets the waiting request; Show requests bri
   await expect(driver.getByTestId("toast")).toHaveText("No pending requests nearby right now.");
 });
 
-test("a master-profile link opens the shared rider Roman with his icon; every ride costs a fixed 18", async ({ context }) => {
+test("the Toria link rides from her default places at a fixed 18; rider only", async ({ context }) => {
   await isolate(context);
+  // Everyone near Toria's default pickup in Stare Babice.
+  await context.setGeolocation({ latitude: 52.2504843, longitude: 20.8253459, accuracy: 10 });
   const driver = await context.newPage();
   await goOnlineAsDriver(driver, "Adam", "WX 4242");
 
   const rider = await context.newPage();
-  await rider.goto("/?robots=0#master=demo-roman");
-  await rider.bringToFront(); // GPS for the pickup
-  await expect(rider.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
+  await rider.goto("/?robots=0#master=demo-master");
+  await rider.bringToFront();
+  await expect(rider.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Toria.");
   await expect(rider).toHaveURL(/\/\?robots=0$/); // the token left the address bar
   const chip = rider.getByTestId("master-chip");
-  await expect(chip).toContainText("Roman");
-  await expect(chip).toContainText("Master profile");
-  await expect(chip.getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeVisible();
-  await longPressMap(rider, 100, 60);
+  await expect(chip).toContainText("Toria");
+  await expect(chip).toContainText("Master profile · every ride:");
+  await expect(rider.getByTestId("pickup-field")).toContainText("Warszawska 269, Stare Babice");
+  await expect(rider.getByTestId("dropoff-field")).toContainText("Husarska 16, Lipków");
   await expect(rider.getByTestId("fare")).toContainText(/18[.,]00/);
   await expect(rider.getByTestId("fixed-fare")).toHaveText("Fixed fare");
   await rider.getByTestId("request-ride").click();
 
   const card = driver.getByTestId("offer-card");
   await expect(card).toBeVisible({ timeout: 5000 });
-  await expect(card).toContainText("Roman");
-  await expect(card.getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeVisible();
+  await expect(card).toContainText("Toria");
+  await expect(card).toContainText("Husarska 16, Lipków");
   await expect(card).toContainText(/18[.,]00/);
   await rider.getByTestId("cancel-request").click();
   await expect(card).toHaveCount(0, { timeout: 5000 });
 
-  // Rider only: the menu offers no switch to Drive.
   await rider.getByRole("button", { name: "Menu" }).click();
   await expect(rider.getByText("Shared profile from a link")).toBeVisible();
   await expect(rider.getByRole("button", { name: "Switch to Drive" })).toHaveCount(0);
+});
+
+test("the Roman link opens a driver profile with his green Taycan; riders see it on the driver card", async ({ context }) => {
+  await isolate(context);
+  const roman = await context.newPage();
+  await roman.goto("/?robots=0#master=demo-roman");
+  await roman.bringToFront(); // GPS for going online
+  await expect(roman.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
+  // Drive mode straight away, with the car preset — only the plate is added once.
+  await expect(roman.getByLabel("Make")).toHaveValue("Porsche");
+  await expect(roman.getByLabel("Model")).toHaveValue("Taycan Cross Turismo");
+  await expect(roman.getByLabel("Colour")).toHaveValue("Green");
+  await roman.getByLabel("Plate").fill("WX 5555");
+  await roman.getByRole("button", { name: "Save" }).click();
+  await expect(roman.getByTestId("master-chip")).toContainText("Roman");
+  await expect(roman.getByTestId("master-chip").getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeVisible();
+  await roman.getByTestId("toggle-online").click();
+  await expect(roman.getByTestId("driver-state")).toHaveText("Online");
+  await roman.getByRole("button", { name: "Menu" }).click();
+  await expect(roman.getByRole("button", { name: "Switch to Ride" })).toHaveCount(0); // driver only
+  await roman.getByRole("button", { name: "Back" }).click();
+
+  const rider = await context.newPage();
+  await onboard(rider, "Ola");
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 100, 60);
+  await rider.getByTestId("request-ride").click();
+  const card = roman.getByTestId("offer-card");
+  await expect(card).toBeVisible({ timeout: 5000 });
+  await roman.getByTestId("accept-offer").click();
+  const driverCard = rider.getByTestId("driver-card");
+  await expect(driverCard).toContainText("Roman");
+  await expect(driverCard.getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeVisible();
+  await expect(driverCard).toContainText("Green Porsche Taycan Cross Turismo");
+  await expect(rider.getByTestId("plate")).toHaveText("WX 5555");
 });
 
 test("a wrong master-profile link says so and falls back to the normal start", async ({ context }) => {
@@ -226,16 +262,16 @@ test("a master link on a phone with its own profile asks before replacing it", a
   await isolate(context);
   const page = await context.newPage();
   await onboard(page, "Ola");
-  await page.goto("/?robots=0#master=demo-roman"); // only the #hash changes: the app reloads itself
+  await page.goto("/?robots=0#master=demo-master"); // only the #hash changes: the app reloads itself
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("It replaces your profile “Ola” here");
   await dialog.getByRole("button", { name: "No" }).click();
   await expect(page.getByRole("heading", { name: "Hi, Ola" })).toBeVisible(); // nothing changed
 
-  await page.goto("/?robots=0#master=demo-roman");
+  await page.goto("/?robots=0#master=demo-master");
   await page.getByRole("alertdialog").getByRole("button", { name: "Use shared profile" }).click();
-  await expect(page.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
-  await expect(page.getByTestId("master-chip")).toContainText("Roman");
+  await expect(page.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Toria.");
+  await expect(page.getByTestId("master-chip")).toContainText("Toria");
 });
 
 test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {

@@ -19,12 +19,14 @@ export function Home() {
       </header>
       {app.cfg?.backend === "mock" && <p className="notice notice-info">{t("demo.banner")}</p>}
       <div className="mode-cards">
-        <button type="button" className="mode-card" onClick={() => store.setMode("ride")} data-testid="mode-ride">
-          <span className="mode-icon" aria-hidden="true">📍</span>
-          <span className="mode-title">{t("home.ride")}</span>
-          <span className="mode-body">{t("home.rideBody")}</span>
-        </button>
-        {!app.profile?.masterId && (
+        {app.profile?.masterRole !== "driver" && (
+          <button type="button" className="mode-card" onClick={() => store.setMode("ride")} data-testid="mode-ride">
+            <span className="mode-icon" aria-hidden="true">📍</span>
+            <span className="mode-title">{t("home.ride")}</span>
+            <span className="mode-body">{t("home.rideBody")}</span>
+          </button>
+        )}
+        {app.profile?.masterRole !== "rider" && (
           <button type="button" className="mode-card" onClick={() => store.setMode("drive")} data-testid="mode-drive">
             <span className="mode-icon" aria-hidden="true">🚗</span>
             <span className="mode-title">{t("home.drive")}</span>

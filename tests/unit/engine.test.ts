@@ -431,6 +431,50 @@ describe("master profiles (shared rider link, fixed fare)", () => {
     expect(db.users.d2).toMatchObject({ nickname: "Deleted user", deleted: true, masterId: null });
   });
 
+  it("gives each master profile one role: Toria rides from her default places, Roman drives his preset car", () => {
+    const ROLES = [
+      {
+        id: "toria", token: "tok-toria-0123456789", nickname: "Toria", icon: null, fixedFare: 18, role: "rider" as const,
+        pickup: { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269, Stare Babice" },
+        dropoff: { lat: 52.2663135, lng: 20.814317, label: "Husarska 16, Lipków" }
+      },
+      {
+        id: "roman", token: "tok-roman-0123456789", nickname: "Roman", icon: "taycan-ct-green", fixedFare: 18, role: "driver" as const,
+        vehicle: { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", seats: 4 }
+      },
+      {
+        id: "plated", token: "tok-plated-0123456789", nickname: "Plated", icon: null, fixedFare: null, role: "driver" as const,
+        vehicle: { make: "Kia", model: "Ceed", colour: "Red", seats: 4, plate: "wx 777" }
+      }
+    ];
+    const R = <T>(fn: (e: Engine) => T): T => fn(new Engine(db, { ...CFG, masters: ROLES }, now));
+    expect(R((e) => e.joinMaster("t1", "tok-toria-0123456789", "dev-t1", "pl"))).toMatchObject({
+      nickname: "Toria", masterRole: "rider", fixedFare: 18, masterVehicle: null,
+      defaultPickup: { label: "Warszawska 269, Stare Babice" }, defaultDropoff: { label: "Husarska 16, Lipków" }
+    });
+    // Roman: driver only — no fixed fare, no default places; the preset car without a plate.
+    expect(R((e) => e.joinMaster("r1", "tok-roman-0123456789", "dev-r1", "pl"))).toMatchObject({
+      nickname: "Roman", masterRole: "driver", icon: "taycan-ct-green", fixedFare: null, defaultPickup: null,
+      masterVehicle: { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", seats: 4 }
+    });
+    expect(code(() => R((e) => e.requestRide("r1", trip(5, 10))))).toBe("driver_only");
+    expect(code(() => R((e) => e.setOnline("r1", true)))).toBe("no_vehicle"); // the phone adds the plate once
+    R((e) => e.saveVehicle("r1", { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", plate: "wx 5555", seats: 4 }));
+    // Toria rides at the fixed fare; Roman takes it and she sees his icon, car and plate.
+    const ride = R((e) => e.requestRide("t1", trip(30, 45)));
+    expect(ride.fare).toBe(18);
+    const o = R((e) => {
+      e.setOnline("r1", true);
+      return e.heartbeat("r1", near(1));
+    }).offer!;
+    expect(o.rider.nickname).toBe("Toria");
+    R((e) => e.decideOffer("r1", o.id, "accept"));
+    expect(R((e) => e.getRide("t1", ride.id)).driver).toMatchObject({ nickname: "Roman", icon: "taycan-ct-green", vehicle: { plate: "WX 5555" } });
+    // A driver profile with a complete preset car needs no form at all.
+    R((e) => e.joinMaster("r2", "tok-plated-0123456789", "dev-r2", "en"));
+    expect(R((e) => e.getVehicle("r2"))).toMatchObject({ plate: "WX 777" });
+  });
+
   it("switching a master off ends link-only access; invite members stay rider-only at the tariff", () => {
     M((e) => e.joinMaster("m5", "tok-roman-0123456789", "dev-m5", "en"));
     // d3 entered the invite code before, then opened the link (confirmed).
