@@ -173,19 +173,24 @@ export class AppStore {
   }
 
   /**
-   * Joins the master profile behind a link — used once: on any failure the user simply opens the
-   * link again. Another profile on this account is only replaced after the user confirms.
+   * Joins the master profile behind a link — once: on a failure the user simply opens the link
+   * again. Another profile on this account is only replaced after the user confirms; until they
+   * answer, the token stays in this tab, so a reload (or an app update) asks again.
    */
   private async openMaster(token: string, uid: string, replace: boolean): Promise<void> {
-    clearMasterToken();
     try {
       const p = await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
+      clearMasterToken();
       writePref(`mode.${uid}`, p.masterRole === "driver" ? "drive" : "ride");
       this.patch({ linkNotice: "joined", masterConfirm: null });
     } catch (e) {
       const code = e instanceof ServerError ? e.code : null;
-      if (code === "has_profile") this.patch({ masterConfirm: token });
-      else if (code === "bad_link" || code === "rate_limited" || code === "active_trip" || code === "active_ride") this.patch({ linkNotice: code });
+      if (code === "has_profile") {
+        this.patch({ masterConfirm: token });
+        return;
+      }
+      clearMasterToken();
+      if (code === "bad_link" || code === "rate_limited" || code === "active_trip" || code === "active_ride") this.patch({ linkNotice: code });
       else this.patch({ linkNotice: "link_failed" });
     }
   }
@@ -200,6 +205,7 @@ export class AppStore {
   }
 
   cancelMaster(): void {
+    clearMasterToken();
     this.patch({ masterConfirm: null });
   }
 

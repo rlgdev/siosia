@@ -265,8 +265,13 @@ test("a master link on a phone with its own profile asks before replacing it", a
   await page.goto("/?robots=0#master=demo-master"); // only the #hash changes: the app reloads itself
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("It replaces your profile “Ola” here");
+  await page.reload(); // e.g. an app update mid-question: the link is still waiting for an answer
+  await expect(dialog).toContainText("It replaces your profile “Ola” here");
   await dialog.getByRole("button", { name: "No" }).click();
+  await page.reload();
   await expect(page.getByRole("heading", { name: "Hi, Ola" })).toBeVisible(); // nothing changed
+  await page.waitForTimeout(1000);
+  await expect(dialog).toHaveCount(0); // answered: not asked again
 
   await page.goto("/?robots=0#master=demo-master");
   await page.getByRole("alertdialog").getByRole("button", { name: "Use shared profile" }).click();
