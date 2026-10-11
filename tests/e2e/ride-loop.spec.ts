@@ -196,7 +196,7 @@ test("the Toria link rides from her default places at a fixed 18; rider only", a
   const chip = rider.getByTestId("master-chip");
   await expect(chip).toContainText("Toria");
   await expect(chip).toContainText("Master profile · every ride:");
-  await expect(rider.getByTestId("pickup-field")).toContainText("Warszawska 269, Stare Babice");
+  await expect(rider.getByTestId("pickup-field")).toContainText("Warszawsa 269, Stare Babice");
   await expect(rider.getByTestId("dropoff-field")).toContainText("Husarska 16, Lipków");
   await expect(rider.getByTestId("fare")).toContainText(/18[.,]00/);
   await expect(rider.getByTestId("fixed-fare")).toHaveText("Fixed fare");
@@ -224,7 +224,7 @@ test("the Roman link opens a driver profile with his green Taycan; riders see it
   // Drive mode straight away, with the car preset — only the plate is added once.
   await expect(roman.getByLabel("Make")).toHaveValue("Porsche");
   await expect(roman.getByLabel("Model")).toHaveValue("Taycan Cross Turismo");
-  await expect(roman.getByLabel("Colour")).toHaveValue("Green");
+  await expect(roman.getByLabel("Colour")).toHaveValue("Zielony");
   await roman.getByLabel("Plate").fill("WX 5555");
   await roman.getByRole("button", { name: "Save" }).click();
   await expect(roman.getByTestId("master-chip")).toContainText("Roman");
@@ -246,7 +246,7 @@ test("the Roman link opens a driver profile with his green Taycan; riders see it
   const driverCard = rider.getByTestId("driver-card");
   await expect(driverCard).toContainText("Roman");
   await expect(driverCard.getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeVisible();
-  await expect(driverCard).toContainText("Green Porsche Taycan Cross Turismo");
+  await expect(driverCard).toContainText("Zielony Porsche Taycan Cross Turismo");
   await expect(rider.getByTestId("plate")).toHaveText("WX 5555");
 });
 

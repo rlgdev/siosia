@@ -92,7 +92,7 @@ characters are refused because they break in links), then in the SQL editor:
 ```sql
 -- id, link token, nickname, icon (null or 'taycan-ct-green'), fixed fare, role, pickup, dropoff, car
 select public.siosia_set_master('master', '<long random token>', 'Toria', null, 18, 'rider',
-  '{"lat": 52.2504843, "lng": 20.8253459, "label": "Warszawska 269, Stare Babice"}',
+  '{"lat": 52.2504843, "lng": 20.8253459, "label": "Warszawsa 269, Stare Babice"}',
   '{"lat": 52.2663135, "lng": 20.814317,  "label": "Husarska 16, Lipków"}');
 select public.siosia_set_master('roman', '<another token>', 'Roman', 'taycan-ct-green', null, 'driver',
   null, null, '{"make": "Porsche", "model": "Taycan Cross Turismo", "colour": "Green", "seats": 4}');

@@ -78,7 +78,7 @@ export const DEMO_MASTERS: MasterProfile[] = [
     icon: null,
     fixedFare: 18,
     role: "rider",
-    pickup: { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269, Stare Babice" },
+    pickup: { lat: 52.2504843, lng: 20.8253459, label: "Warszawsa 269, Stare Babice" },
     dropoff: { lat: 52.2663135, lng: 20.814317, label: "Husarska 16, Lipków" }
   },
   {
@@ -88,7 +88,7 @@ export const DEMO_MASTERS: MasterProfile[] = [
     icon: "taycan-ct-green",
     fixedFare: null,
     role: "driver",
-    vehicle: { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", seats: 4 }
+    vehicle: { make: "Porsche", model: "Taycan Cross Turismo", colour: "Zielony", seats: 4 }
   }
 ];
 

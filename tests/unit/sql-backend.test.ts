@@ -426,7 +426,7 @@ describe("SQL backend (PGlite)", () => {
     const T1 = "00000000-0000-4000-8000-000000000021";
     const R1 = "00000000-0000-4000-8000-000000000022";
     for (const id of [T1, R1]) await admin("insert into auth.users (id) values ($1)", [id]);
-    const PU = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269, Stare Babice" };
+    const PU = { lat: 52.2504843, lng: 20.8253459, label: "Warszawsa 269, Stare Babice" };
     const DO = { lat: 52.2663135, lng: 20.814317, label: "Husarska 16, Lipków" };
     const CAR = { make: "Porsche", model: "Taycan Cross Turismo", colour: "Green", seats: 4 };
     await admin("select public.siosia_set_master('toria', 'toria-link-token-0123456789', 'Toria', null, 18, 'rider', $1::jsonb, $2::jsonb)", [

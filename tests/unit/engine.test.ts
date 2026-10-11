@@ -435,7 +435,7 @@ describe("master profiles (shared rider link, fixed fare)", () => {
     const ROLES = [
       {
         id: "toria", token: "tok-toria-0123456789", nickname: "Toria", icon: null, fixedFare: 18, role: "rider" as const,
-        pickup: { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269, Stare Babice" },
+        pickup: { lat: 52.2504843, lng: 20.8253459, label: "Warszawsa 269, Stare Babice" },
         dropoff: { lat: 52.2663135, lng: 20.814317, label: "Husarska 16, Lipków" }
       },
       {
@@ -450,7 +450,7 @@ describe("master profiles (shared rider link, fixed fare)", () => {
     const R = <T>(fn: (e: Engine) => T): T => fn(new Engine(db, { ...CFG, masters: ROLES }, now));
     expect(R((e) => e.joinMaster("t1", "tok-toria-0123456789", "dev-t1", "pl"))).toMatchObject({
       nickname: "Toria", masterRole: "rider", fixedFare: 18, masterVehicle: null,
-      defaultPickup: { label: "Warszawska 269, Stare Babice" }, defaultDropoff: { label: "Husarska 16, Lipków" }
+      defaultPickup: { label: "Warszawsa 269, Stare Babice" }, defaultDropoff: { label: "Husarska 16, Lipków" }
     });
     // Roman: driver only — no fixed fare, no default places; the preset car without a plate.
     expect(R((e) => e.joinMaster("r1", "tok-roman-0123456789", "dev-r1", "pl"))).toMatchObject({
