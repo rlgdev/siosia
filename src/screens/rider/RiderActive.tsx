@@ -1,5 +1,6 @@
 // R3 Active ride: driver, vehicle and plate (only now — FR-044), live car, ETA, status, cancel.
 
+import { BookedFor } from "../../components/BookedFor";
 import { ProfileIcon } from "../../components/ProfileIcon";
 import { profileIcon } from "../../components/profileIcons";
 import { useEffect, useState } from "react";
@@ -44,6 +45,7 @@ export function RiderActive({ ride, rt, route, busy, error, onCancel }: Props) {
       {!rt.driverPos && rt.driverPresent !== false && <p className="hint">{t("active.waitingFix")}</p>}
       {stale && <p className="hint">{t("active.lastSeen", { s: seenAgo! })}</p>}
       {awayM > 100 && <p className="hint">{t("active.awayFromPin", { m: awayM })}</p>}
+      {ride.scheduledFor !== null && ride.status !== "in_progress" && <BookedFor at={ride.scheduledFor} />}
       {d && (
         <div className="driver-card" data-testid="driver-card">
           {profileIcon(d.icon) ? (

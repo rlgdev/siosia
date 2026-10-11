@@ -149,8 +149,8 @@ app*). Without this section Siosia works as before, just without notifications.
    supabase secrets set VAPID_PUBLIC_KEY=<public> VAPID_PRIVATE_KEY=<private> VAPID_SUBJECT=mailto:<your email> PUSH_SECRET=<long random text>
    supabase functions deploy push-dispatch --no-verify-jwt
    ```
-4. **Schedule** — SQL editor (replace the two placeholders; `pg_net` is under *Database →
-   Extensions*):
+4. **Schedule** — SQL editor (replace the two placeholders; `pg_cron` and `pg_net` are under
+   *Database → Extensions*; without pg_cron use only the webhook below):
    ```sql
    create extension if not exists pg_net;
    select cron.schedule('siosia-push', '* * * * *', $$

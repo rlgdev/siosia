@@ -1,6 +1,7 @@
 // D3 Active trip (FR-023/024/025): route to pickup then dropoff, rider live pin, status buttons,
 // Navigate hand-off, Cancel with reasons (No-show only 5 min after "I've arrived").
 
+import { BookedFor } from "../../components/BookedFor";
 import { ProfileIcon } from "../../components/ProfileIcon";
 import { useState } from "react";
 import { Confirm, Money, RatingBadge, Sheet, fmtKm, fmtMin, mmss, useCountdown } from "../../components/ui";
@@ -27,7 +28,10 @@ export function DriverTrip({ ride, rt, route, timers, busy, error, onAdvance, on
   const { t } = useI18n();
   const [farWarn, setFarWarn] = useState<number | null>(null);
   const [reasons, setReasons] = useState(false);
-  const noShowLeft = useCountdown(ride.status === "arrived" && ride.arrivedAt ? ride.arrivedAt + timers.noShowS * 1000 : null);
+  // A booked ride waits from the booked time, even if the driver came early.
+  const noShowLeft = useCountdown(
+    ride.status === "arrived" && ride.arrivedAt ? Math.max(ride.arrivedAt, ride.scheduledFor ?? 0) + timers.noShowS * 1000 : null
+  );
   const s = ride.status;
 
   const target =
@@ -61,6 +65,7 @@ export function DriverTrip({ ride, rt, route, timers, busy, error, onAdvance, on
         <Money amount={ride.fare} currency={ride.currency} />
       </p>
       <p className="muted">{s === "in_progress" ? ride.dropoff.label : ride.pickup.label}</p>
+      {ride.scheduledFor !== null && s !== "in_progress" && <BookedFor at={ride.scheduledFor} />}
       {(s === "accepted" || s === "arrived") && rt.riderStopped && <p className="hint">{t("trip.riderStopped")}</p>}
       {s === "in_progress" && <p className="muted small">{t("trip.distance", { km: fmtKm(rt.tripKm) })}</p>}
       {!rt.wakeOk && <p className="hint">{t("wake.body")}</p>}

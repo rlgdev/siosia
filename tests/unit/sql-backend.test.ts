@@ -486,6 +486,8 @@ describe("SQL backend (PGlite)", () => {
     const open = await call<Json[]>(BD, "siosia_open_bookings", [NEAR(0.01).lat, NEAR(0.01).lng]);
     expect(open.find((x) => (x.ride as Json).id === b.id)).toMatchObject({ ride: { rider: { nickname: "Bella" } }, distanceKm: 1.1 });
     expect(await call(BD, "siosia_claim_booking", [b.id])).toBe("won");
+    expect(await call<Json>(BD, "siosia_my_state")).toMatchObject({ bookings: 0, driverBookings: 1, hasProfile: true });
+    expect(await call<Json>(B1, "siosia_my_state")).toMatchObject({ bookings: 1, driverBookings: 0 });
     expect(await errorOf(call(U.d3, "siosia_claim_booking", [b.id]))).toBe("taken");
     const b2 = await call<Json>(B2, "siosia_book_ride", args(140));
     expect(await errorOf(call(BD, "siosia_claim_booking", [b2.id]))).toBe("overlap");

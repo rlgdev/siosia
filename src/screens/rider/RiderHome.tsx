@@ -40,6 +40,7 @@ interface Props {
   onDismissBooked: () => void;
   bookingsCount: number;
   onOpenBookings: () => void;
+  minLeadMin: number;
   onRequest: () => void;
   busy: boolean;
   error: string | null;
@@ -153,7 +154,7 @@ export function RiderHome(p: Props) {
         </>
       ) : (
         <button type="button" className="btn btn-primary btn-block" disabled={!canRequest || !p.laterValid} onClick={p.onBook} data-testid="book-ride">
-          {p.laterValid ? t("book.submit", { time: fmtLocal(p.laterAt, lang) }) : t("book.pickTime")}
+          {p.laterValid ? t("book.submit", { time: fmtLocal(p.laterAt, lang) }) : t("book.pickTime", { min: p.minLeadMin })}
         </button>
       )}
     </Sheet>

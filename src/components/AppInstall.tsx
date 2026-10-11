@@ -66,6 +66,7 @@ export function AppSection() {
         </p>
       )}
       <Notifications />
+      <MoveHere />
     </section>
   );
 }

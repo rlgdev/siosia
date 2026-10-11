@@ -18,7 +18,16 @@ import { deviceId, readPref, unsupportedFeatures, writePref } from "../services/
 
 export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nickname" | "ready";
 /** Outcome of opening a master-profile link, shown once. */
-export type LinkNotice = "joined" | "moved" | "bad_link" | "rate_limited" | "active_trip" | "active_ride" | "link_failed";
+export type LinkNotice =
+  | "joined"
+  | "moved"
+  | "moved_away"
+  | "bad_link"
+  | "bad_transfer"
+  | "rate_limited"
+  | "active_trip"
+  | "active_ride"
+  | "link_failed";
 export type Panel = "profile" | "history" | "vehicle" | "earnings" | "bookings" | null;
 
 export interface AppSnapshot {
@@ -242,7 +251,8 @@ export class AppStore {
     try {
       await this.api.redeemTransfer(code, deviceId(), true);
     } catch (e) {
-      this.patch({ linkNotice: e instanceof ServerError && e.code === "active_ride" ? "active_ride" : "link_failed" });
+      const c = e instanceof ServerError ? e.code : null;
+      this.patch({ linkNotice: c === "active_ride" || c === "bad_transfer" || c === "rate_limited" ? c : "link_failed" });
       return;
     }
     await this.afterMoved();
@@ -414,6 +424,9 @@ export class AppStore {
           const my = await this.api.myState();
           this.applyMy(my, t0);
         } while (this.refreshAgain);
+      } catch (e) {
+        if (e instanceof ServerError && (e.code === "not_member" || e.code === "no_profile")) void this.lostProfile();
+        throw e;
       } finally {
         this.refreshing = null;
       }
@@ -429,6 +442,36 @@ export class AppStore {
     // Smooth the offset so a single slow response doesn't make countdowns jump.
     const clockOffset = this.snap.my ? this.snap.clockOffset * 0.7 + offset * 0.3 : offset;
     this.patch({ my, clockOffset });
+    if (this.snap.phase !== "ready") return;
+    if (my.hasProfile === false) {
+      void this.lostProfile();
+      return;
+    }
+    // The screen follows the active ride: a booking that starts while this phone is in the other
+    // mode (or on Home) must not stay invisible.
+    if (my.ride) {
+      const want: Mode = my.ride.role === "driver" ? "drive" : "ride";
+      if (this.snap.mode !== want) {
+        writePref(`mode.${this.snap.uid}`, want);
+        this.patch({ mode: want });
+      }
+    }
+  }
+
+  private losing = false;
+
+  /** This account lost its profile or membership (moved to another app or phone, deleted, link replaced). */
+  private async lostProfile(): Promise<void> {
+    if (this.losing || this.snap.phase !== "ready") return;
+    this.losing = true;
+    try {
+      this.dispose();
+      writePref(`mode.${this.snap.uid}`, null);
+      this.patch({ profile: null, vehicle: null, mode: null, panel: null, my: null, linkNotice: "moved_away" });
+      await this.boot();
+    } finally {
+      this.losing = false;
+    }
   }
 
   dispose(): void {

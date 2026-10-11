@@ -522,6 +522,8 @@ describe("rides booked in advance", () => {
     expect(open).toMatchObject([{ ride: { id: b.id, rider: { nickname: "Ola" } }, distanceKm: 1 }]);
     expect(at((e) => e.myState("d1")).openBookings).toBe(1);
     expect(at((e) => e.claimBooking("d1", b.id))).toBe("won");
+    expect(at((e) => e.myState("d1"))).toMatchObject({ bookings: 0, driverBookings: 1, hasProfile: true });
+    expect(at((e) => e.myState("rider"))).toMatchObject({ bookings: 1, driverBookings: 0 });
     expect(code(() => at((e) => e.claimBooking("d2", b.id)))).toBe("taken");
     const b2 = book("rider2", 150); // within 8.6 + 30 min of the first: overlaps for d1
     expect(code(() => at((e) => e.claimBooking("d1", b2.id)))).toBe("overlap");
@@ -539,6 +541,20 @@ describe("rides booked in advance", () => {
     expect(at((e) => e.getRide("rider", b.id)).status).toBe("accepted");
     now = b.scheduledFor! + 16 * MIN;
     expect(at((e) => e.getRide("rider", b.id))).toMatchObject({ status: "requested", driver: null });
+  });
+
+  it("counts the no-show wait from the booked time when the driver comes early", () => {
+    const b = book();
+    at((e) => e.claimBooking("d1", b.id));
+    now = b.scheduledFor! - 30 * MIN;
+    at((e) => e.heartbeat("d1", near(1))); // started
+    now = b.scheduledFor! - 20 * MIN;
+    at((e) => e.advance("d1", b.id, "arrived")); // 20 min early
+    now = b.scheduledFor! - 10 * MIN; // 10 min after arriving, still before the booked time
+    expect(code(() => at((e) => e.cancelRide("d1", b.id, "no_show")))).toBe("too_early");
+    now = b.scheduledFor! + 5 * MIN;
+    at((e) => e.cancelRide("d1", b.id, "no_show"));
+    expect(db.rides[b.id]).toMatchObject({ status: "cancelled", cancelReason: "no_show" });
   });
 
   it("opens an unclaimed booking to normal dispatch 20 min before and expires it 15 min after its time", () => {

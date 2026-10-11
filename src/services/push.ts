@@ -29,7 +29,11 @@ export async function pushState(api: Backend, vapidKey: string): Promise<PushSta
   if (Notification.permission !== "granted") return "off";
   if (api.kind === "mock") return readPref<boolean>("push.off", false) ? "off" : "on";
   const sub = await (await registration())?.pushManager.getSubscription();
-  return sub ? "on" : "off";
+  if (!sub) return "off";
+  // The server may have dropped it (profile moved or deleted, 410 from the push service): re-save.
+  const json = sub.toJSON();
+  await api.savePush({ endpoint: sub.endpoint, p256dh: json.keys?.p256dh ?? "", auth: json.keys?.auth ?? "" }).catch(() => {});
+  return "on";
 }
 
 /** Must run from a tap (iOS asks only then). */
@@ -39,7 +43,10 @@ export async function enablePush(api: Backend, vapidKey: string): Promise<PushSt
   if (perm !== "granted") return "off";
   writePref("push.off", null);
   if (api.kind === "mock") return "on";
-  const reg = await navigator.serviceWorker.ready;
+  const reg = await Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("service worker not ready")), 10_000))
+  ]);
   const sub =
     (await reg.pushManager.getSubscription()) ??
     (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(vapidKey) as BufferSource }));

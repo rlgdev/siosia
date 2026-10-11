@@ -299,8 +299,8 @@ test("a one-time code moves a profile into another app (the iOS Home Screen app 
   await expect(appPage.getByTestId("link-toast")).toHaveText("Your profile Ola is now in this app.");
   await expect(appPage.getByRole("heading", { name: "Hi, Ola" })).toBeVisible();
 
-  // The browser starts fresh.
-  await browser.reload();
+  // The browser notices by itself and starts fresh (no reload, no stuck screen).
+  await expect(browser.getByTestId("link-toast")).toHaveText("This profile moved to another app or phone. Here you can start again.");
   await expect(browser.getByLabel("Nickname")).toBeVisible();
 });
 

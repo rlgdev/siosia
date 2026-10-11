@@ -699,6 +699,7 @@ body:has(.sharing-banner) .leaflet-top {
   cursor: pointer;
 }
 .push-toast {
+  top: calc(124px + var(--safe-top));
   display: grid;
   gap: 2px;
   text-align: left;
@@ -838,7 +839,8 @@ body:has(.sharing-banner) .leaflet-top {
 
 .toast {
   position: absolute;
-  z-index: 1400;
+  /* above panels (1500), below dialogs (2000) */
+  z-index: 1600;
   left: 50%;
   top: calc(70px + var(--safe-top));
   transform: translateX(-50%);

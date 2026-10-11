@@ -245,7 +245,7 @@ function DriverMain() {
           </div>
         )}
         <div className="pending-row" data-testid="bookings-row">
-          <span>{t("book.driverRow", { open: my?.openBookings ?? 0, mine: my?.bookings ?? 0 })}</span>
+          <span>{t("book.driverRow", { open: my?.openBookings ?? 0, mine: my?.driverBookings ?? 0 })}</span>
           <button type="button" className="btn btn-secondary" onClick={() => store.openPanel("bookings")} data-testid="open-bookings">
             {t("book.browse")}
           </button>

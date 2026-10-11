@@ -106,9 +106,12 @@ function RiderBookings() {
           const id = cancelId!;
           setCancelId(null);
           void run(async () => {
-            await store.api.cancelRide(id);
-            await load();
-            await store.refresh();
+            try {
+              await store.api.cancelRide(id);
+            } finally {
+              await load();
+              await store.refresh().catch(() => {});
+            }
           });
         }}
       />
@@ -139,7 +142,7 @@ function DriverBookings() {
     setOpen(o);
     setMine(m);
   }, [store, fixRef]);
-  const counts = `${app.my?.bookings}|${app.my?.openBookings}`;
+  const counts = `${app.my?.driverBookings}|${app.my?.openBookings}`;
   useEffect(() => {
     void load();
   }, [load, counts, hasFix]);
@@ -197,10 +200,13 @@ function DriverBookings() {
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
-                      await store.api.claimBooking(r.id);
-                      await load();
-                      await store.refresh();
-                      setTab("mine");
+                      try {
+                        await store.api.claimBooking(r.id);
+                        setTab("mine");
+                      } finally {
+                        await load();
+                        await store.refresh().catch(() => {});
+                      }
                     })
                   }
                   data-testid="take-booking"
@@ -255,9 +261,12 @@ function DriverBookings() {
           const id = releaseId!;
           setReleaseId(null);
           void run(async () => {
-            await store.api.releaseBooking(id);
-            await load();
-            await store.refresh();
+            try {
+              await store.api.releaseBooking(id);
+            } finally {
+              await load();
+              await store.refresh().catch(() => {});
+            }
           });
         }}
       />

@@ -74,7 +74,7 @@ An app added to the iPhone Home Screen keeps its **own** storage, separate from 
 it does not see the profile you used in the browser. So move it once:
 
 1. In Siosia in the browser: ☰ → **Siosia as an app** → *Show code for the app* (valid 30 min).
-2. Share (⎙) → **Add to Home Screen**.
+2. Share (the square with an arrow) → **Add to Home Screen**.
 3. Open Siosia from the Home Screen → *Moving from the browser or another phone?* → enter the
    code. Your profile, history, car and (for a master profile) its link move into the app; the
    browser then starts fresh. The same code moves a profile to another phone. A master-profile
@@ -193,7 +193,7 @@ Aplikacja dodana do ekranu początkowego iPhone'a ma **własną** pamięć, oddz
 Chrome: nie widzi profilu z przeglądarki. Przenieś go raz:
 
 1. W Siosi w przeglądarce: ☰ → **Siosia jako aplikacja** → *Pokaż kod dla aplikacji* (ważny 30 min).
-2. Udostępnij (⎙) → **Do ekranu początkowego**.
+2. Udostępnij (kwadrat ze strzałką) → **Do ekranu początkowego**.
 3. Otwórz Siosię z ekranu początkowego → *Przenosisz profil z przeglądarki lub innego telefonu?* →
    wpisz kod. Profil, historia, samochód i (dla profilu Master) jego link przejdą do aplikacji;
    przeglądarka zacznie od nowa. Ten sam kod przenosi profil na inny telefon. Wklejony link do

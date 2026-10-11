@@ -205,8 +205,12 @@ export interface MyState {
   nearbyRequests: number | null;
   /** Latest completed ride from the last 2 h that this user has not rated yet. */
   pendingReceipt: RideView | null;
-  /** My upcoming bookings (as rider or as the driver who took them). */
+  /** My upcoming bookings as rider. */
   bookings: number;
+  /** Upcoming bookings I took as driver. */
+  driverBookings: number;
+  /** False once this account lost its profile (moved to another app/phone, deleted). */
+  hasProfile: boolean;
   /** Bookings without a driver that this user could take (0 for rider-only profiles). */
   openBookings: number;
 }

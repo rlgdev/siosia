@@ -89,10 +89,12 @@ export function RiderApp() {
   const [laterAt, setLaterAt] = useState(() => toLocalInput(roundUp5(Date.now() + 60 * 60_000)));
   const [booked, setBooked] = useState<string | null>(null);
   const bookingCfg = dep.booking;
-  const laterMinMs = Date.now() + bookingCfg.minLeadMin * 60_000;
+  // The earliest offered time is on a 5-minute mark with a minute to spare (iOS ignores `min`, so
+  // the button checks it too).
+  const laterMinMs = roundUp5(Date.now() + (bookingCfg.minLeadMin + 1) * 60_000);
   const laterMaxMs = Date.now() + bookingCfg.maxDays * 86_400_000;
   const laterMs = new Date(laterAt).getTime();
-  const laterValid = Number.isFinite(laterMs) && laterMs >= laterMinMs - 60_000 && laterMs <= laterMaxMs;
+  const laterValid = Number.isFinite(laterMs) && laterMs >= Date.now() + bookingCfg.minLeadMin * 60_000 + 30_000 && laterMs <= laterMaxMs;
 
   // Pickup defaults to the GPS position until the rider picks another one (FR-010).
   const fix = gps.fix;
@@ -304,6 +306,7 @@ export function RiderApp() {
         booked={booked}
         onDismissBooked={() => setBooked(null)}
         bookingsCount={my?.bookings ?? 0}
+        minLeadMin={bookingCfg.minLeadMin}
         onOpenBookings={() => store.openPanel("bookings")}
         onRequest={() => void request()}
         busy={busy}

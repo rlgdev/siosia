@@ -821,7 +821,9 @@ begin
         where x.status = 'requested' and x.rider_id <> p_user and not (p_user = any (x.excluded))
           and siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng) <= c.dispatch_radius_km) end,
     'pendingReceipt', case when p.id is null then null else siosia_ride_json(p, p_user) end,
-    'bookings', (select count(*) from rides x where x.status = 'scheduled' and (x.rider_id = p_user or x.driver_id = p_user)),
+    'bookings', (select count(*) from rides x where x.status = 'scheduled' and x.rider_id = p_user),
+    'driverBookings', (select count(*) from rides x where x.status = 'scheduled' and x.driver_id = p_user),
+    'hasProfile', exists (select 1 from profiles where user_id = p_user and not deleted),
     'openBookings', case when siosia_master_role(p_user) = 'rider'
                            or not exists (select 1 from vehicles where user_id = p_user) then 0 else
       (select count(*) from rides x where x.status = 'scheduled' and x.driver_id is null
@@ -1506,7 +1508,8 @@ begin
   elsif r.driver_id = v_uid then
     if r.status = 'arrived' and v_reason = 'no_show' then
       select * into c from app_config where id = 1;
-      if r.arrived_at is null or now() < r.arrived_at + make_interval(secs => c.no_show_wait_s) then
+      -- A booked ride waits from the booked time, even if the driver came early.
+      if r.arrived_at is null or now() < greatest(r.arrived_at, r.scheduled_for) + make_interval(secs => c.no_show_wait_s) then
         return siosia_err('too_early');
       end if;
       perform siosia_end_ride(r.id, 'cancelled', 'driver', 'no_show');

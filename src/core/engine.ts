@@ -497,7 +497,9 @@ export class Engine {
       hasVehicle: !!this.db.vehicles[uid],
       nearbyRequests: pos && isValidLatLng(pos) ? this.countNearby(uid, pos) : null,
       pendingReceipt: this.pendingReceipt(uid),
-      bookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && (r.riderId === uid || r.driverId === uid)).length,
+      bookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && r.riderId === uid).length,
+      driverBookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && r.driverId === uid).length,
+      hasProfile: !!this.db.users[uid] && !this.db.users[uid].deleted,
       openBookings:
         this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length
     };
@@ -736,7 +738,8 @@ export class Engine {
     const driverId = r.driverId!;
     if (r.status === "scheduled") return this.releaseBooking(driverId, r.id);
     if (r.status === "arrived" && reason === "no_show") {
-      if (r.arrivedAt === null || this.now < r.arrivedAt + this.cfg.timers.noShowS * 1000)
+      // A booked ride waits from the booked time, even if the driver came early.
+      if (r.arrivedAt === null || this.now < Math.max(r.arrivedAt, r.scheduledFor ?? 0) + this.cfg.timers.noShowS * 1000)
         throw new ServerError("too_early");
       this.endRide(r, "cancelled", "driver", "no_show");
       return;

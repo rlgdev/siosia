@@ -21,7 +21,7 @@ function MoveConfirm() {
   return (
     <Confirm
       open={!!app.moveConfirm && app.phase !== "loading"}
-      message={t("move.confirm", { name: app.profile?.nickname ?? "" })}
+      message={app.profile?.nickname ? t("move.confirm", { name: app.profile.nickname }) : t("move.confirmAny")}
       confirmLabel={t("move.confirmYes")}
       onConfirm={() => void store.confirmMove()}
       onCancel={() => store.cancelMove()}
@@ -71,7 +71,7 @@ function LinkToast() {
   const app = useApp();
   const store = useStore();
   const n = app.linkNotice;
-  const visible = !!n && ((n !== "joined" && n !== "moved") || app.phase === "ready");
+  const visible = !!n && ((n !== "joined" && n !== "moved") || app.phase === "ready") && app.phase !== "loading";
   useEffect(() => {
     if (!visible) return;
     const id = setTimeout(() => store.clearLinkNotice(), 7000);
@@ -84,6 +84,8 @@ function LinkToast() {
         ? t("master.joined", { name: app.profile?.nickname ?? "" })
         : n === "moved"
           ? t("move.done", { name: app.profile?.nickname ?? "" })
+          : n === "moved_away"
+            ? t("move.away")
         : n === "link_failed"
           ? t("master.failed")
           : t(`err.${n}` as MessageKey)}
