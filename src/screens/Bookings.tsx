@@ -11,14 +11,10 @@ import { useI18n } from "../i18n";
 import { useGeo } from "../services/geolocation";
 import { useApp, useStore } from "../state/store";
 
-/** "Mon 12 Oct, 14:30" for a server-clock time, on this device's clock. */
-function useWhen(): (serverMs: number) => string {
+/** "Mon 12 Oct, 14:30". Booked times are wall-clock times: shown exactly as booked. */
+function useWhen(): (ms: number) => string {
   const { locale } = useI18n();
-  const app = useApp();
-  return (ms) =>
-    new Intl.DateTimeFormat(locale, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(
-      ms - app.clockOffset
-    );
+  return (ms) => new Intl.DateTimeFormat(locale, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(ms);
 }
 
 export function BookingsPanel() {
@@ -152,7 +148,7 @@ function DriverBookings() {
     return () => clearInterval(id);
   }, [load]);
 
-  const time = (ms: number) => new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(ms - app.clockOffset);
+  const time = (ms: number) => new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(ms);
   // Straight line × 1.3 at 30 km/h (like the routing fallback) plus 5 min to spare.
   const leaveBy = (r: RideView) => {
     if (!fix || r.scheduledFor === null) return null;

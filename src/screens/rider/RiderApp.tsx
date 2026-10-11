@@ -189,10 +189,11 @@ export function RiderApp() {
         estKm: est.km,
         estMin: est.min,
         fareIsEstimate: est.estimate,
-        scheduledFor: laterMs + app.clockOffset
+        // A booked time is wall-clock time: exactly what the rider picked (no clock-offset shift).
+        scheduledFor: laterMs
       });
       const at = new Intl.DateTimeFormat(lang, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(
-        (r.scheduledFor ?? laterMs) - app.clockOffset
+        r.scheduledFor ?? laterMs
       );
       setBooked(t("book.done", { time: at }));
       setWhen("now");

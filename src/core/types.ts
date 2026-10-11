@@ -165,7 +165,7 @@ export interface RideView {
   round: number;
   /** When the request expires if still unaccepted (server clock; follows the current config). */
   expiresAt: number;
-  /** Booked pickup time (server clock) for a ride booked in advance; null = right away. */
+  /** Booked pickup time (wall-clock ms, as picked) for a ride booked in advance; null = right away. */
   scheduledFor: number | null;
   rider: PublicParty;
   driver: PublicDriver | null;
@@ -213,7 +213,7 @@ export interface MyState {
 
 /** A ride booked for later. */
 export interface BookingInput extends RideRequestInput {
-  /** Pickup time, server clock (ms). */
+  /** Pickup time (wall-clock ms, as picked). */
   scheduledFor: number;
 }
 
