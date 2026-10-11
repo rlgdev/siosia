@@ -10,7 +10,8 @@ export type PushKind =
   | "time_to_go"
   | "driver_coming"
   | "driver_arrived"
-  | "booking_open";
+  | "booking_open"
+  | "request_new";
 
 export interface PushParams {
   /** Booked pickup time: ms or an ISO timestamp (as Postgres sends it). */
@@ -57,7 +58,8 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     time_to_go: ["Time to go", "Pickup {time}: {rider} at {pickup}. Open Siosia."],
     driver_coming: ["{driver} is on the way", "Your driver is heading to the pickup."],
     driver_arrived: ["{driver} is here", "Your driver has arrived at the pickup."],
-    booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."]
+    booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
+    request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -67,7 +69,8 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     time_to_go: ["Czas jechać", "Odbiór {time}: {rider}, {pickup}. Otwórz Siosię."],
     driver_coming: ["{driver} jest w drodze", "Kierowca jedzie do miejsca odbioru."],
     driver_arrived: ["{driver} czeka", "Kierowca jest na miejscu odbioru."],
-    booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafiła do kierowców w pobliżu."]
+    booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafiła do kierowców w pobliżu."],
+    request_new: ["Nowe zamówienie", "Odbiór: {pickup}. Otwórz Siosię, aby je przyjąć."]
   }
 };
 

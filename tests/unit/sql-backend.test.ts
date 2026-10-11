@@ -584,6 +584,33 @@ describe("SQL backend (PGlite)", () => {
     await call(B1, "siosia_cancel_ride", [b.id, null]);
   });
 
+  it("keeps an online driver whose app went quiet on standby: new requests become notifications", async () => {
+    const SD = "00000000-0000-4000-8000-000000000061";
+    const SR = "00000000-0000-4000-8000-000000000062";
+    for (const id of [SD, SR]) await admin("insert into auth.users (id) values ($1)", [id]);
+    await onboard(SD, "Stefan", true);
+    await onboard(SR, "Sara");
+    await call(SD, "siosia_save_push", ["https://web.push.apple.com/sd", "p".repeat(40), "a".repeat(16)]);
+    await call(SD, "siosia_set_online", [true]);
+    await admin("update public.driver_status set last_seen = now() - interval '2 minutes' where user_id = $1", [SD]);
+    expect(await call<Json>(SD, "siosia_my_state")).toMatchObject({ driverOnline: false, standby: true });
+    await admin("delete from public.push_outbox");
+    const ride = await call<Json>(SR, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    expect((await admin("select user_id, kind, params from public.push_outbox")).rows).toEqual([
+      { user_id: SD, kind: "request_new", params: { pickup: "Centrum" } }
+    ]);
+    await call(SR, "siosia_cancel_ride", [ride.id, null]);
+    // Going offline on purpose ends standby.
+    await call(SD, "siosia_set_online", [true]);
+    await call(SD, "siosia_set_online", [false]);
+    expect((await call<Json>(SD, "siosia_my_state")).standby).toBe(false);
+    await admin("delete from public.push_outbox");
+    const r2 = await call<Json>(SR, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    expect((await admin("select count(*)::int as n from public.push_outbox")).rows[0]).toEqual({ n: 0 });
+    await call(SR, "siosia_cancel_ride", [r2.id, null]);
+    expect(await as<Json>(U.rider, "select public.siosia_config()")).toMatchObject({ standbyHours: 4 });
+  });
+
   it("keeps the sweep alive when a user with a booking is removed, and checks busy in either role", async () => {
     const G1 = "00000000-0000-4000-8000-000000000051";
     const GD = "00000000-0000-4000-8000-000000000052";

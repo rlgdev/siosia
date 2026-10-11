@@ -246,6 +246,7 @@ export const pl: Record<MessageKey, string> = {
   "move.confirmAny": "Ta aplikacja ma już profil. Przenieść tu drugi profil i połączyć je? Kursy obu zostaną w historii.",
   "move.away": "Ten profil przeszedł do innej aplikacji lub telefonu. Tutaj możesz zacząć od nowa.",
   "trip.bookedFor": "Zarezerwowany odbiór: {time}",
+  "driver.standbyInfo": "Telefon zablokowany albo Siosia zamknięta? Z włączonymi powiadomieniami nadal dowiesz się o nowych zamówieniach przez {h} h — dotknij, aby wrócić online. Przejdź offline, aby to wyłączyć.",
   "master.badge": "Profil Master",
   "master.everyRide": "każdy kurs:",
   "master.confirmBody": "Otworzyć na tym telefonie wspólny profil z linku? Zastąpi on tutaj Twój profil „{name}”, a telefon będzie działał tylko w roli tego profilu. Powrót: ☰ → Usuń mój profil.",

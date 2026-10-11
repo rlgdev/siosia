@@ -98,6 +98,8 @@ export const DEMO_MASTERS: MasterProfile[] = [
 export interface DriverRow {
   online: boolean;
   lastSeen: number;
+  /** Standby: new requests are notified until then, even after the app went quiet. */
+  standbyUntil?: number | null;
 }
 
 export interface RideRow {
@@ -500,6 +502,7 @@ export class Engine {
       bookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && r.riderId === uid).length,
       driverBookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && r.driverId === uid).length,
       hasProfile: !!this.db.users[uid] && !this.db.users[uid].deleted,
+      standby: !!driver?.standbyUntil && driver.standbyUntil > this.now,
       openBookings:
         this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length
     };
@@ -562,6 +565,7 @@ export class Engine {
     this.db.rides[ride.id] = ride;
     this.effects.pingDrivers = true;
     this.effects.notify.add(uid);
+    this.pushStandby(ride);
     return this.rideView(ride, uid);
   }
 
@@ -764,7 +768,7 @@ export class Engine {
       const active = this.activeRideOf(uid);
       if (active && active.riderId === uid) throw new ServerError("active_ride");
       const fresh = !this.db.drivers[uid]?.online;
-      this.db.drivers[uid] = { online: true, lastSeen: this.now };
+      this.db.drivers[uid] = { online: true, lastSeen: this.now, standbyUntil: this.standbyUntil() };
       // A new online session reviews every pending request nearby again — including ones this
       // driver declined or let lapse earlier.
       if (fresh) this.clearDecisions(uid);
@@ -787,6 +791,7 @@ export class Engine {
     let idlePos: LatLng | null = null;
     if (d?.online) {
       d.lastSeen = this.now;
+      d.standbyUntil = this.standbyUntil();
       this.sweep();
       if (pos && isValidLatLng(pos) && !this.activeRideOf(uid)) {
         idlePos = pos;
@@ -1000,7 +1005,7 @@ export class Engine {
     r.status = "accepted";
     r.acceptedAt = this.now;
     r.dispatchStartedAt = this.now;
-    this.db.drivers[driverId] = { online: true, lastSeen: this.now };
+    this.db.drivers[driverId] = { online: true, lastSeen: this.now, standbyUntil: this.standbyUntil() };
     for (const o of Object.values(this.db.offers))
       if (o.driverId === driverId && (o.status === "offered" || o.status === "queued")) this.closeOffer(o, "withdrawn");
     this.notifyRide(r);
@@ -1019,6 +1024,23 @@ export class Engine {
     this.effects.notify.add(r.riderId);
     if (had) this.effects.notify.add(had);
     this.pushTo(r.riderId, "booking_open", r, {});
+    this.pushStandby(r);
+  }
+
+  private standbyUntil(): number | null {
+    return this.cfg.standbyHours > 0 ? this.now + this.cfg.standbyHours * 3600_000 : null;
+  }
+
+  /** Drivers on standby whose app is not in front (phone locked, app closed) hear about a new request. */
+  private pushStandby(r: RideRow): void {
+    for (const [d, row] of Object.entries(this.db.drivers)) {
+      if (!row.standbyUntil || row.standbyUntil <= this.now) continue;
+      if (row.online && this.now - row.lastSeen < SERVER.activeAppS * 1000) continue; // the offer card shows it
+      const u = this.db.users[d];
+      if (!u || u.deleted || d === r.riderId || r.excluded.includes(d) || !this.db.vehicles[d]) continue;
+      if (this.linkedRole(d) === "rider" || this.activeRideOf(d)) continue;
+      this.pushTo(d, "request_new", r, { pickup: r.pickup.label });
+    }
   }
 
   private pushTo(userId: string, kind: PushKind, r: RideRow, params: PushParams): void {
@@ -1048,9 +1070,13 @@ export class Engine {
     return Object.values(this.db.rides).find((r) => r.driverId === uid && (r.status === "accepted" || r.status === "arrived" || r.status === "in_progress")) ?? null;
   }
 
+  /** Explicitly offline (not the silent-app sweep): standby ends too. */
   private goOffline(uid: string): void {
     const d = this.db.drivers[uid];
-    if (d) d.online = false;
+    if (d) {
+      d.online = false;
+      d.standbyUntil = null;
+    }
     for (const o of Object.values(this.db.offers))
       if (o.driverId === uid && (o.status === "offered" || o.status === "queued")) this.closeOffer(o, "withdrawn");
   }
@@ -1184,6 +1210,7 @@ export class Engine {
     r.notifiedCount = 0;
     r.cancelReason = reason;
     this.effects.pingDrivers = true;
+    this.pushStandby(r);
   }
 
   private notifyRide(r: RideRow): void {

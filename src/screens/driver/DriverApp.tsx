@@ -224,6 +224,11 @@ function DriverMain() {
           </Notice>
         )}
         {rt.online && rt.wakeOk && <p className="muted small">{t("driver.keepOpen")}</p>}
+        {rt.online && (dep.standbyHours ?? 0) > 0 && (
+          <p className="muted small" data-testid="standby-info">
+            {t("driver.standbyInfo", { h: dep.standbyHours })}
+          </p>
+        )}
         {rt.online && rt.fix && (
           <div className="pending-row">
             <span data-testid="pending-nearby" aria-live="polite">

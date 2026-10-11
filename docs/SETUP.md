@@ -131,6 +131,11 @@ where id = 1;
 
 A booking whose rider or driver is still busy waits and gives up 15 minutes after its time.
 
+**Driver standby** (needs notifications): after an online driver's app goes quiet (phone locked,
+app closed) they still get a notification for every new request for `driver_standby_h` hours
+(default 4; 0 = off); tapping it brings them back online. *Go offline* ends it.
+`update public.app_config set driver_standby_h = 4 where id = 1;`
+
 ### Optional: notifications (Web Push) — 15 min
 
 Notifications tell riders when a driver takes their booking, is coming or has arrived, and tell

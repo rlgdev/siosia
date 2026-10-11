@@ -13,6 +13,7 @@ export const DEFAULT_CONFIG: DeploymentConfig = {
   dispatchRadiusKm: 8,
   maxTripKm: 50,
   timezone: "Europe/Warsaw",
+  standbyHours: 4,
   operatorContact: ""
 };
 
@@ -31,6 +32,8 @@ export const SERVER = {
   transferS: 30 * 60,
   /** A booking whose people are still busy gives up this long after its time. */
   bookingLateS: 15 * 60,
+  /** A driver who heartbeated this recently has the app in front (no standby notification). */
+  activeAppS: 6,
   /** Open bookings per rider. */
   maxBookings: 5,
   /** New bookings per rider per day (each one notifies drivers). */

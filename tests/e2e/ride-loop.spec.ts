@@ -350,6 +350,32 @@ test("the menu offers notifications next to the app install steps", async ({ con
   await expect(page.getByTestId("push-state")).not.toBeEmpty();
 });
 
+test("a driver whose app went quiet stays on standby and is back online with the request when the app opens", async ({ context }) => {
+  await isolate(context);
+  const driver = await context.newPage();
+  await goOnlineAsDriver(driver, "Adam", "WX 4242");
+  await expect(driver.getByTestId("standby-info")).toContainText("you still hear about new requests");
+  await driver.goto("about:blank"); // the app is closed (this tab keeps its account)
+
+  const rider = await context.newPage();
+  await rider.clock.install();
+  await onboard(rider, "Ola");
+  await rider.clock.fastForward("01:30"); // the driver has been silent for 90 s: offline, still on standby
+  await rider.waitForTimeout(2500); // the demo server sweeps every 2 s
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 100, 60);
+  await rider.getByTestId("request-ride").click(); // → "New ride request" notification to the driver
+  const drivers = await rider.evaluate(
+    () => Object.values(JSON.parse(localStorage.getItem("siosia.mock.db.v1")!).drivers) as { online: boolean; standbyUntil?: number }[]
+  );
+  expect(drivers.some((d) => !d.online && (d.standbyUntil ?? 0) > 0)).toBe(true); // offline, on standby
+
+  await driver.bringToFront(); // GPS for the driver
+  await driver.goto("/?robots=0"); // opened from the notification
+  await expect(driver.getByTestId("driver-state")).toHaveText("Online", { timeout: 10_000 });
+  await expect(driver.getByTestId("offer-card")).toContainText("Ola", { timeout: 10_000 });
+});
+
 test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {
   await isolate(context);
   const driver = await context.newPage();

@@ -71,6 +71,10 @@ alter table public.app_config drop constraint if exists app_config_booking_check
 alter table public.app_config add constraint app_config_booking_check check (
   booking_min_lead_min between 0 and 1440 and booking_max_days between 1 and 365
   and booking_lead_min between 5 and 240 and booking_open_min between 0 and 240);
+-- Driver standby in hours (0 = off).
+alter table public.app_config add column if not exists driver_standby_h int not null default 4;
+alter table public.app_config drop constraint if exists app_config_driver_standby_check;
+alter table public.app_config add constraint app_config_driver_standby_check check (driver_standby_h between 0 and 24);
 insert into public.app_config (id) values (1) on conflict (id) do nothing;
 
 -- Secrets (one row). No policy → unreadable by clients.
@@ -130,6 +134,9 @@ create table if not exists public.driver_status (
   online    boolean not null default false,
   last_seen timestamptz not null default now()
 );
+-- Standby: until then, new requests are notified to this driver even after their app went quiet
+-- (phone locked, app closed). Extended by every heartbeat; explicit offline ends it.
+alter table public.driver_status add column if not exists standby_until timestamptz;
 
 -- Proof that the invite code was entered on a device (FR-007).
 create table if not exists public.memberships (
@@ -519,6 +526,32 @@ returns text language sql stable security definer set search_path = public as $$
   select coalesce((select nickname from profiles where user_id = p_user), '');
 $$;
 
+create or replace function public.siosia_standby_until()
+returns timestamptz language sql stable security definer set search_path = public as $$
+  select case when c.driver_standby_h > 0 then now() + make_interval(hours => c.driver_standby_h) end
+    from app_config c where c.id = 1;
+$$;
+
+-- Drivers on standby whose app is not in front (phone locked, app closed) hear about a new request.
+create or replace function public.siosia_push_standby(p_ride uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare r rides; d record;
+begin
+  select * into r from rides where id = p_ride;
+  if r.id is null then return; end if;
+  for d in select s.user_id from driver_status s
+            join vehicles v on v.user_id = s.user_id
+            join profiles p on p.user_id = s.user_id and not p.deleted
+           where s.standby_until > now()
+             and not (s.online and s.last_seen > now() - interval '6 seconds') -- app in front: the card shows it
+             and s.user_id <> r.rider_id and not (s.user_id = any (r.excluded))
+             and siosia_master_role(s.user_id) is distinct from 'rider'
+             and not exists (select 1 from rides x where (x.rider_id = s.user_id or x.driver_id = s.user_id)
+                             and x.status in ('requested','accepted','arrived','in_progress')) loop
+    perform siosia_push(d.user_id, 'request_new', r.id, jsonb_build_object('pickup', r.pickup_label));
+  end loop;
+end $$;
+
 create or replace function public.siosia_rides_trigger()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
@@ -530,6 +563,7 @@ begin
   -- A request opened or re-opened: data-less ping so online drivers heartbeat now (§6).
   if new.status = 'requested' and (tg_op = 'INSERT' or old.status <> 'requested' or old.round <> new.round) then
     perform siosia_send('drivers', 'ping');
+    perform siosia_push_standby(new.id);
   end if;
   return null;
 end $$;
@@ -622,7 +656,7 @@ create or replace function public.siosia_go_offline(p_user uuid)
 returns void language plpgsql security definer set search_path = public as $$
 declare o record;
 begin
-  update driver_status set online = false where user_id = p_user;
+  update driver_status set online = false, standby_until = null where user_id = p_user;
   for o in select id from offers where driver_id = p_user and status in ('offered','queued') order by status desc loop
     perform siosia_close_offer(o.id, 'withdrawn');
   end loop;
@@ -663,8 +697,8 @@ begin
         update rides set status = 'accepted', accepted_at = now(), dispatch_started_at = now()
          where id = r.id and status = 'scheduled';
         -- The driver is on duty for this ride from now on, even before their app is open.
-        insert into driver_status (user_id, online, last_seen) values (r.driver_id, true, now())
-        on conflict (user_id) do update set online = true, last_seen = now();
+        insert into driver_status (user_id, online, last_seen, standby_until) values (r.driver_id, true, now(), siosia_standby_until())
+        on conflict (user_id) do update set online = true, last_seen = now(), standby_until = siosia_standby_until();
         for o in select id from offers where driver_id = r.driver_id and status in ('offered','queued') order by status desc loop
           perform siosia_close_offer(o.id, 'withdrawn');
         end loop;
@@ -824,6 +858,7 @@ begin
     'bookings', (select count(*) from rides x where x.status = 'scheduled' and x.rider_id = p_user),
     'driverBookings', (select count(*) from rides x where x.status = 'scheduled' and x.driver_id = p_user),
     'hasProfile', exists (select 1 from profiles where user_id = p_user and not deleted),
+    'standby', coalesce((select standby_until > now() from driver_status where user_id = p_user), false),
     'openBookings', case when siosia_master_role(p_user) = 'rider'
                            or not exists (select 1 from vehicles where user_id = p_user) then 0 else
       (select count(*) from rides x where x.status = 'scheduled' and x.driver_id is null
@@ -880,6 +915,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'dispatchRadiusKm', dispatch_radius_km,
     'maxTripKm', max_trip_km,
     'timezone', timezone,
+    'standbyHours', driver_standby_h,
     'operatorContact', operator_contact)
   from app_config where id = 1;
 $$;
@@ -1538,8 +1574,8 @@ begin
     end if;
     select online into v_was from driver_status where user_id = v_uid for update;
     v_fresh := not coalesce(v_was, false);
-    insert into driver_status (user_id, online, last_seen) values (v_uid, true, now())
-    on conflict (user_id) do update set online = true, last_seen = now();
+    insert into driver_status (user_id, online, last_seen, standby_until) values (v_uid, true, now(), siosia_standby_until())
+    on conflict (user_id) do update set online = true, last_seen = now(), standby_until = siosia_standby_until();
     -- A new online session reviews every pending request nearby again — including ones this
     -- driver declined or let lapse earlier.
     if v_fresh then perform siosia_clear_decisions(v_uid); end if;
@@ -1562,7 +1598,7 @@ begin
   if v_err is not null then return siosia_err(v_err); end if;
   -- Same per-driver lock as set_online / decide_offer / refresh_offers: one pull at a time.
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
-  update driver_status set last_seen = now() where user_id = v_uid and online;
+  update driver_status set last_seen = now(), standby_until = siosia_standby_until() where user_id = v_uid and online;
   if found then
     perform siosia_sweep();
     if p_lat is not null and p_lng is not null and abs(p_lat) <= 90 and abs(p_lng) <= 180

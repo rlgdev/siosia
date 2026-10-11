@@ -244,6 +244,7 @@ export const en = {
   "move.confirmAny": "This app already has a profile. Move the other profile here and merge them? The rides of both stay in the history.",
   "move.away": "This profile moved to another app or phone. Here you can start again.",
   "trip.bookedFor": "Booked pickup: {time}",
+  "driver.standbyInfo": "Phone locked or Siosia closed? With notifications on, you still hear about new requests for {h} h — tap one to come back online. Go offline to stop.",
   "master.badge": "Master profile",
   "master.everyRide": "every ride:",
   "master.confirmBody": "Open the shared profile from this link on this phone? It replaces your profile “{name}” here, and this phone then uses only the shared profile's role. To go back later: ☰ → Delete my profile.",

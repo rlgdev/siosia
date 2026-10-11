@@ -81,6 +81,11 @@ export interface DeploymentConfig {
   dispatchRadiusKm: number;
   maxTripKm: number;
   timezone: string;
+  /**
+   * Driver standby, hours: after the app goes quiet (phone locked, app closed) an online driver
+   * still gets a notification for each new request this long. 0 = off.
+   */
+  standbyHours: number;
   operatorContact: string;
 }
 
@@ -211,6 +216,8 @@ export interface MyState {
   driverBookings: number;
   /** False once this account lost its profile (moved to another app/phone, deleted). */
   hasProfile: boolean;
+  /** Driver standby is on: new requests are notified even with the app closed. */
+  standby: boolean;
   /** Bookings without a driver that this user could take (0 for rider-only profiles). */
   openBookings: number;
 }

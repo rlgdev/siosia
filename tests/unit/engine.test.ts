@@ -679,6 +679,37 @@ describe("notifications (who hears what)", () => {
   });
 });
 
+describe("driver standby (iOS gives web apps no background time)", () => {
+  const trip = { pickup: PICKUP, dropoff: DROPOFF, estKm: 3.42, estMin: 8.6, fareIsEstimate: false };
+  const ev = (fn: (e: Engine) => unknown, cfg = CFG): string[] => {
+    const e = new Engine(db, cfg, now);
+    fn(e);
+    return e.effects.push.map((p) => `${p.kind}>${p.userId}`);
+  };
+
+  it("notifies an online driver whose app went quiet about each new request, until they go offline", () => {
+    online("d1", near(1));
+    online("d2", near(2));
+    at((e) => e.setOnline("d2", false)); // explicit offline: no standby
+    now += 2 * 60_000; // d1 locked the phone: set offline after 60 s, still on standby
+    at((e) => e.sweep());
+    expect(db.drivers.d1.online).toBe(false);
+    expect(at((e) => e.myState("d1")).standby).toBe(true);
+    online("d3", near(3)); // app in front: the offer card shows it, no notification
+    expect(ev((e) => e.requestRide("rider", trip))).toEqual(["request_new>d1"]);
+    now += 5 * 3600_000; // standby lasts 4 h
+    expect(ev((e) => e.requestRide("rider2", trip))).toEqual([]);
+    expect(at((e) => e.myState("d1")).standby).toBe(false);
+  });
+
+  it("is off with standbyHours 0", () => {
+    const off = { ...CFG, standbyHours: 0 };
+    new Engine(db, off, now).setOnline("d1", true);
+    now += 2 * 60_000;
+    expect(ev((e) => e.requestRide("rider", trip), off)).toEqual([]);
+  });
+});
+
 describe("moving a profile into the app (iOS Home Screen apps have their own storage)", () => {
   it("moves profile, history, ratings and vehicle to the app once; the browser starts fresh", () => {
     const ride = request();
@@ -788,7 +819,7 @@ describe("guards and privacy (FR-005, FR-007, FR-043, FR-044)", () => {
     const stored = JSON.stringify(db);
     const pos = near(1);
     expect(stored).not.toContain(String(pos.lat).slice(0, 8)); // the driver's position was never stored
-    expect(Object.keys(db.drivers.d1).sort()).toEqual(["lastSeen", "online"]);
+    expect(Object.keys(db.drivers.d1).sort()).toEqual(["lastSeen", "online", "standbyUntil"]);
     expect(code(() => at((e) => e.getRide("d3", ride.id)))).toBe("not_found");
   });
 

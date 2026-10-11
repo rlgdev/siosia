@@ -81,8 +81,10 @@ it does not see the profile you used in the browser. So move it once:
    link pasted there works too.
 4. In the app: ☰ → **Turn on notifications** (iPhone: iOS 16.4 or newer).
 
-Web apps cannot run in the background on iPhone: while driving keep Siosia open with the screen
-on. Notifications still arrive when the app is closed.
+Web apps cannot run in the background on iPhone. Notifications fill the gap: an online driver
+can lock the phone or close Siosia and still gets a notification for each **new request** (for
+4 hours; *Go offline* stops it) — tap it and Siosia is back online with the request. During a
+trip keep Siosia open with the screen on (your live position needs it).
 
 ## Booking a ride for later
 
@@ -200,8 +202,11 @@ Chrome: nie widzi profilu z przeglądarki. Przenieś go raz:
    profilu Master też działa.
 4. W aplikacji: ☰ → **Włącz powiadomienia** (iPhone: iOS 16.4 lub nowszy).
 
-Aplikacje webowe nie działają w tle na iPhonie: podczas jazdy trzymaj Siosię otwartą z włączonym
-ekranem. Powiadomienia przychodzą także przy zamkniętej aplikacji.
+Aplikacje webowe nie działają w tle na iPhonie. Lukę wypełniają powiadomienia: kierowca online
+może zablokować telefon albo zamknąć Siosię i nadal dostanie powiadomienie o każdym **nowym
+zamówieniu** (przez 4 godziny; *Przejdź offline* to wyłącza) — dotknij, a Siosia wróci online z
+zamówieniem. Podczas kursu trzymaj Siosię otwartą z włączonym ekranem (wymaga tego Twoja pozycja
+na żywo).
 
 ## Rezerwacja kursu na później
 

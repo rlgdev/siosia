@@ -114,6 +114,11 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
   `scheduled_for`; drivers take bookings (`driver_id` while still scheduled, no overlaps); the sweep
   starts a taken booking (`accepted`, driver on duty) `booking_lead_min` before, opens an untaken one
   to normal dispatch `booking_open_min` before, and gives up 15 min after the booked time.
+- **Driver standby**: iOS gives web apps no background execution, so an online driver whose
+  app went quiet stays on standby (`driver_status.standby_until`, extended by heartbeats,
+  `driver_standby_h` hours, ended by explicit offline) and gets a `request_new` push for each new
+  or re-opened request (no position needed — positions are never stored); opening the app brings
+  them back online. Drivers whose app is in front (heartbeat < 6 s ago) are skipped.
 - **Notifications** (Web Push): `push_subscriptions` per device, events queued in `push_outbox` by
   the server functions and the sweep (only for users with a subscription), sent by the Edge Function
   `push-dispatch` (VAPID secrets there) every minute or on insert. Texts EN/PL live in

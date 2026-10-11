@@ -247,6 +247,21 @@ export function useDriverRuntime(): DriverRuntime {
     return my;
   }, [api, store, takeNearby]);
 
+  // Standby: the server kept this driver "on call" while the app was closed. Opening the app (for
+  // example from a "new request" notification) brings them back online at once.
+  const standby = !!app.my?.standby;
+  const resumeTried = useRef(false);
+  useEffect(() => {
+    if (online) {
+      resumeTried.current = false;
+      return;
+    }
+    if (!standby || resumeTried.current || offlineByUser.current) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    resumeTried.current = true;
+    void goOnline().catch(() => {});
+  }, [online, standby, goOnline]);
+
   const goOffline = useCallback(async () => {
     offlineByUser.current = true;
     try {
