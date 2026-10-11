@@ -15,6 +15,8 @@ import { setRoutingUrl } from "../services/routing";
 import { deviceId, readPref, unsupportedFeatures, writePref } from "../services/device";
 
 export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nickname" | "ready";
+/** Outcome of opening a master-profile link, shown once. */
+export type LinkNotice = "joined" | "bad_link" | "rate_limited" | "active_trip" | "active_ride" | "link_failed";
 export type Panel = "profile" | "history" | "vehicle" | "earnings" | null;
 
 export interface AppSnapshot {
@@ -33,6 +35,9 @@ export interface AppSnapshot {
   online: boolean;
   missing: string[];
   bootError: string | null;
+  linkNotice: LinkNotice | null;
+  /** A master link waiting for the user to confirm replacing their profile on this phone. */
+  masterConfirm: string | null;
 }
 
 const INITIAL: AppSnapshot = {
@@ -49,8 +54,41 @@ const INITIAL: AppSnapshot = {
   clockOffset: 0,
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   missing: [],
-  bootError: null
+  bootError: null,
+  linkNotice: null,
+  masterConfirm: null
 };
+
+const MASTER_KEY = "siosia.masterToken";
+
+/**
+ * A master-profile link (…/#master=<token>) is read once and removed from the address bar (so it
+ * is not bookmarked or shared by accident); the token waits in this tab until it has been used.
+ */
+function takeMasterToken(): string | null {
+  if (typeof location === "undefined") return null;
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const fromUrl = params.get("master")?.trim() ?? null;
+  if (params.has("master")) {
+    params.delete("master");
+    const rest = params.toString();
+    history.replaceState(history.state, "", location.pathname + location.search + (rest ? `#${rest}` : ""));
+  }
+  try {
+    if (fromUrl) sessionStorage.setItem(MASTER_KEY, fromUrl);
+    return sessionStorage.getItem(MASTER_KEY) || null;
+  } catch {
+    return fromUrl || null;
+  }
+}
+
+function clearMasterToken(): void {
+  try {
+    sessionStorage.removeItem(MASTER_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export class AppStore {
   private snap: AppSnapshot = INITIAL;
@@ -74,6 +112,10 @@ export class AppStore {
       });
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible" && this.snap.phase === "ready") this.requestRefresh();
+      });
+      // A master link opened in a tab that already runs the app (only the #hash changed).
+      window.addEventListener("hashchange", () => {
+        if (/(^#|&)master=/.test(location.hash)) location.reload();
       });
     }
   }
@@ -106,6 +148,8 @@ export class AppStore {
       this.patch({ phase: "unsupported", missing });
       return;
     }
+    // Take a master link out of the address bar at once (it waits in this tab until it is used).
+    const token = takeMasterToken();
     const cfg = cfgOverride ?? this.snap.cfg ?? (await loadConfig());
     setRoutingUrl(cfg.map.routingUrl);
     setGeocodeUrl(cfg.map.geocodeUrl);
@@ -117,6 +161,7 @@ export class AppStore {
       const uid = await api.start();
       const deployment = await api.getConfig();
       this.patch({ uid, deployment });
+      if (token) await this.openMaster(token, uid, false);
       if (!(await api.isMember(deviceId()))) {
         this.patch({ phase: "invite" });
         return;
@@ -125,6 +170,41 @@ export class AppStore {
     } catch (e) {
       this.patch({ phase: "unavailable", bootError: e instanceof Error ? e.message : String(e) });
     }
+  }
+
+  /**
+   * Joins the master profile behind a link — used once: on any failure the user simply opens the
+   * link again. Another profile on this account is only replaced after the user confirms.
+   */
+  private async openMaster(token: string, uid: string, replace: boolean): Promise<void> {
+    clearMasterToken();
+    try {
+      await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
+      writePref(`mode.${uid}`, "ride");
+      this.patch({ linkNotice: "joined", masterConfirm: null });
+    } catch (e) {
+      const code = e instanceof ServerError ? e.code : null;
+      if (code === "has_profile") this.patch({ masterConfirm: token });
+      else if (code === "bad_link" || code === "rate_limited" || code === "active_trip" || code === "active_ride") this.patch({ linkNotice: code });
+      else this.patch({ linkNotice: "link_failed" });
+    }
+  }
+
+  /** The user agreed to use the master profile from the link instead of their profile here. */
+  async confirmMaster(): Promise<void> {
+    const token = this.snap.masterConfirm;
+    if (!token || !this.snap.uid) return;
+    this.patch({ masterConfirm: null });
+    await this.openMaster(token, this.snap.uid, true);
+    if (this.snap.linkNotice === "joined") await this.afterMember();
+  }
+
+  cancelMaster(): void {
+    this.patch({ masterConfirm: null });
+  }
+
+  clearLinkNotice(): void {
+    if (this.snap.linkNotice) this.patch({ linkNotice: null });
   }
 
   private async afterMember(): Promise<void> {
@@ -148,10 +228,12 @@ export class AppStore {
   private initialMode(): Mode | null {
     const key = `mode.${this.snap.uid}`;
     let mode: Mode | null = readPref<Mode | null>(key, null);
+    // A master profile is a rider profile: it always opens in Ride.
+    if (this.snap.profile?.masterId) mode = "ride";
     if (typeof location !== "undefined") {
       const url = new URL(location.href);
       const fromUrl = url.searchParams.get("mode");
-      if (fromUrl === "ride" || fromUrl === "drive") mode = fromUrl;
+      if ((fromUrl === "ride" || fromUrl === "drive") && !this.snap.profile?.masterId) mode = fromUrl;
       if (url.searchParams.has("mode")) {
         url.searchParams.delete("mode");
         history.replaceState(history.state, "", url);
@@ -183,6 +265,7 @@ export class AppStore {
 
   /** The chosen mode is remembered per user on this device (§3: mode is per device session). */
   setMode(mode: Mode | null): void {
+    if (mode === "drive" && this.snap.profile?.masterId) return; // rider-only profile
     writePref(`mode.${this.snap.uid}`, mode);
     this.patch({ mode, panel: null });
   }

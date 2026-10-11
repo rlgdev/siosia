@@ -37,6 +37,11 @@ iPhone → *Settings → Privacy → Location Services → Safari Websites → W
 Cancel any time before the trip starts (☰ isn't needed — *Cancel ride* on the screen). Cancelling
 after the driver has arrived counts as a late cancellation (no fee).
 
+**Got a master-profile link?** Open it on your phone: you ride as that shared profile (e.g.
+*Roman*) straight away — no invite code, no nickname — and every ride costs the fixed fare shown
+under the name. It is a rider-only profile. If your phone already has its own profile, Siosia
+asks first — saying yes replaces it on that phone.
+
 ## Driving
 
 1. Tap **Drive** and enter your car once: make, model, colour, plate, seats. Riders see it only
@@ -119,6 +124,11 @@ odśwież stronę.
 
 Anulować możesz do rozpoczęcia kursu (*Anuluj kurs*). Anulowanie po przyjeździe kierowcy liczy się
 jako późne (bez opłat).
+
+**Masz link do profilu Master?** Otwórz go w telefonie: od razu jeździsz jako ten wspólny profil
+(np. *Roman*) — bez kodu zaproszenia i pseudonimu — a każdy kurs kosztuje stałą cenę podaną pod
+nazwą. To profil tylko dla pasażera. Jeśli telefon ma już własny profil, Siosia najpierw zapyta —
+potwierdzenie zastępuje go na tym telefonie.
 
 ## Wożę (kierowca)
 

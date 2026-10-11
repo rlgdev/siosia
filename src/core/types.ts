@@ -93,11 +93,19 @@ export interface Profile {
   driverCancels: number;
   lateCancels: number;
   rating: RatingSummary;
+  /** Set when this device uses a shared master profile (opened from its link): rider only. */
+  masterId: string | null;
+  /** Profile icon id (see components/profileIcons.ts), from the master profile; null = none. */
+  icon: string | null;
+  /** Every ride of a master profile costs exactly this (deployment currency); null = tariff. */
+  fixedFare: number | null;
 }
 
 export interface PublicParty {
   nickname: string;
   rating: RatingSummary;
+  /** Profile icon id, shown next to the nickname (master profiles only). */
+  icon?: string | null;
 }
 
 export interface PublicDriver extends PublicParty {
@@ -246,6 +254,9 @@ export type ServerErrorCode =
   | "email_in_use"
   | "no_account"
   | "not_enabled"
+  | "bad_link"
+  | "has_profile"
+  | "rider_only"
   | "unavailable";
 
 export class ServerError extends Error {

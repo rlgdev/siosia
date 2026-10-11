@@ -6,6 +6,7 @@ import "leaflet/dist/leaflet.css";
 import { useEffect, useRef } from "react";
 import type { MapEndpoints } from "../config";
 import type { LatLng } from "../core/types";
+import { profileIcon } from "./profileIcons";
 
 export type MarkerKind = "pickup" | "dropoff" | "car" | "nearby" | "rider" | "me";
 
@@ -18,6 +19,8 @@ export interface MapMarker {
   draggable?: boolean;
   onDragEnd?: (p: LatLng) => void;
   title?: string;
+  /** Profile icon id: a rider with one is drawn as that icon instead of the dot. */
+  icon?: string | null;
 }
 
 export interface MapViewProps {
@@ -48,8 +51,12 @@ function iconFor(m: MapMarker): L.DivIcon {
       return L.divIcon({ className: "pin pin-pickup", html: `<span class="pin-dot"></span>`, iconSize: [28, 28], iconAnchor: [14, 14] });
     case "dropoff":
       return L.divIcon({ className: "pin pin-dropoff", html: `<span class="pin-square"></span>`, iconSize: [28, 28], iconAnchor: [14, 14] });
-    case "rider":
+    case "rider": {
+      const def = profileIcon(m.icon);
+      if (def)
+        return L.divIcon({ className: `rider-icon${m.stale ? " is-stale" : ""}`, html: `<span>${def.svg}</span>`, iconSize: [64, 32], iconAnchor: [32, 16] });
       return L.divIcon({ className: `pin pin-rider${m.stale ? " is-stale" : ""}`, html: `<span class="pulse"></span><span class="pin-core"></span>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+    }
     case "me":
       return L.divIcon({ className: "pin pin-me", html: `<span class="pin-core"></span>`, iconSize: [22, 22], iconAnchor: [11, 11] });
     case "nearby":
@@ -60,7 +67,7 @@ function iconFor(m: MapMarker): L.DivIcon {
   }
 }
 
-const iconKey = (m: MapMarker) => `${m.kind}|${Math.round(m.heading ?? 0)}|${m.stale ? 1 : 0}`;
+const iconKey = (m: MapMarker) => `${m.kind}|${Math.round(m.heading ?? 0)}|${m.stale ? 1 : 0}|${m.icon ?? ""}`;
 
 export function MapView(props: MapViewProps) {
   const el = useRef<HTMLDivElement>(null);

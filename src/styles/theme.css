@@ -646,6 +646,58 @@ body:has(.sharing-banner) .leaflet-top {
   align-items: center;
   gap: 12px;
 }
+.profile-icon {
+  display: inline-block;
+  vertical-align: middle;
+  line-height: 0;
+  flex: none;
+}
+.profile-icon svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.profile-icon-sm {
+  width: 44px;
+}
+.profile-icon-md {
+  width: 72px;
+}
+.profile-icon-lg {
+  width: 120px;
+}
+.master-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--bg);
+}
+.master-chip strong,
+.master-chip .small {
+  display: block;
+}
+.rider-icon span {
+  display: block;
+  padding: 3px 5px;
+  border-radius: 14px;
+  background: #fff;
+  border: 2px solid #2e7d4f;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+}
+.rider-icon svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.toast-wide {
+  max-width: calc(100% - 32px);
+  width: max-content;
+  border-radius: 14px;
+  text-align: center;
+  cursor: pointer;
+}
 .pending-row {
   display: flex;
   justify-content: space-between;

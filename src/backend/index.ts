@@ -7,8 +7,8 @@ export async function createBackend(cfg: AppConfig): Promise<Backend> {
     const { SupabaseBackend } = await import("./supabase/index");
     return new SupabaseBackend(cfg.supabaseUrl, cfg.supabaseKey);
   }
-  const { MockBackend, tabUserId } = await import("./mock/index");
-  return new MockBackend(tabUserId(), { ...cfg.deployment, inviteCode: cfg.mockInviteCode });
+  const [{ MockBackend, tabUserId }, { DEMO_MASTERS }] = await Promise.all([import("./mock/index"), import("../core/engine")]);
+  return new MockBackend(tabUserId(), { ...cfg.deployment, inviteCode: cfg.mockInviteCode, masters: DEMO_MASTERS });
 }
 
 export type { Backend } from "./types";

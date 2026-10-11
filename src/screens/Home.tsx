@@ -1,5 +1,6 @@
 // S1 Home: Ride or Drive, nickname, language, optional sign-in.
 
+import { ProfileIcon } from "../components/ProfileIcon";
 import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
 
@@ -10,7 +11,7 @@ export function Home() {
   return (
     <main className="home">
       <header className="home-head">
-        <div className="logo" aria-hidden="true">S</div>
+        {app.profile?.icon ? <ProfileIcon icon={app.profile.icon} size="md" /> : <div className="logo" aria-hidden="true">S</div>}
         <div>
           <h1>{t("home.hello", { name: app.profile?.nickname ?? "" })}</h1>
           <p className="muted">{t("home.choose")}</p>
@@ -23,11 +24,13 @@ export function Home() {
           <span className="mode-title">{t("home.ride")}</span>
           <span className="mode-body">{t("home.rideBody")}</span>
         </button>
-        <button type="button" className="mode-card" onClick={() => store.setMode("drive")} data-testid="mode-drive">
-          <span className="mode-icon" aria-hidden="true">🚗</span>
-          <span className="mode-title">{t("home.drive")}</span>
-          <span className="mode-body">{t("home.driveBody")}</span>
-        </button>
+        {!app.profile?.masterId && (
+          <button type="button" className="mode-card" onClick={() => store.setMode("drive")} data-testid="mode-drive">
+            <span className="mode-icon" aria-hidden="true">🚗</span>
+            <span className="mode-title">{t("home.drive")}</span>
+            <span className="mode-body">{t("home.driveBody")}</span>
+          </button>
+        )}
       </div>
       <div className="home-foot">
         <label className="field inline">

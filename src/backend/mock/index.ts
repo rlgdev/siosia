@@ -81,7 +81,7 @@ export class MockBackend implements Backend {
   }
   async ping(): Promise<void> {}
   async getConfig(): Promise<DeploymentConfig> {
-    const { inviteCode: _secret, ...pub } = this.cfg;
+    const { inviteCode: _secret, masters: _links, ...pub } = this.cfg;
     return pub;
   }
 
@@ -90,6 +90,9 @@ export class MockBackend implements Backend {
   }
   join(code: string, deviceId: string) {
     return this.call((e) => e.join(this.uid, code, deviceId));
+  }
+  joinMaster(token: string, deviceId: string, language: Lang, replace = false) {
+    return this.call((e) => e.joinMaster(this.uid, token, deviceId, language, replace));
   }
   getProfile() {
     return this.call((e) => e.getProfile(this.uid));

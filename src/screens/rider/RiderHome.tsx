@@ -1,9 +1,11 @@
 // R1 Rider home sheet: pickup (GPS, pin, address), dropoff (pin, address), estimate, Request ride.
 
 import { useState, type FormEvent } from "react";
+import { MasterChip } from "../../components/ProfileIcon";
 import { Money, Notice, Sheet, fmtKm, fmtMin } from "../../components/ui";
 import type { LatLng, Place } from "../../core/types";
 import { useI18n } from "../../i18n";
+import { useApp } from "../../state/store";
 import { GeocodeError, searchAddress } from "../../services/geocode";
 import type { GeoState } from "../../services/geolocation";
 import type { Estimate } from "./useEstimate";
@@ -31,9 +33,11 @@ interface Props {
 
 export function RiderHome(p: Props) {
   const { t } = useI18n();
+  const fixed = useApp().profile?.fixedFare ?? null;
   const canRequest = !!p.pickup && !!p.dropoff && !!p.est && !p.est.loading && !p.blockReason && !p.busy;
   return (
     <Sheet>
+      <MasterChip />
       {p.notice && (
         <Notice kind="warn">
           <span>{p.notice}</span>{" "}
@@ -68,7 +72,13 @@ export function RiderHome(p: Props) {
               <strong data-testid="fare">
                 <Money amount={p.est.fare} currency={p.currency} />
               </strong>
-              {p.est.estimate && <span className="badge badge-warn">{t("common.estimate")}</span>}
+              {fixed !== null ? (
+                <span className="badge" data-testid="fixed-fare">
+                  {t("fare.fixed")}
+                </span>
+              ) : (
+                p.est.estimate && <span className="badge badge-warn">{t("common.estimate")}</span>
+              )}
             </>
           )}
         </div>

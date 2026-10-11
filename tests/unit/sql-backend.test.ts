@@ -363,6 +363,65 @@ describe("SQL backend (PGlite)", () => {
     await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
   });
 
+  it("opens a master profile from its link: shared nickname and icon, rider only, fixed fare", async () => {
+    const M1 = "00000000-0000-4000-8000-000000000011";
+    const M2 = "00000000-0000-4000-8000-000000000012";
+    const M3 = "00000000-0000-4000-8000-000000000013";
+    for (const id of [M1, M2, M3]) await admin("insert into auth.users (id) values ($1)", [id]);
+    const TOKEN = "roman-link-token-0123456789";
+    const join = (uid: string, token: string, device: string, replace = false) => call<Json>(uid, "siosia_join_master", [token, device, "en", replace]);
+    // Operator only; the token itself is never stored; only a safe alphabet (links break otherwise).
+    expect(await errorOf(as(U.rider, "select public.siosia_set_master('roman', 'x', 'Roman', null, 18)"))).toMatch(/permission denied/);
+    expect(await errorOf(admin("select public.siosia_set_master('roman', 'bad+token&0123456789', 'Roman', null, 18)"))).toMatch(/letters, digits/);
+    await admin("select public.siosia_set_master('roman', $1, 'Roman', 'taycan-ct-green', 18)", [TOKEN]);
+    expect(await errorOf(as(U.rider, "select * from public.master_profiles"))).toMatch(/permission denied/);
+    expect(await errorOf(as(U.rider, `select public.siosia_member_ok('${U.rider}')`))).toMatch(/permission denied/);
+    expect(JSON.stringify((await admin("select * from public.master_profiles")).rows)).not.toContain(TOKEN);
+    expect(await errorOf(join(M1, "wrong-token", "dev-m1"))).toBe("bad_link");
+    // No invite code, no nickname step: the link is enough.
+    const p = await call<Json>(M1, "siosia_join_master", [` ${TOKEN} `, "dev-m1", "pl", false]);
+    expect(p).toMatchObject({ nickname: "Roman", language: "pl", masterId: "roman", icon: "taycan-ct-green", fixedFare: 18 });
+    expect(await as(M1, "select public.siosia_is_member('dev-m1')")).toBe(true);
+    await join(M2, TOKEN, "dev-m2");
+    expect(await call<Json>(M2, "siosia_save_profile", ["Somebody", "pl"])).toMatchObject({ nickname: "Roman", language: "pl" });
+    expect(await errorOf(call(M2, "siosia_set_online", [true]))).toBe("rider_only");
+    expect(await errorOf(call(M2, "siosia_save_vehicle", ["Kia", "Ceed", "Red", "WX 1", 4]))).toBe("rider_only");
+    // Fixed fare whatever the route (30 km / 45 min would be 102.50), never an estimate.
+    const ride = await call<Json>(M1, "siosia_request_ride", [PICKUP, DROPOFF, 30, 45, true]);
+    expect(ride).toMatchObject({ fareIsEstimate: false, rider: { nickname: "Roman", icon: "taycan-ct-green" } });
+    expect(Number(ride.fare)).toBe(18);
+    expect(await errorOf(join(M1, TOKEN, "dev-m1", true))).toBe("active_ride"); // no switching mid-request
+    await call(U.d3, "siosia_set_online", [true]);
+    const s = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    expect(s.offer).toMatchObject({ rideId: ride.id, rider: { nickname: "Roman", icon: "taycan-ct-green" } });
+    expect(Number((s.offer as Json).fare)).toBe(18);
+    await call(M1, "siosia_cancel_ride", [ride.id, null]);
+    // Another profile on the account is replaced only with an explicit yes.
+    await admin("select public.siosia_set_master('master', 'master-link-token-0123456789', 'Master Rider', null, 18)");
+    await join(M3, TOKEN, "dev-m3");
+    expect(await errorOf(join(M3, "master-link-token-0123456789", "dev-m3"))).toBe("has_profile");
+    expect(await join(M3, "master-link-token-0123456789", "dev-m3", true)).toMatchObject({ nickname: "Master Rider", masterId: "master", icon: null });
+    expect(await errorOf(join(U.rider2, TOKEN, "dev-r2"))).toBe("has_profile");
+    expect(await call<Json>(U.rider2, "siosia_get_profile")).toMatchObject({ masterId: null, icon: null, fixedFare: null });
+    // Switched off: the link and the link-only phones stop; switched on again: they are back.
+    await admin("update public.master_profiles set active = false where id = 'roman'");
+    expect(await errorOf(call(M1, "siosia_my_state"))).toBe("not_member");
+    expect(await as(M1, "select public.siosia_is_member('dev-m1')")).toBe(false);
+    expect(await as(M1, "select public.siosia_rt_can_read($1)", [`user:${M1}`])).toBe(false);
+    expect(await errorOf(join(M2, TOKEN, "dev-m2"))).toBe("bad_link");
+    await admin("select public.siosia_set_master('roman', $1, 'Roman', 'taycan-ct-green', 18)", [TOKEN]);
+    expect((await call<Json>(M1, "siosia_my_state")).driverOnline).toBe(false);
+    // A new token retires the old link and signs its phones out until they open the new one.
+    await admin("select public.siosia_set_master('roman', 'roman-link-token-NEW-0123', 'Roman', 'taycan-ct-green', 18)");
+    expect(await errorOf(call(M1, "siosia_my_state"))).toBe("not_member");
+    expect(await errorOf(join(M1, TOKEN, "dev-m1"))).toBe("bad_link");
+    expect(await join(M1, "roman-link-token-NEW-0123", "dev-m1")).toMatchObject({ nickname: "Roman" });
+    // Deleting the profile on a device leaves the master profile.
+    await call(M1, "siosia_delete_profile");
+    expect((await admin("select master_id, deleted from public.profiles where user_id = $1", [M1])).rows[0]).toEqual({ master_id: null, deleted: true });
+    expect((await admin("select count(*)::int as n from pg_constraint where conname in ('profiles_master_id_fkey', 'memberships_via_master_fkey')")).rows[0]).toEqual({ n: 2 });
+  });
+
   it("upgrades a database from the 3-minute version to 20 minutes once, never overriding a later choice", async () => {
     // Simulate the previous schema: no offer_retry_s column, the old default 180 in the row.
     await admin("alter table public.app_config drop column offer_retry_s");

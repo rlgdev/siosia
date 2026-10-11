@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { AccountInfo } from "../backend/types";
+import { MasterChip } from "../components/ProfileIcon";
 import { Confirm, Notice, Panel, RatingBadge, useBusy } from "../components/ui";
 import { useI18n } from "../i18n";
 import { resetDemo } from "../state/demo";
@@ -45,20 +46,27 @@ export function ProfilePanel() {
   return (
     <Panel title={t("profile.title")} onClose={() => store.closePanel()}>
       <section className="card stack">
-        <label className="field">
-          <span>{t("profile.nickname")}</span>
-          <div className="row">
-            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={20} />
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy || name.trim() === p?.nickname || name.trim().length < 2}
-              onClick={() => void run(() => store.saveNickname(name.trim()))}
-            >
-              {t("common.save")}
-            </button>
-          </div>
-        </label>
+        {p?.masterId ? (
+          <>
+            <MasterChip />
+            <p className="muted small">{t("master.nicknameFixed")}</p>
+          </>
+        ) : (
+          <label className="field">
+            <span>{t("profile.nickname")}</span>
+            <div className="row">
+              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={20} />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={busy || name.trim() === p?.nickname || name.trim().length < 2}
+                onClick={() => void run(() => store.saveNickname(name.trim()))}
+              >
+                {t("common.save")}
+              </button>
+            </div>
+          </label>
+        )}
         <label className="field">
           <span>{t("profile.language")}</span>
           <select value={lang} onChange={(e) => void store.setLang(e.target.value === "pl" ? "pl" : "en")}>
@@ -96,7 +104,7 @@ export function ProfilePanel() {
               {t("profile.toRide")}
             </button>
           )}
-          {app.mode !== "drive" && (
+          {app.mode !== "drive" && !p?.masterId && (
             <button type="button" className="btn btn-secondary" onClick={() => switchTo("drive")}>
               {t("profile.toDrive")}
             </button>

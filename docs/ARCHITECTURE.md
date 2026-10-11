@@ -96,6 +96,14 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
   count of pending requests nearby. Within one online session a Decline holds until the driver
   taps Show requests.
 
+- **Master profiles** (operator decision of 2026-10-11; the spec has one profile per device): a
+  shared rider identity opened by a link `#master=<token>` (`master_profiles`, token stored as
+  SHA-256, `siosia_join_master`). The link replaces the invite code; the phone's own anonymous user
+  joins the profile (`profiles.master_id`), takes its nickname and icon, cannot drive
+  (`rider_only`), and every ride is frozen at `fixed_fare`. Drivers see the icon next to the
+  rider's nickname and as the rider's map marker. The fragment never reaches the web server and is
+  removed from the address bar on arrival.
+
 - Rider position is sent from **acceptance** (not while still `requested`): nobody can receive it
   before a driver is assigned, so sending earlier would only spend budget and widen exposure.
 - An extra offer status `queued` implements "one card at a time, others queue" (§6 rule 5).

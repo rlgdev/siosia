@@ -73,6 +73,38 @@ Changes take effect at once, **including for requests already waiting** — lowe
 `request_expiry_s` can expire them right away. Riders see the new deadline on their next refresh;
 other settings show in the apps after their next launch.
 
+### Optional: master profiles — shared rider links with a fixed fare
+
+A master profile is a rider identity you share as a link. Whoever opens the link becomes that
+rider on their phone — no invite code, no nickname step — with the nickname and icon you chose,
+**rider only**, and **every ride at the fixed fare** (whatever the distance). Several phones can
+use one link at the same time; each phone keeps its own rides.
+
+Pick a random token of 16–128 characters using only letters, digits, `-` and `_` (other
+characters are refused because they break in links), then in the SQL editor:
+
+```sql
+-- id, link token, nickname, icon (null or 'taycan-ct-green'), fixed fare in your currency
+select public.siosia_set_master('master', '<long random token>', 'Master Rider', null, 18);
+select public.siosia_set_master('roman',  '<another token>',     'Roman', 'taycan-ct-green', 18);
+```
+
+The link is your site address plus `#master=<token>`, e.g.
+`https://<you>.github.io/siosia/#master=<token>`. Only a SHA-256 of the token is stored; keep the
+link itself like a key.
+
+- **Change name, icon or fare:** run `siosia_set_master` again with the same token — applies at
+  once to every phone on that profile.
+- **Replace a leaked link:** run it with a **new token**. The old link stops working and phones
+  that joined only through it are signed out of Siosia until they open the new link.
+- **Switch a profile off:** `update public.master_profiles set active = false where id = 'roman';`
+  — the link stops working and phones that joined only through it lose access (phones that also
+  entered the invite code stay, rider-only, at the normal tariff). Running `siosia_set_master`
+  again switches it back on.
+- A phone that already has its own profile asks before switching to the shared one. A phone
+  leaves a master profile with ☰ → *Delete my profile* (it then needs the invite code or a link
+  again).
+
 ## 4. Authentication settings (4 min)
 
 1. **Authentication → Sign In / Providers** (sometimes *Providers*): turn **Allow anonymous

@@ -378,6 +378,77 @@ describe("liveness and re-offers (§6 rule 4, §12, US4-2)", () => {
   });
 });
 
+describe("master profiles (shared rider link, fixed fare)", () => {
+  const MASTERS = [
+    { id: "master", token: "tok-master-0123456789", nickname: "Master Rider", icon: null, fixedFare: 18 },
+    { id: "roman", token: "tok-roman-0123456789", nickname: "Roman", icon: "taycan-ct-green", fixedFare: 18 }
+  ];
+  const M = <T>(fn: (e: Engine) => T): T => fn(new Engine(db, { ...CFG, masters: MASTERS }, now));
+  const trip = (estKm: number, estMin: number) => ({ pickup: PICKUP, dropoff: DROPOFF, estKm, estMin, fareIsEstimate: true });
+
+  it("turns any device into the shared profile: no invite, no nickname, rider only, every ride at the fixed fare", () => {
+    expect(code(() => M((e) => e.joinMaster("m1", "wrong-token", "dev-m1", "pl")))).toBe("bad_link");
+    const p = M((e) => e.joinMaster("m1", " tok-roman-0123456789 ", "dev-m1", "pl"));
+    expect(p).toMatchObject({ nickname: "Roman", language: "pl", masterId: "roman", icon: "taycan-ct-green", fixedFare: 18 });
+    expect(M((e) => e.isMember("m1", "dev-m1"))).toBe(true);
+    // A second phone with the same link is the same profile; its nickname cannot be changed.
+    M((e) => e.joinMaster("m2", "tok-roman-0123456789", "dev-m2", "en"));
+    expect(M((e) => e.saveProfile("m2", "Somebody", "pl"))).toMatchObject({ nickname: "Roman", language: "pl" });
+    expect(code(() => M((e) => e.setOnline("m2", true)))).toBe("rider_only");
+    // 30 km / 45 min would cost 102.50 on the tariff: a master profile pays 18, never "estimate".
+    const ride = M((e) => e.requestRide("m1", trip(30, 45)));
+    expect(ride).toMatchObject({ fare: 18, fareIsEstimate: false, rider: { nickname: "Roman", icon: "taycan-ct-green" } });
+    const offer = M((e) => {
+      e.setOnline("d1", true);
+      return e.heartbeat("d1", near(1));
+    }).offer!;
+    expect(offer).toMatchObject({ rideId: ride.id, fare: 18, rider: { nickname: "Roman", icon: "taycan-ct-green" } });
+    // Everybody else keeps the tariff.
+    expect(M((e) => e.requestRide("rider", trip(10, 20))).fare).toBe(40);
+    expect(M((e) => e.getProfile("rider"))).toMatchObject({ masterId: null, icon: null, fixedFare: null });
+    expect(M((e) => e.joinMaster("m3", "tok-master-0123456789", "dev-m3", "en"))).toMatchObject({ nickname: "Master Rider", icon: null, fixedFare: 18 });
+  });
+
+  it("rate-limits wrong links, refuses a driver mid-trip or a rider with an open request, asks before replacing a profile", () => {
+    for (let i = 0; i < 10; i++) code(() => M((e) => e.joinMaster("x", "nope", "dev-x", "en")));
+    expect(code(() => M((e) => e.joinMaster("x", "tok-master-0123456789", "dev-x", "en")))).toBe("rate_limited");
+    request();
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    expect(code(() => M((e) => e.joinMaster("d1", "tok-master-0123456789", "dev-d1", "en", true)))).toBe("active_trip");
+    expect(code(() => M((e) => e.joinMaster("rider", "tok-master-0123456789", "dev-r", "en", true)))).toBe("active_ride");
+    // An idle online driver with a profile of their own: only after an explicit yes.
+    online("d2", near(2));
+    expect(code(() => M((e) => e.joinMaster("d2", "tok-master-0123456789", "dev-d2", "en")))).toBe("has_profile");
+    expect(db.users.d2.nickname).toBe("D2");
+    expect(M((e) => e.joinMaster("d2", "tok-master-0123456789", "dev-d2", "en", true))).toMatchObject({ nickname: "Master Rider", masterId: "master" });
+    expect(db.drivers.d2.online).toBe(false);
+    expect(code(() => M((e) => e.saveVehicle("d2", { make: "Kia", model: "Ceed", colour: "Red", plate: "WX 1", seats: 4 })))).toBe("rider_only");
+    // Re-opening the same link is no replacement; switching to another master is.
+    expect(M((e) => e.joinMaster("d2", "tok-master-0123456789", "dev-d2", "en")).masterId).toBe("master");
+    expect(code(() => M((e) => e.joinMaster("d2", "tok-roman-0123456789", "dev-d2", "en")))).toBe("has_profile");
+    M((e) => e.deleteProfile("d2"));
+    expect(db.users.d2).toMatchObject({ nickname: "Deleted user", deleted: true, masterId: null });
+  });
+
+  it("switching a master off ends link-only access; invite members stay rider-only at the tariff", () => {
+    M((e) => e.joinMaster("m5", "tok-roman-0123456789", "dev-m5", "en"));
+    // d3 entered the invite code before, then opened the link (confirmed).
+    M((e) => e.joinMaster("d3", "tok-roman-0123456789", "dev-d3", "en", true));
+    const off = <T>(fn: (e: Engine) => T): T =>
+      fn(new Engine(db, { ...CFG, masters: MASTERS.map((m) => (m.id === "roman" ? { ...m, active: false } : m)) }, now));
+    expect(off((e) => e.isMember("m5"))).toBe(false);
+    expect(code(() => off((e) => e.myState("m5")))).toBe("not_member");
+    expect(code(() => off((e) => e.joinMaster("m6", "tok-roman-0123456789", "dev-m6", "en")))).toBe("bad_link");
+    expect(off((e) => e.getProfile("d3"))).toMatchObject({ nickname: "Roman", masterId: "roman", icon: null, fixedFare: null });
+    expect(off((e) => e.saveProfile("d3", "Mallory", "en")).nickname).toBe("Roman");
+    expect(code(() => off((e) => e.setOnline("d3", true)))).toBe("rider_only");
+    expect(off((e) => e.requestRide("d3", trip(10, 20))).fare).toBe(40);
+    // Switched on again: the link phones are back.
+    expect(M((e) => e.isMember("m5"))).toBe(true);
+  });
+});
+
 describe("guards and privacy (FR-005, FR-007, FR-043, FR-044)", () => {
   it("requires the invite code, then only a nickname", () => {
     expect(code(() => at((e) => e.myState("stranger")))).toBe("not_member");

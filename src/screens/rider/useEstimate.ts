@@ -16,8 +16,11 @@ export interface Estimate {
 const r2 = (x: number) => Math.round(x * 100) / 100;
 const r1 = (x: number) => Math.round(x * 10) / 10;
 
-/** Route distance, duration and fare between two points (FR-012), refreshed when either changes. */
-export function useEstimate(a: LatLng | null, b: LatLng | null, tariff: Tariff | null): Estimate | null {
+/**
+ * Route distance, duration and fare between two points (FR-012), refreshed when either changes.
+ * `fixedFare` (master profiles) replaces the tariff: every ride costs exactly that.
+ */
+export function useEstimate(a: LatLng | null, b: LatLng | null, tariff: Tariff | null, fixedFare: number | null = null): Estimate | null {
   const key = a && b ? `${a.lat.toFixed(5)},${a.lng.toFixed(5)}|${b.lat.toFixed(5)},${b.lng.toFixed(5)}` : "";
   const [state, setState] = useState<{ key: string; route: RouteResult } | null>(null);
 
@@ -37,5 +40,5 @@ export function useEstimate(a: LatLng | null, b: LatLng | null, tariff: Tariff |
   if (!state || state.key !== key) return { loading: true, km: 0, min: 0, fare: 0, line: null, estimate: false };
   const km = Math.max(0.01, r2(state.route.km));
   const min = Math.max(1, r1(state.route.min));
-  return { loading: false, km, min, fare: computeFare(tariff, km, min), line: state.route.line, estimate: state.route.estimate };
+  return { loading: false, km, min, fare: fixedFare ?? computeFare(tariff, km, min), line: state.route.line, estimate: state.route.estimate };
 }

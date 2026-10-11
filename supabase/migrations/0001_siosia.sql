@@ -82,6 +82,20 @@ create table if not exists public.profiles (
   deleted        boolean not null default false
 );
 
+-- Master profiles (operator decision of 2026-10-11): a shared rider identity opened by a dedicated
+-- link …/#master=<token>. Only the SHA-256 of the token is stored. Every device that opens the link
+-- becomes this profile — nickname and icon, rider only, every ride at fixed_fare.
+create table if not exists public.master_profiles (
+  id         text primary key check (id ~ '^[a-z0-9-]{2,30}$'),
+  token_hash text not null unique,
+  nickname   text not null check (char_length(nickname) between 2 and 20),
+  icon       text check (icon is null or icon ~ '^[a-z0-9-]{1,40}$'),
+  fixed_fare numeric(8,2) check (fixed_fare is null or fixed_fare >= 0),
+  active     boolean not null default true,
+  created_at timestamptz not null default now()
+);
+alter table public.profiles add column if not exists master_id text;
+
 create table if not exists public.vehicles (
   user_id    uuid primary key references auth.users (id) on delete cascade,
   make       text not null check (char_length(make) between 1 and 30),
@@ -106,6 +120,20 @@ create table if not exists public.memberships (
   accepted_at timestamptz not null default now(),
   primary key (user_id, device_id)
 );
+-- Set when the device joined through a master link instead of the invite code: such a membership
+-- counts only while that master profile is switched on, and ends when its token changes.
+alter table public.memberships add column if not exists via_master text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'profiles_master_id_fkey') then
+    alter table public.profiles add constraint profiles_master_id_fkey
+      foreign key (master_id) references public.master_profiles (id) on delete set null;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'memberships_via_master_fkey') then
+    alter table public.memberships add constraint memberships_via_master_fkey
+      foreign key (via_master) references public.master_profiles (id) on delete cascade;
+  end if;
+end $$;
 
 create table if not exists public.invite_failures (
   user_id uuid not null,
@@ -197,13 +225,15 @@ alter table public.invite_failures enable row level security;
 alter table public.rides           enable row level security;
 alter table public.offers          enable row level security;
 alter table public.ratings         enable row level security;
+alter table public.master_profiles enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
 grant usage on schema public to anon, authenticated;
 
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
-              public.memberships, public.invite_failures, public.rides, public.offers, public.ratings
+              public.memberships, public.invite_failures, public.rides, public.offers, public.ratings,
+              public.master_profiles
   from anon, authenticated;
 -- No direct table access at all: clients use the functions below, which return only what each
 -- party may see (raw tables would expose other users' ids, e.g. rides.driver_id / excluded).
@@ -273,11 +303,19 @@ returns jsonb language sql stable security definer set search_path = public as $
     'count', (select n from total));
 $$;
 
+-- The active master profile a user joined through its link (null row when none).
+create or replace function public.siosia_master_of(p_user uuid)
+returns public.master_profiles language sql stable security definer set search_path = public as $$
+  select m.* from profiles p join master_profiles m on m.id = p.master_id and m.active
+   where p.user_id = p_user and not p.deleted;
+$$;
+
 create or replace function public.siosia_party(p_user uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'nickname', coalesce((select nickname from profiles where user_id = p_user), 'Deleted user'),
-    'rating',   siosia_rating(p_user));
+    'rating',   siosia_rating(p_user),
+    'icon',     (siosia_master_of(p_user)).icon);
 $$;
 
 create or replace function public.siosia_vehicle_json(p_user uuid)
@@ -291,7 +329,10 @@ returns jsonb language sql stable security definer set search_path = public as $
   select jsonb_build_object(
     'userId', user_id, 'nickname', nickname, 'language', language,
     'riderCancels', rider_cancels, 'driverCancels', driver_cancels, 'lateCancels', late_cancels,
-    'rating', siosia_rating(user_id))
+    'rating', siosia_rating(user_id),
+    'masterId', master_id,
+    'icon', (siosia_master_of(p_user)).icon,
+    'fixedFare', (siosia_master_of(p_user)).fixed_fare)
   from profiles where user_id = p_user and not deleted;
 $$;
 
@@ -620,13 +661,22 @@ begin
      and x.status = 'requested' and x.round = o.round;
 end $$;
 
+-- Membership: the invite code was entered on a device, or it joined through a master link that is
+-- still switched on. p_device null = on any device.
+create or replace function public.siosia_member_ok(p_user uuid, p_device text default null)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from memberships mb left join master_profiles m on m.id = mb.via_master
+                  where mb.user_id = p_user and (p_device is null or mb.device_id = p_device)
+                    and (mb.via_master is null or m.active));
+$$;
+
 -- Caller checks shared by every client function. Returns an error code or null.
 create or replace function public.siosia_guard(p_need_profile boolean)
 returns text language plpgsql stable security definer set search_path = public as $$
 declare v_uid uuid := auth.uid();
 begin
   if v_uid is null then return 'forbidden'; end if;
-  if not exists (select 1 from memberships where user_id = v_uid) then return 'not_member'; end if;
+  if not siosia_member_ok(v_uid) then return 'not_member'; end if;
   if p_need_profile and not exists (select 1 from profiles where user_id = v_uid and not deleted) then
     return 'no_profile';
   end if;
@@ -680,9 +730,74 @@ begin
   return siosia_ok('true'::jsonb);
 end $$;
 
+-- Opens a master profile from its link: this device's user becomes that profile (nickname, icon,
+-- fixed fare, rider only). The link replaces the invite code; wrong tokens count as failed invite
+-- attempts (same rate limit).
+drop function if exists public.siosia_join_master(text, text, text);
+create or replace function public.siosia_join_master(p_token text, p_device text, p_language text, p_replace boolean)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_uid uuid := auth.uid(); m master_profiles;
+begin
+  if v_uid is null then return siosia_err('forbidden'); end if;
+  if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
+  if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
+    return siosia_err('rate_limited');
+  end if;
+  select * into m from master_profiles
+   where token_hash = encode(digest(btrim(coalesce(p_token, '')), 'sha256'), 'hex') and active;
+  if m.id is null then
+    insert into invite_failures (user_id) values (v_uid);
+    return siosia_err('bad_link');
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  perform siosia_sweep();
+  if exists (select 1 from rides where driver_id = v_uid and status in ('accepted','arrived','in_progress')) then
+    return siosia_err('active_trip');
+  end if;
+  if exists (select 1 from rides where rider_id = v_uid and status in ('requested','accepted','arrived','in_progress')) then
+    return siosia_err('active_ride');
+  end if;
+  -- Replacing another profile on this account (a nickname of its own, or another master) needs the
+  -- user's explicit confirmation.
+  if not coalesce(p_replace, false)
+     and exists (select 1 from profiles where user_id = v_uid and not deleted and master_id is distinct from m.id) then
+    return siosia_err('has_profile');
+  end if;
+  perform siosia_go_offline(v_uid);
+  insert into memberships (user_id, device_id, via_master) values (v_uid, p_device, m.id)
+  on conflict (user_id, device_id) do update
+    set via_master = case when memberships.via_master is null then null else excluded.via_master end;
+  insert into profiles (user_id, nickname, language, master_id)
+  values (v_uid, m.nickname, case when p_language = 'pl' then 'pl' else 'en' end, m.id)
+  on conflict (user_id) do update set nickname = excluded.nickname, master_id = excluded.master_id, deleted = false;
+  perform siosia_notify(v_uid);
+  return siosia_ok(siosia_profile_json(v_uid));
+end $$;
+
+-- Operator only (SQL editor): create or update a master profile and (re)set its link token. The
+-- link is <app URL>#master=<token>; setting a new token makes the old link stop working.
+create or replace function public.siosia_set_master(p_id text, p_token text, p_nickname text, p_icon text, p_fixed_fare numeric)
+returns text language plpgsql security definer set search_path = public, extensions as $$
+declare v_hash text := encode(digest(btrim(coalesce(p_token, '')), 'sha256'), 'hex');
+begin
+  if btrim(coalesce(p_token, '')) !~ '^[A-Za-z0-9_-]{16,128}$' then
+    raise exception 'The link token must be 16-128 characters: letters, digits, - or _';
+  end if;
+  -- A new token retires the old link: phones that joined only through it must open the new one.
+  delete from memberships mb using master_profiles m
+   where mb.via_master = m.id and m.id = p_id and m.token_hash <> v_hash;
+  insert into master_profiles (id, token_hash, nickname, icon, fixed_fare, active)
+  values (p_id, v_hash, btrim(p_nickname), nullif(btrim(coalesce(p_icon, '')), ''),
+          p_fixed_fare, true)
+  on conflict (id) do update set token_hash = excluded.token_hash, nickname = excluded.nickname, icon = excluded.icon,
+                                  fixed_fare = excluded.fixed_fare, active = true;
+  update profiles set nickname = btrim(p_nickname) where master_id = p_id and not deleted;
+  return format('Master profile %s is ready. Share <app URL>#master=<token>.', p_id);
+end $$;
+
 create or replace function public.siosia_is_member(p_device text)
 returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from memberships where user_id = auth.uid() and device_id = p_device);
+  select siosia_member_ok(auth.uid(), p_device);
 $$;
 
 create or replace function public.siosia_get_profile()
@@ -698,6 +813,11 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(false); v_nick text := btrim(coalesce(p_nickname, ''));
 begin
   if v_err is not null then return siosia_err(v_err); end if;
+  -- A master profile's nickname is set by the operator; only the language changes here.
+  select coalesce(m.nickname, p.nickname, v_nick) into v_nick
+    from (select 1) one
+    left join profiles p on p.user_id = auth.uid() and not p.deleted and p.master_id is not null
+    left join master_profiles m on m.id = p.master_id;
   if char_length(v_nick) not between 2 and 20 then return siosia_err('bad_nickname'); end if;
   insert into profiles (user_id, nickname, language)
   values (auth.uid(), v_nick, case when p_language = 'pl' then 'pl' else 'en' end)
@@ -720,6 +840,7 @@ declare v_err text := siosia_guard(true);
   v_colour text := btrim(coalesce(p_colour, '')); v_plate text := upper(btrim(coalesce(p_plate, '')));
 begin
   if v_err is not null then return siosia_err(v_err); end if;
+  if exists (select 1 from profiles where user_id = auth.uid() and master_id is not null) then return siosia_err('rider_only'); end if;
   if char_length(v_make) not between 1 and 30 or char_length(v_model) not between 1 and 30
      or char_length(v_colour) not between 1 and 20 or char_length(v_plate) not between 2 and 12
      or p_seats is null or p_seats not between 1 and 6 then
@@ -745,7 +866,7 @@ begin
   perform siosia_go_offline(v_uid);
   delete from vehicles where user_id = v_uid;
   delete from memberships where user_id = v_uid;
-  update profiles set nickname = 'Deleted user', deleted = true where user_id = v_uid;
+  update profiles set nickname = 'Deleted user', deleted = true, master_id = null where user_id = v_uid;
   return siosia_ok('true'::jsonb);
 end $$;
 
@@ -805,7 +926,7 @@ create or replace function public.siosia_request_ride(p_pickup jsonb, p_dropoff 
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_err text := siosia_guard(true); v_uid uuid := auth.uid(); c app_config; r rides;
-  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8;
+  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
@@ -842,12 +963,15 @@ begin
   v_km := greatest(p_est_km, siosia_km(plat, plng, dlat, dlng));
   if v_km > c.max_trip_km then return siosia_err('too_far'); end if;
   v_min := greatest(1, p_est_min);
+  -- A master profile rides at its fixed fare, whatever the route.
+  v_fixed := (siosia_master_of(v_uid)).fixed_fare;
   insert into rides (rider_id, pickup_lat, pickup_lng, pickup_label, dropoff_lat, dropoff_lng, dropoff_label,
                      est_km, est_min, fare, currency, fare_is_estimate)
   values (v_uid, plat, plng, left(coalesce(p_pickup ->> 'label', ''), 120),
           dlat, dlng, left(coalesce(p_dropoff ->> 'label', ''), 120),
           round(v_km::numeric, 1), round(v_min)::int,
-          siosia_fare(v_km::numeric, v_min::numeric), c.currency, coalesce(p_fare_is_estimate, false))
+          coalesce(v_fixed, siosia_fare(v_km::numeric, v_min::numeric)), c.currency,
+          v_fixed is null and coalesce(p_fare_is_estimate, false))
   returning * into r;
   return siosia_ok(siosia_ride_json(r, v_uid));
 exception when unique_violation then
@@ -895,6 +1019,7 @@ begin
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   if p_online then
+    if exists (select 1 from profiles where user_id = v_uid and master_id is not null) then return siosia_err('rider_only'); end if;
     if not exists (select 1 from vehicles where user_id = v_uid) then return siosia_err('no_vehicle'); end if;
     if exists (select 1 from rides where rider_id = v_uid and status in ('requested','accepted','arrived','in_progress')) then
       return siosia_err('active_ride');
@@ -1123,6 +1248,7 @@ end $$;
 
 grant execute on function public.siosia_config() to anon, authenticated;
 grant execute on function public.siosia_join(text, text) to authenticated;
+grant execute on function public.siosia_join_master(text, text, text, boolean) to authenticated;
 grant execute on function public.siosia_is_member(text) to authenticated;
 grant execute on function public.siosia_get_profile() to authenticated;
 grant execute on function public.siosia_save_profile(text, text) to authenticated;
@@ -1164,7 +1290,7 @@ $$;
 create or replace function public.siosia_rt_can_read(p_topic text)
 returns boolean language sql stable security definer set search_path = public as $$
   select auth.uid() is not null
-     and exists (select 1 from memberships where user_id = auth.uid())
+     and siosia_member_ok(auth.uid())
      and (p_topic = 'drivers'
           or p_topic = 'user:' || auth.uid()::text
           or (p_topic like 'ride:%' and siosia_in_ride(substr(p_topic, 6))));
@@ -1174,7 +1300,7 @@ $$;
 create or replace function public.siosia_rt_can_write(p_topic text, p_extension text)
 returns boolean language sql stable security definer set search_path = public as $$
   select auth.uid() is not null
-     and exists (select 1 from memberships where user_id = auth.uid())
+     and siosia_member_ok(auth.uid())
      and ((p_topic = 'drivers' and p_extension = 'presence'
            and exists (select 1 from driver_status where user_id = auth.uid() and online))
           or (p_topic like 'ride:%' and p_extension in ('broadcast','presence')

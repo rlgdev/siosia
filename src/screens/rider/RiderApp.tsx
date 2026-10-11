@@ -99,7 +99,7 @@ export function RiderApp() {
 
   useRobots(pickup ?? fix ?? cfg.fallbackCenter, true);
 
-  const est = useEstimate(ride || receipt ? null : pickup, ride || receipt ? null : dropoff, dep.tariff);
+  const est = useEstimate(ride || receipt ? null : pickup, ride || receipt ? null : dropoff, dep.tariff, app.profile?.fixedFare ?? null);
   const searchLine = useEstimate(ride?.status === "requested" ? ride.pickup : null, ride?.status === "requested" ? ride.dropoff : null, dep.tariff);
   const rt = useRiderRuntime(ride);
   const liveTarget = ride ? (ride.status === "in_progress" ? ride.dropoff : ride.pickup) : null;

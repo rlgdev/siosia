@@ -44,7 +44,30 @@ export interface UserRow {
   driverCancels: number;
   lateCancels: number;
   deleted: boolean;
+  /** Shared master profile this user joined through its link (rider only). */
+  masterId?: string | null;
 }
+
+/**
+ * A master profile: a shared rider identity opened by a dedicated link. Every device that opens the
+ * link becomes this profile — its nickname and icon, rider only, every ride at `fixedFare`.
+ * (Supabase keeps these in master_profiles with only a hash of the token.)
+ */
+export interface MasterProfile {
+  id: string;
+  token: string;
+  nickname: string;
+  icon: string | null;
+  fixedFare: number | null;
+  /** Switched off: the link stops working, phones that joined only through it lose access. */
+  active?: boolean;
+}
+
+/** Master profiles of the in-browser demo (links: …?backend=mock#master=demo-master / demo-roman). */
+export const DEMO_MASTERS: MasterProfile[] = [
+  { id: "master", token: "demo-master", nickname: "Master Rider", icon: null, fixedFare: 18 },
+  { id: "roman", token: "demo-roman", nickname: "Roman", icon: "taycan-ct-green", fixedFare: 18 }
+];
 
 export interface DriverRow {
   online: boolean;
@@ -111,6 +134,8 @@ export interface DbState {
   drivers: Record<string, DriverRow>;
   /** user id → device ids that entered the invite code (FR-007). */
   members: Record<string, string[]>;
+  /** user id → device id → master profile, for devices that joined through a master link. */
+  linkMembers?: Record<string, Record<string, string>>;
   rides: Record<string, RideRow>;
   offers: Record<string, OfferRow>;
   ratings: RatingRow[];
@@ -124,6 +149,8 @@ export function emptyDb(): DbState {
 export interface EngineConfig extends DeploymentConfig {
   /** Plain invite code for the mock backend; null = no invite needed. (Supabase stores only a hash.) */
   inviteCode: string | null;
+  /** Master profiles and their link tokens (mock only; Supabase stores token hashes). */
+  masters?: MasterProfile[];
 }
 
 export interface Effects {
@@ -146,7 +173,7 @@ export class Engine {
     cfg: Partial<EngineConfig>,
     private readonly now: number
   ) {
-    this.cfg = { ...DEFAULT_CONFIG, inviteCode: null, ...cfg };
+    this.cfg = { ...DEFAULT_CONFIG, inviteCode: null, masters: [], ...cfg };
   }
 
   // ---------- identity ----------
@@ -154,7 +181,10 @@ export class Engine {
   isMember(uid: string, deviceId?: string): boolean {
     if (this.cfg.inviteCode === null) return true;
     const devices = this.db.members[uid] ?? [];
-    return deviceId ? devices.includes(deviceId) : devices.length > 0;
+    if (deviceId ? devices.includes(deviceId) : devices.length > 0) return true;
+    // A master link counts only while that master profile is switched on.
+    const links = Object.entries(this.db.linkMembers?.[uid] ?? {}).filter(([, m]) => this.masterDef(m)?.active !== false && !!this.masterDef(m));
+    return deviceId ? links.some(([d]) => d === deviceId) : links.length > 0;
   }
 
   join(uid: string, code: string, deviceId: string): void {
@@ -167,6 +197,55 @@ export class Engine {
     }
     const devices = this.db.members[uid] ?? [];
     if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+  }
+
+  /**
+   * Opens a master profile from its link: this device's user becomes that profile (nickname, icon,
+   * fixed fare, rider only). The link replaces the invite code. Wrong tokens count as failed
+   * invite attempts (same rate limit).
+   */
+  joinMaster(uid: string, token: string, deviceId: string, language: Lang, replace = false): Profile {
+    if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
+    const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
+    if (fails.length >= 10) throw new ServerError("rate_limited");
+    const m = (this.cfg.masters ?? []).find((x) => x.token === token.trim() && x.active !== false);
+    if (!m) {
+      this.db.inviteFails[uid] = [...fails, this.now];
+      throw new ServerError("bad_link");
+    }
+    this.sweep();
+    if (this.activeDriverRideOf(uid)) throw new ServerError("active_trip");
+    const active = this.activeRideOf(uid);
+    if (active && active.riderId === uid) throw new ServerError("active_ride");
+    // Replacing another profile on this account needs the user's explicit confirmation.
+    const existing = this.db.users[uid];
+    if (!replace && existing && !existing.deleted && (existing.masterId ?? null) !== m.id) throw new ServerError("has_profile");
+    this.goOffline(uid);
+    if (!(this.db.members[uid] ?? []).includes(deviceId)) {
+      const links = (this.db.linkMembers ??= {});
+      links[uid] = { ...(links[uid] ?? {}), [deviceId]: m.id };
+    }
+    this.db.users[uid] = existing
+      ? { ...existing, nickname: m.nickname, masterId: m.id, deleted: false }
+      : { id: uid, nickname: m.nickname, language: language === "pl" ? "pl" : "en", createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, masterId: m.id };
+    this.effects.notify.add(uid);
+    return this.getProfile(uid)!;
+  }
+
+  private masterDef(id: string | null | undefined): MasterProfile | null {
+    return id ? (this.cfg.masters ?? []).find((m) => m.id === id) ?? null : null;
+  }
+
+  /** The master profile this user rides as, while it is switched on (fixed fare, icon). */
+  private masterOf(uid: string): MasterProfile | null {
+    const m = this.masterDef(this.linkedMaster(uid));
+    return m && m.active !== false ? m : null;
+  }
+
+  /** The master profile this user joined (rider only, nickname locked), switched on or not. */
+  private linkedMaster(uid: string): string | null {
+    const u = this.db.users[uid];
+    return u && !u.deleted ? u.masterId ?? null : null;
   }
 
   private requireMember(uid: string): void {
@@ -190,13 +269,18 @@ export class Engine {
       riderCancels: u.riderCancels,
       driverCancels: u.driverCancels,
       lateCancels: u.lateCancels,
-      rating: this.rating(uid)
+      rating: this.rating(uid),
+      masterId: this.linkedMaster(uid),
+      icon: this.masterOf(uid)?.icon ?? null,
+      fixedFare: this.masterOf(uid)?.fixedFare ?? null
     };
   }
 
   saveProfile(uid: string, nickname: string, language: Lang): Profile {
     this.requireMember(uid);
-    const nick = nickname.trim();
+    // A master profile's nickname is set by the operator; only the language changes here.
+    const linked = this.linkedMaster(uid);
+    const nick = linked ? this.masterDef(linked)?.nickname ?? this.db.users[uid].nickname : nickname.trim();
     if (!NICK_RE.test(nick)) throw new ServerError("bad_nickname");
     const lang: Lang = language === "pl" ? "pl" : "en";
     const existing = this.db.users[uid];
@@ -212,6 +296,7 @@ export class Engine {
 
   saveVehicle(uid: string, v: Vehicle): Vehicle {
     this.requireUser(uid);
+    if (this.linkedMaster(uid)) throw new ServerError("rider_only");
     const clean: Vehicle = {
       make: v.make.trim(),
       model: v.model.trim(),
@@ -237,7 +322,8 @@ export class Engine {
     this.goOffline(uid);
     delete this.db.vehicles[uid];
     delete this.db.members[uid];
-    this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true };
+    if (this.db.linkMembers) delete this.db.linkMembers[uid];
+    this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null };
   }
 
   // ---------- reads ----------
@@ -324,6 +410,8 @@ export class Engine {
     const estKm = Math.max(input.estKm, straight);
     if (estKm > this.cfg.maxTripKm) throw new ServerError("too_far");
     const estMin = Math.max(1, input.estMin);
+    // A master profile rides at its fixed fare, whatever the route.
+    const fixed = this.masterOf(uid)?.fixedFare ?? null;
     const ride: RideRow = {
       id: this.nextId("r"),
       riderId: uid,
@@ -333,9 +421,9 @@ export class Engine {
       dropoff: cleanPlace(dropoff),
       estKm: round1(estKm),
       estMin: Math.round(estMin),
-      fare: computeFare(this.cfg.tariff, estKm, estMin),
+      fare: fixed ?? computeFare(this.cfg.tariff, estKm, estMin),
       currency: this.cfg.tariff.currency,
-      fareIsEstimate: !!input.fareIsEstimate,
+      fareIsEstimate: fixed === null && !!input.fareIsEstimate,
       actualKm: null,
       actualMin: null,
       requestedAt: this.now,
@@ -405,6 +493,7 @@ export class Engine {
     this.requireUser(uid);
     this.sweep();
     if (online) {
+      if (this.linkedMaster(uid)) throw new ServerError("rider_only");
       if (!this.db.vehicles[uid]) throw new ServerError("no_vehicle");
       const active = this.activeRideOf(uid);
       if (active && active.riderId === uid) throw new ServerError("active_ride");
@@ -786,7 +875,7 @@ export class Engine {
 
   private party(uid: string) {
     const u = this.db.users[uid];
-    return { nickname: u ? u.nickname : "Deleted user", rating: this.rating(uid) };
+    return { nickname: u ? u.nickname : "Deleted user", rating: this.rating(uid), icon: this.masterOf(uid)?.icon ?? null };
   }
 
   /** FR-044: the vehicle/plate is visible to the rider only once a driver is assigned. */

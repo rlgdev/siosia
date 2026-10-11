@@ -73,6 +73,11 @@ export interface Backend {
 
   isMember(deviceId: string): Promise<boolean>;
   join(code: string, deviceId: string): Promise<void>;
+  /**
+   * Opens a shared master profile from its link token (replaces the invite code). Fails with
+   * has_profile when this account already has another profile, unless `replace` (user confirmed).
+   */
+  joinMaster(token: string, deviceId: string, language: Lang, replace?: boolean): Promise<Profile>;
 
   getProfile(): Promise<Profile | null>;
   saveProfile(nickname: string, language: Lang): Promise<Profile>;

@@ -1,6 +1,7 @@
 // D3 Active trip (FR-023/024/025): route to pickup then dropoff, rider live pin, status buttons,
 // Navigate hand-off, Cancel with reasons (No-show only 5 min after "I've arrived").
 
+import { ProfileIcon } from "../../components/ProfileIcon";
 import { useState } from "react";
 import { Confirm, Money, RatingBadge, Sheet, fmtKm, fmtMin, mmss, useCountdown } from "../../components/ui";
 import { haversineM } from "../../core/geo";
@@ -56,7 +57,8 @@ export function DriverTrip({ ride, rt, route, timers, busy, error, onAdvance, on
         )}
       </p>
       <p>
-        <strong>{ride.rider.nickname}</strong> <RatingBadge rating={ride.rider.rating} /> · <Money amount={ride.fare} currency={ride.currency} />
+        <ProfileIcon icon={ride.rider.icon} size="sm" /> <strong>{ride.rider.nickname}</strong> <RatingBadge rating={ride.rider.rating} /> ·{" "}
+        <Money amount={ride.fare} currency={ride.currency} />
       </p>
       <p className="muted">{s === "in_progress" ? ride.dropoff.label : ride.pickup.label}</p>
       {(s === "accepted" || s === "arrived") && rt.riderStopped && <p className="hint">{t("trip.riderStopped")}</p>}

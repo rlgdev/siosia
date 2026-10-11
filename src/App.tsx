@@ -1,6 +1,7 @@
 import { useEffect } from "react";
+import type { MessageKey } from "./i18n/en";
 import { OfflineBanner, SharingBanner } from "./components/SharingBanner";
-import { I18nProvider } from "./i18n";
+import { I18nProvider, useI18n } from "./i18n";
 import { InviteScreen, Loading, NicknameScreen, Unavailable, Unsupported } from "./screens/Boot";
 import { DriverApp } from "./screens/driver/DriverApp";
 import { VehiclePanel } from "./screens/driver/VehicleForm";
@@ -8,7 +9,49 @@ import { HistoryPanel } from "./screens/History";
 import { Home } from "./screens/Home";
 import { ProfilePanel } from "./screens/Profile";
 import { RiderApp } from "./screens/rider/RiderApp";
-import { AppStore, StoreContext, useApp } from "./state/store";
+import { Confirm } from "./components/ui";
+import { AppStore, StoreContext, useApp, useStore } from "./state/store";
+
+/** A master link on a phone that already has a profile: replace it only after a clear yes. */
+function MasterConfirm() {
+  const { t } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  const name = app.profile?.nickname;
+  return (
+    <Confirm
+      open={!!app.masterConfirm && app.phase !== "loading"}
+      message={name ? t("master.confirmBody", { name }) : t("master.confirmBodyAny")}
+      confirmLabel={t("master.confirmYes")}
+      onConfirm={() => void store.confirmMaster()}
+      onCancel={() => store.cancelMaster()}
+    />
+  );
+}
+
+/** Says once whether a master-profile link worked. */
+function LinkToast() {
+  const { t } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  const n = app.linkNotice;
+  const visible = !!n && (n !== "joined" || app.phase === "ready");
+  useEffect(() => {
+    if (!visible) return;
+    const id = setTimeout(() => store.clearLinkNotice(), 7000);
+    return () => clearTimeout(id);
+  }, [visible, store]);
+  if (!visible || !n) return null;
+  return (
+    <div className="toast toast-wide" role="status" data-testid="link-toast" onClick={() => store.clearLinkNotice()}>
+      {n === "joined"
+        ? t("master.joined", { name: app.profile?.nickname ?? "" })
+        : n === "link_failed"
+          ? t("master.failed")
+          : t(`err.${n}` as MessageKey)}
+    </div>
+  );
+}
 
 function Screens() {
   const app = useApp();
@@ -37,6 +80,8 @@ function Screens() {
       <SharingBanner />
       {!app.online && <OfflineBanner />}
       {main}
+      <LinkToast />
+      <MasterConfirm />
       {app.phase === "ready" && app.panel === "profile" && <ProfilePanel />}
       {app.phase === "ready" && app.panel === "history" && <HistoryPanel earnings={false} />}
       {app.phase === "ready" && app.panel === "earnings" && <HistoryPanel earnings />}

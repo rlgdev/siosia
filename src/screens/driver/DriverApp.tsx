@@ -157,7 +157,7 @@ function DriverMain() {
   } else if (ride) {
     if (ride.status !== "in_progress") {
       markers.push({ id: "pickup", kind: "pickup", pos: ride.pickup });
-      if (rt.riderPos) markers.push({ id: "rider", kind: "rider", pos: rt.riderPos, title: t("trip.riderLive") });
+      if (rt.riderPos) markers.push({ id: "rider", kind: "rider", pos: rt.riderPos, title: t("trip.riderLive"), icon: ride.rider.icon });
     }
     markers.push({ id: "dropoff", kind: "dropoff", pos: ride.dropoff });
     fitPoints = [me, target].filter(Boolean) as LatLng[];
