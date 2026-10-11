@@ -698,6 +698,32 @@ body:has(.sharing-banner) .leaflet-top {
   text-align: center;
   cursor: pointer;
 }
+.when-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.when-input {
+  flex: 1 1 180px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line, #d0d4da);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+.booking-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.tabs .btn {
+  flex: 1;
+}
 .steps {
   margin: 0;
   padding-left: 20px;

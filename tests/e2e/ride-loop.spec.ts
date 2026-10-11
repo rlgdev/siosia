@@ -304,6 +304,40 @@ test("a one-time code moves a profile into another app (the iOS Home Screen app 
   await expect(browser.getByLabel("Nickname")).toBeVisible();
 });
 
+test("a rider books a ride for later; a driver takes it in advance; the rider sees who and can cancel", async ({ context }) => {
+  await isolate(context);
+  const driver = await context.newPage();
+  await goOnlineAsDriver(driver, "Adam", "WX 4242");
+
+  const rider = await context.newPage();
+  await onboard(rider, "Ola");
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 100, 60);
+  await rider.getByTestId("when-later").click();
+  const d = new Date(Date.now() + 3 * 3600_000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  await rider.getByTestId("later-at").fill(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:00`);
+  await expect(rider.getByTestId("book-ride")).toContainText("Book for");
+  await rider.getByTestId("book-ride").click();
+  await expect(rider.getByTestId("booked-notice")).toContainText("Booked for");
+  await rider.getByTestId("my-bookings-link").click();
+  await expect(rider.getByTestId("booking")).toContainText("Waiting for a driver");
+
+  await expect(driver.getByTestId("bookings-row")).toContainText("1 to take", { timeout: 8000 });
+  await driver.getByTestId("open-bookings").click();
+  const offer = driver.getByTestId("open-booking");
+  await expect(offer).toContainText("Ola");
+  await offer.getByTestId("take-booking").click();
+  await expect(driver.getByTestId("my-booking")).toContainText("Ola");
+
+  await expect(rider.getByTestId("booking-driver")).toContainText("Driver: Adam", { timeout: 35_000 });
+  await expect(rider.getByTestId("booking-driver")).toContainText("WX 4242");
+  await rider.getByTestId("cancel-booking").click();
+  await rider.getByRole("button", { name: "Yes" }).click();
+  await expect(rider.getByText("No upcoming bookings.")).toBeVisible();
+  await expect(driver.getByText("No upcoming bookings.")).toBeVisible({ timeout: 35_000 });
+});
+
 test("cancelling a request withdraws the offer card from the driver (US3, §5)", async ({ context }) => {
   await isolate(context);
   const driver = await context.newPage();

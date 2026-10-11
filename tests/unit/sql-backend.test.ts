@@ -465,6 +465,72 @@ describe("SQL backend (PGlite)", () => {
     expect(await errorOf(call(R1, "siosia_set_online", [true]))).toBe("rider_only");
   });
 
+  it("books rides in advance: window, list, browse with distance, atomic take, overlap, give back, cancel", async () => {
+    const B1 = "00000000-0000-4000-8000-000000000041";
+    const B2 = "00000000-0000-4000-8000-000000000042";
+    const BD = "00000000-0000-4000-8000-000000000043";
+    for (const id of [B1, B2, BD]) await admin("insert into auth.users (id) values ($1)", [id]);
+    await onboard(B1, "Bella");
+    await onboard(B2, "Basia");
+    await onboard(BD, "Bogdan", true);
+    const at = (min: number) => new Date(Date.now() + min * 60_000).toISOString();
+    const args = (min: number) => [PICKUP, DROPOFF, 2, 6, false, at(min)];
+    expect(await errorOf(call(B1, "siosia_book_ride", args(10)))).toBe("bad_time");
+    expect(await errorOf(call(B1, "siosia_book_ride", args(31 * 24 * 60)))).toBe("bad_time");
+    const b = await call<Json>(B1, "siosia_book_ride", args(120));
+    expect(b).toMatchObject({ status: "scheduled", driver: null });
+    expect(Number(b.scheduledFor) - Date.now()).toBeGreaterThan(119 * 60_000);
+    expect((await call<Json[]>(B1, "siosia_bookings")).map((r) => r.id)).toEqual([b.id]);
+    expect(await call<Json>(B1, "siosia_my_state")).toMatchObject({ ride: null, bookings: 1 });
+    expect((await call<Json[]>(B1, "siosia_history")).some((r) => r.id === b.id)).toBe(false);
+    const open = await call<Json[]>(BD, "siosia_open_bookings", [NEAR(0.01).lat, NEAR(0.01).lng]);
+    expect(open.find((x) => (x.ride as Json).id === b.id)).toMatchObject({ ride: { rider: { nickname: "Bella" } }, distanceKm: 1.1 });
+    expect(await call(BD, "siosia_claim_booking", [b.id])).toBe("won");
+    expect(await errorOf(call(U.d3, "siosia_claim_booking", [b.id]))).toBe("taken");
+    const b2 = await call<Json>(B2, "siosia_book_ride", args(140));
+    expect(await errorOf(call(BD, "siosia_claim_booking", [b2.id]))).toBe("overlap");
+    expect((await call<Json[]>(B1, "siosia_bookings"))[0].driver).toMatchObject({ nickname: "Bogdan", vehicle: { make: "Skoda" } });
+    // Give back (more than an hour ahead: no mark), then the driver's cancel = give back too.
+    await call(BD, "siosia_release_booking", [b.id]);
+    expect((await call<Json>(BD, "siosia_get_profile")).driverCancels).toBe(0);
+    await call(BD, "siosia_claim_booking", [b.id]);
+    await admin("update public.rides set scheduled_for = now() + interval '50 minutes' where id = $1", [b.id]);
+    await call(BD, "siosia_cancel_ride", [b.id, "other"]);
+    expect((await call<Json>(BD, "siosia_get_profile")).driverCancels).toBe(1);
+    expect((await call<Json>(B1, "siosia_get_ride", [b.id]))).toMatchObject({ status: "scheduled", driver: null });
+    await call(B1, "siosia_cancel_ride", [b.id, null]);
+    expect((await call<Json>(B1, "siosia_get_ride", [b.id])).status).toBe("cancelled");
+    await call(B2, "siosia_cancel_ride", [b2.id, null]);
+  });
+
+  it("starts a taken booking with its driver 30 min before, opens an untaken one 20 min before", async () => {
+    const B1 = "00000000-0000-4000-8000-000000000041";
+    const B2 = "00000000-0000-4000-8000-000000000042";
+    const BD = "00000000-0000-4000-8000-000000000043";
+    const at = (min: number) => new Date(Date.now() + min * 60_000).toISOString();
+    const taken = await call<Json>(B1, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(120)]);
+    await call(BD, "siosia_claim_booking", [taken.id]);
+    await admin("update public.rides set scheduled_for = now() + interval '31 minutes' where id = $1", [taken.id]);
+    expect((await call<Json>(B1, "siosia_get_ride", [taken.id])).status).toBe("scheduled");
+    await admin("update public.rides set scheduled_for = now() + interval '29 minutes' where id = $1", [taken.id]);
+    expect((await call<Json>(B1, "siosia_my_state")).ride).toMatchObject({ id: taken.id, status: "accepted", driver: { nickname: "Bogdan" } });
+    expect(await call<Json>(BD, "siosia_my_state")).toMatchObject({ driverOnline: true, ride: { id: taken.id, status: "accepted" } });
+    // The driver's app may stay closed until 15 min after the booked time.
+    await admin("update public.driver_status set last_seen = now() - interval '5 minutes' where user_id = $1", [BD]);
+    expect((await call<Json>(B1, "siosia_get_ride", [taken.id])).status).toBe("accepted");
+    await admin("update public.rides set scheduled_for = now() - interval '16 minutes' where id = $1", [taken.id]);
+    expect(await call<Json>(B1, "siosia_get_ride", [taken.id])).toMatchObject({ status: "requested", driver: null });
+    await call(B1, "siosia_cancel_ride", [taken.id, null]);
+    // Untaken: normal dispatch from 20 min before, open until 15 min after the booked time.
+    const free = await call<Json>(B2, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(120)]);
+    await admin("update public.rides set scheduled_for = now() + interval '19 minutes' where id = $1", [free.id]);
+    const r = await call<Json>(B2, "siosia_get_ride", [free.id]);
+    expect(r.status).toBe("requested");
+    expect(Number(r.expiresAt) - Date.now()).toBeGreaterThan(33 * 60_000);
+    await admin("update public.rides set scheduled_for = now() - interval '16 minutes', dispatch_started_at = now() - interval '25 minutes' where id = $1", [free.id]);
+    expect((await call<Json>(B2, "siosia_get_ride", [free.id])).status).toBe("expired");
+  });
+
   it("moves a profile into the app with a one-time code (iOS Home Screen apps have their own storage)", async () => {
     const APP = "00000000-0000-4000-8000-000000000031";
     const APP2 = "00000000-0000-4000-8000-000000000032";

@@ -86,6 +86,13 @@ function DriverMain() {
     return () => clearTimeout(id);
   }, [toast]);
 
+  // Offline and idle, nothing else refreshes my state: keep the booking counts current.
+  useEffect(() => {
+    if (rt.online) return;
+    const id = setInterval(() => store.requestRefresh(0), 60_000);
+    return () => clearInterval(id);
+  }, [rt.online, store]);
+
   // Going online needs a location fix first (goOnline throws not_online when location is denied).
   const toggleOnline = () => run(() => (rt.online ? rt.goOffline() : rt.goOnline()));
 
@@ -236,6 +243,12 @@ function DriverMain() {
             </button>
           </div>
         )}
+        <div className="pending-row" data-testid="bookings-row">
+          <span>{t("book.driverRow", { open: my?.openBookings ?? 0, mine: my?.bookings ?? 0 })}</span>
+          <button type="button" className="btn btn-secondary" onClick={() => store.openPanel("bookings")} data-testid="open-bookings">
+            {t("book.browse")}
+          </button>
+        </div>
         {earn && (
           <div className="kv">
             <span>

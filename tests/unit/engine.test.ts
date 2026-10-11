@@ -494,6 +494,104 @@ describe("master profiles (shared rider link, fixed fare)", () => {
   });
 });
 
+describe("rides booked in advance", () => {
+  const MIN = 60_000;
+  const book = (uid = "rider", inMin = 120, extra: Partial<{ estKm: number; estMin: number }> = {}) =>
+    at((e) => e.bookRide(uid, { pickup: PICKUP, dropoff: DROPOFF, estKm: 3.42, estMin: 8.6, fareIsEstimate: false, ...extra, scheduledFor: now + inMin * MIN }));
+
+  it("books for later within the window, lists it apart from history, and lets the rider cancel", () => {
+    expect(code(() => book("rider", 10))).toBe("bad_time"); // < 30 min ahead
+    expect(code(() => book("rider", 31 * 24 * 60))).toBe("bad_time"); // > 30 days
+    const b = book();
+    expect(b).toMatchObject({ status: "scheduled", scheduledFor: now + 120 * MIN, fare: 18, driver: null, role: "rider" });
+    expect(at((e) => e.bookings("rider")).map((r) => r.id)).toEqual([b.id]);
+    expect(at((e) => e.myState("rider"))).toMatchObject({ ride: null, bookings: 1 });
+    expect(at((e) => e.history("rider"))).toEqual([]);
+    expect(request().status).toBe("requested"); // a ride right now is still possible
+    for (let i = 0; i < 4; i++) book("rider", 180 + i * 60);
+    expect(code(() => book("rider", 600))).toBe("too_many");
+    at((e) => e.cancelRide("rider", b.id));
+    expect(db.rides[b.id]).toMatchObject({ status: "cancelled", cancelledBy: "rider" });
+    expect(db.users.rider.riderCancels).toBe(0); // more than an hour ahead: no mark
+  });
+
+  it("lets drivers browse and take a booking in advance; it starts with that driver 30 min before", () => {
+    const b = book();
+    online("d2", near(2));
+    const open = at((e) => e.openBookings("d1", near(1)));
+    expect(open).toMatchObject([{ ride: { id: b.id, rider: { nickname: "Ola" } }, distanceKm: 1 }]);
+    expect(at((e) => e.myState("d1")).openBookings).toBe(1);
+    expect(at((e) => e.claimBooking("d1", b.id))).toBe("won");
+    expect(code(() => at((e) => e.claimBooking("d2", b.id)))).toBe("taken");
+    const b2 = book("rider2", 150); // within 8.6 + 30 min of the first: overlaps for d1
+    expect(code(() => at((e) => e.claimBooking("d1", b2.id)))).toBe("overlap");
+    expect(at((e) => e.bookings("rider"))[0].driver).toMatchObject({ nickname: "D1", vehicle: { plate: "WX D1" } });
+    expect(at((e) => e.bookings("d1"))[0]).toMatchObject({ id: b.id, role: "driver" });
+    // 31 min before: still booked; 30 min before: accepted, the driver on duty though their app is closed.
+    now = b.scheduledFor! - 31 * MIN;
+    expect(at((e) => e.getRide("rider", b.id)).status).toBe("scheduled");
+    now = b.scheduledFor! - 30 * MIN;
+    expect(at((e) => e.myState("d1")).ride).toMatchObject({ id: b.id, status: "accepted" });
+    expect(db.drivers.d1.online).toBe(true);
+    expect(at((e) => e.myState("rider")).ride).toMatchObject({ id: b.id, status: "accepted", driver: { nickname: "D1" } });
+    // The driver may stay silent until 15 min after the booked time, then it goes to someone else.
+    now = b.scheduledFor! + 14 * MIN;
+    expect(at((e) => e.getRide("rider", b.id)).status).toBe("accepted");
+    now = b.scheduledFor! + 16 * MIN;
+    expect(at((e) => e.getRide("rider", b.id))).toMatchObject({ status: "requested", driver: null });
+  });
+
+  it("opens an unclaimed booking to normal dispatch 20 min before and expires it 15 min after its time", () => {
+    const b = book();
+    now = b.scheduledFor! - 21 * MIN;
+    expect(at((e) => e.getRide("rider", b.id)).status).toBe("scheduled");
+    now = b.scheduledFor! - 20 * MIN;
+    const s = online("d2", near(2));
+    expect(s.offer?.rideId).toBe(b.id);
+    expect(at((e) => e.getRide("rider", b.id)).expiresAt).toBe(b.scheduledFor! + 15 * MIN);
+    now = b.scheduledFor! + 15 * MIN;
+    expect(at((e) => e.getRide("rider", b.id)).status).toBe("expired");
+  });
+
+  it("waits while the taking driver is on another trip, then hands the booking to normal dispatch", () => {
+    const b = book();
+    at((e) => e.claimBooking("d1", b.id));
+    now = b.scheduledFor! - 40 * MIN;
+    request("rider2");
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept")); // d1 busy with rider2
+    now = b.scheduledFor! - 30 * MIN;
+    at((e) => e.heartbeat("d1", near(1)));
+    expect(db.rides[b.id].status).toBe("scheduled");
+    now = b.scheduledFor! + 16 * MIN;
+    at((e) => e.heartbeat("d1", near(1)));
+    expect(db.rides[b.id]).toMatchObject({ status: "requested", driverId: null });
+  });
+
+  it("lets a driver give a booking back (late counts), and keeps one-role master profiles apart", () => {
+    const b = book();
+    at((e) => e.claimBooking("d1", b.id));
+    at((e) => e.releaseBooking("d1", b.id));
+    expect(db.users.d1.driverCancels).toBe(0);
+    at((e) => e.claimBooking("d1", b.id));
+    now = b.scheduledFor! - 50 * MIN;
+    at((e) => e.cancelRide("d1", b.id)); // the driver's cancel = give back
+    expect(db.users.d1.driverCancels).toBe(1);
+    expect(db.rides[b.id]).toMatchObject({ status: "scheduled", driverId: null });
+    const M = [
+      { id: "toria", token: "tok-toria-0123456789", nickname: "Toria", icon: null, fixedFare: 18, role: "rider" as const },
+      { id: "roman", token: "tok-roman-0123456789", nickname: "Roman", icon: null, fixedFare: null, role: "driver" as const }
+    ];
+    const E = <T>(fn: (e: Engine) => T): T => fn(new Engine(db, { ...CFG, masters: M }, now));
+    E((e) => e.joinMaster("t1", "tok-toria-0123456789", "dev-t1", "en"));
+    E((e) => e.joinMaster("r1", "tok-roman-0123456789", "dev-r1", "en"));
+    expect(code(() => E((e) => e.openBookings("t1", null)))).toBe("rider_only");
+    expect(E((e) => e.myState("t1")).openBookings).toBe(0);
+    expect(code(() => E((e) => e.bookRide("r1", { pickup: PICKUP, dropoff: DROPOFF, estKm: 3, estMin: 8, fareIsEstimate: false, scheduledFor: now + 120 * MIN })))).toBe("driver_only");
+    expect(E((e) => e.bookRide("t1", { pickup: PICKUP, dropoff: DROPOFF, estKm: 30, estMin: 45, fareIsEstimate: true, scheduledFor: now + 120 * MIN }))).toMatchObject({ fare: 18, fareIsEstimate: false });
+  });
+});
+
 describe("moving a profile into the app (iOS Home Screen apps have their own storage)", () => {
   it("moves profile, history, ratings and vehicle to the app once; the browser starts fresh", () => {
     const ride = request();

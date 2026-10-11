@@ -11,6 +11,7 @@
 // Live positions only ever travel over realtime and are never stored (FR-043).
 
 import type {
+  BookingInput,
   DeploymentConfig,
   DriverPos,
   DriverPresence,
@@ -18,6 +19,7 @@ import type {
   Lang,
   LatLng,
   MyState,
+  OpenBooking,
   Profile,
   RideRequestInput,
   RideView,
@@ -95,6 +97,12 @@ export interface Backend {
   earnings(): Promise<Earnings>;
 
   requestRide(input: RideRequestInput): Promise<RideView>;
+  /** Rides booked in advance. */
+  bookRide(input: BookingInput): Promise<RideView>;
+  bookings(): Promise<RideView[]>;
+  openBookings(pos: LatLng | null): Promise<OpenBooking[]>;
+  claimBooking(rideId: string): Promise<"won">;
+  releaseBooking(rideId: string): Promise<void>;
   cancelRide(rideId: string, reason?: string): Promise<void>;
 
   setOnline(online: boolean): Promise<void>;

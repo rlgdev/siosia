@@ -6,6 +6,7 @@
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import {
   ServerError,
+  type BookingInput,
   type DeploymentConfig,
   type DriverPos,
   type DriverPresence,
@@ -13,6 +14,7 @@ import {
   type Lang,
   type LatLng,
   type MyState,
+  type OpenBooking,
   type Profile,
   type RideRequestInput,
   type RideView,
@@ -166,6 +168,28 @@ export class SupabaseBackend implements Backend {
   }
   async join(code: string, deviceId: string) {
     await this.rpc("siosia_join", { p_code: code, p_device: deviceId });
+  }
+  bookRide(input: BookingInput) {
+    return this.rpc<RideView>("siosia_book_ride", {
+      p_pickup: input.pickup,
+      p_dropoff: input.dropoff,
+      p_est_km: input.estKm,
+      p_est_min: input.estMin,
+      p_fare_is_estimate: input.fareIsEstimate,
+      p_scheduled_for: new Date(input.scheduledFor).toISOString()
+    });
+  }
+  bookings() {
+    return this.rpc<RideView[]>("siosia_bookings");
+  }
+  openBookings(pos: LatLng | null) {
+    return this.rpc<OpenBooking[]>("siosia_open_bookings", { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null });
+  }
+  claimBooking(rideId: string) {
+    return this.rpc<"won">("siosia_claim_booking", { p_ride: rideId });
+  }
+  async releaseBooking(rideId: string) {
+    await this.rpc("siosia_release_booking", { p_ride: rideId });
   }
   createTransfer() {
     return this.rpc<{ code: string; expiresAt: number }>("siosia_create_transfer");

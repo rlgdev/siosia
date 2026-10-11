@@ -42,11 +42,16 @@ describe("fare (FR-050)", () => {
 });
 
 describe("lifecycle (§5)", () => {
-  const all: RideStatus[] = ["requested", "accepted", "arrived", "in_progress", "completed", "cancelled", "expired"];
+  const all: RideStatus[] = ["scheduled", "requested", "accepted", "arrived", "in_progress", "completed", "cancelled", "expired"];
   it("allows exactly the transitions of the state diagram", () => {
     const legal = new Set(TRANSITIONS.map((t) => `${t.from}>${t.to}`));
     expect(legal).toEqual(
       new Set([
+        // rides booked in advance: start with their driver, open to dispatch, or end
+        "scheduled>accepted",
+        "scheduled>requested",
+        "scheduled>cancelled",
+        "scheduled>expired",
         "requested>accepted",
         "requested>expired",
         "requested>cancelled",

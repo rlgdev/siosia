@@ -24,6 +24,16 @@ import { useEstimate } from "./useEstimate";
 const r2 = (x: number) => Math.round(x * 100) / 100;
 const r1 = (x: number) => Math.round(x * 10) / 10;
 
+/** Next 5-minute mark at or after `ms`. */
+const roundUp5 = (ms: number) => Math.ceil(ms / 300_000) * 300_000;
+
+/** A local time as the value of a datetime-local input ("2026-10-12T14:30"). */
+function toLocalInput(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export function reasonText(t: Translate, reason: string | null): string {
   return reason ? t(`reason.${reason}` as MessageKey) : "";
 }
@@ -74,6 +84,15 @@ export function RiderApp() {
   const [dismissed, setDismissed] = useState<string[]>(() => readPref<string[]>(`dismissedReceipts.${app.uid}`, []));
   const [drivers, setDrivers] = useState<DriverPresence[]>([]);
   const [busy, run, error, setError] = useBusy();
+  // Booking for later: local wall-clock value of a datetime-local input.
+  const [when, setWhen] = useState<"now" | "later">("now");
+  const [laterAt, setLaterAt] = useState(() => toLocalInput(roundUp5(Date.now() + 60 * 60_000)));
+  const [booked, setBooked] = useState<string | null>(null);
+  const bookingCfg = dep.booking;
+  const laterMinMs = Date.now() + bookingCfg.minLeadMin * 60_000;
+  const laterMaxMs = Date.now() + bookingCfg.maxDays * 86_400_000;
+  const laterMs = new Date(laterAt).getTime();
+  const laterValid = Number.isFinite(laterMs) && laterMs >= laterMinMs - 60_000 && laterMs <= laterMaxMs;
 
   // Pickup defaults to the GPS position until the rider picks another one (FR-010).
   const fix = gps.fix;
@@ -158,6 +177,26 @@ export function RiderApp() {
     run(async () => {
       if (!pickup || !dropoff || !est || est.loading) return;
       await api.requestRide({ pickup, dropoff, estKm: est.km, estMin: est.min, fareIsEstimate: est.estimate });
+      await store.refresh();
+    });
+
+  const book = () =>
+    run(async () => {
+      if (!pickup || !dropoff || !est || est.loading || !laterValid) return;
+      const r = await api.bookRide({
+        pickup,
+        dropoff,
+        estKm: est.km,
+        estMin: est.min,
+        fareIsEstimate: est.estimate,
+        scheduledFor: laterMs + app.clockOffset
+      });
+      const at = new Intl.DateTimeFormat(lang, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(
+        (r.scheduledFor ?? laterMs) - app.clockOffset
+      );
+      setBooked(t("book.done", { time: at }));
+      setWhen("now");
+      resetToDefaults();
       await store.refresh();
     });
 
@@ -250,6 +289,21 @@ export function RiderApp() {
         blockReason={blockReason}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
+        when={when}
+        setWhen={(w) => {
+          setWhen(w);
+          setBooked(null);
+        }}
+        laterAt={laterAt}
+        setLaterAt={setLaterAt}
+        laterMin={toLocalInput(laterMinMs)}
+        laterMax={toLocalInput(laterMaxMs)}
+        laterValid={laterValid}
+        onBook={() => void book()}
+        booked={booked}
+        onDismissBooked={() => setBooked(null)}
+        bookingsCount={my?.bookings ?? 0}
+        onOpenBookings={() => store.openPanel("bookings")}
         onRequest={() => void request()}
         busy={busy}
         error={error}

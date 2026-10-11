@@ -15,6 +15,7 @@ export interface Place extends LatLng {
 }
 
 export type RideStatus =
+  | "scheduled"
   | "requested"
   | "accepted"
   | "arrived"
@@ -59,9 +60,22 @@ export interface ServiceArea extends LatLng {
 }
 
 /** Deployment configuration (spec §9 "Deployment config"); the invite hash never reaches the client. */
+/** Rides booked in advance (minutes / days). */
+export interface BookingSettings {
+  /** Earliest booking: this many minutes from now. */
+  minLeadMin: number;
+  /** Latest booking: this many days ahead. */
+  maxDays: number;
+  /** A claimed booking starts (the driver sets off) this many minutes before its time. */
+  leadMin: number;
+  /** An unclaimed booking opens to normal dispatch this many minutes before its time. */
+  openMin: number;
+}
+
 export interface DeploymentConfig {
   tariff: Tariff;
   timers: Timers;
+  booking: BookingSettings;
   /** null = no restriction. */
   serviceArea: ServiceArea | null;
   dispatchRadiusKm: number;
@@ -151,6 +165,8 @@ export interface RideView {
   round: number;
   /** When the request expires if still unaccepted (server clock; follows the current config). */
   expiresAt: number;
+  /** Booked pickup time (server clock) for a ride booked in advance; null = right away. */
+  scheduledFor: number | null;
   rider: PublicParty;
   driver: PublicDriver | null;
   /** Stars the viewer gave in this ride, if any. */
@@ -189,6 +205,22 @@ export interface MyState {
   nearbyRequests: number | null;
   /** Latest completed ride from the last 2 h that this user has not rated yet. */
   pendingReceipt: RideView | null;
+  /** My upcoming bookings (as rider or as the driver who took them). */
+  bookings: number;
+  /** Bookings without a driver that this user could take (0 for rider-only profiles). */
+  openBookings: number;
+}
+
+/** A ride booked for later. */
+export interface BookingInput extends RideRequestInput {
+  /** Pickup time, server clock (ms). */
+  scheduledFor: number;
+}
+
+/** A booking a driver can take, with the distance from where the driver is now (if known). */
+export interface OpenBooking {
+  ride: RideView;
+  distanceKm: number | null;
 }
 
 export interface Earnings {
@@ -264,6 +296,9 @@ export type ServerErrorCode =
   | "bad_link"
   | "bad_transfer"
   | "has_profile"
+  | "bad_time"
+  | "too_many"
+  | "overlap"
   | "rider_only"
   | "driver_only"
   | "unavailable";

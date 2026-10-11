@@ -27,13 +27,34 @@ interface Props {
   blockReason: string | null;
   notice: string | null;
   onDismissNotice: () => void;
+  /** Booking a ride for later: "now" or "later" with a local datetime-local value. */
+  when: "now" | "later";
+  setWhen: (w: "now" | "later") => void;
+  laterAt: string;
+  setLaterAt: (v: string) => void;
+  laterMin: string;
+  laterMax: string;
+  laterValid: boolean;
+  onBook: () => void;
+  booked: string | null;
+  onDismissBooked: () => void;
+  bookingsCount: number;
+  onOpenBookings: () => void;
   onRequest: () => void;
   busy: boolean;
   error: string | null;
 }
 
+/** "Mon 12 Oct, 14:30" for a datetime-local value. */
+function fmtLocal(v: string, locale: string): string {
+  const ms = new Date(v).getTime();
+  return Number.isFinite(ms)
+    ? new Intl.DateTimeFormat(locale, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(ms)
+    : v;
+}
+
 export function RiderHome(p: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const fixed = useApp().profile?.fixedFare ?? null;
   const canRequest = !!p.pickup && !!p.dropoff && !!p.est && !p.est.loading && !p.blockReason && !p.busy;
   return (
@@ -47,6 +68,19 @@ export function RiderHome(p: Props) {
             {t("common.close")}
           </button>
         </Notice>
+      )}
+      {p.booked && (
+        <Notice kind="ok">
+          <span data-testid="booked-notice">{p.booked}</span>{" "}
+          <button type="button" className="btn btn-link" onClick={p.onDismissBooked}>
+            {t("common.close")}
+          </button>
+        </Notice>
+      )}
+      {p.bookingsCount > 0 && (
+        <button type="button" className="btn btn-link" onClick={p.onOpenBookings} data-testid="my-bookings-link">
+          {t("book.mineCount", { n: p.bookingsCount })}
+        </button>
       )}
       {p.gps.status === "denied" && (
         <Notice kind="warn">
@@ -88,10 +122,39 @@ export function RiderHome(p: Props) {
       {p.est?.estimate && !p.est.loading && <p className="hint">{t("rider.estimateBy")}</p>}
       {p.blockReason && <p className="form-error">{p.blockReason}</p>}
       {p.error && <p className="form-error" role="alert">{p.error}</p>}
-      <p className="muted small">{p.nearbyCount > 0 ? t("rider.cars", { n: p.nearbyCount }) : t("rider.noCars")}</p>
-      <button type="button" className="btn btn-primary btn-block" disabled={!canRequest} onClick={p.onRequest} data-testid="request-ride">
-        {t("rider.request")}
-      </button>
+      <div className="when-row" role="radiogroup" aria-label={t("book.when")}>
+        <button type="button" role="radio" aria-checked={p.when === "now"} className={`btn ${p.when === "now" ? "btn-primary" : "btn-secondary"}`} onClick={() => p.setWhen("now")} data-testid="when-now">
+          {t("book.now")}
+        </button>
+        <button type="button" role="radio" aria-checked={p.when === "later"} className={`btn ${p.when === "later" ? "btn-primary" : "btn-secondary"}`} onClick={() => p.setWhen("later")} data-testid="when-later">
+          {t("book.later")}
+        </button>
+        {p.when === "later" && (
+          <input
+            type="datetime-local"
+            className="when-input"
+            aria-label={t("book.when")}
+            value={p.laterAt}
+            min={p.laterMin}
+            max={p.laterMax}
+            step={300}
+            onChange={(e) => p.setLaterAt(e.target.value)}
+            data-testid="later-at"
+          />
+        )}
+      </div>
+      {p.when === "now" ? (
+        <>
+          <p className="muted small">{p.nearbyCount > 0 ? t("rider.cars", { n: p.nearbyCount }) : t("rider.noCars")}</p>
+          <button type="button" className="btn btn-primary btn-block" disabled={!canRequest} onClick={p.onRequest} data-testid="request-ride">
+            {t("rider.request")}
+          </button>
+        </>
+      ) : (
+        <button type="button" className="btn btn-primary btn-block" disabled={!canRequest || !p.laterValid} onClick={p.onBook} data-testid="book-ride">
+          {p.laterValid ? t("book.submit", { time: fmtLocal(p.laterAt, lang) }) : t("book.pickTime")}
+        </button>
+      )}
     </Sheet>
   );
 }

@@ -5,6 +5,10 @@ import type { RideStatus, Role } from "./types";
  * functions (Supabase), so a stale client can never move a ride backwards or skip a step.
  */
 export type Transition =
+  | { from: "scheduled"; to: "accepted"; by: "system"; action: "start_booking" }
+  | { from: "scheduled"; to: "requested"; by: "system"; action: "open_booking" }
+  | { from: "scheduled"; to: "cancelled"; by: "rider"; action: "cancel" }
+  | { from: "scheduled"; to: "expired"; by: "system"; action: "expire" }
   | { from: "requested"; to: "accepted"; by: "driver"; action: "accept" }
   | { from: "requested"; to: "expired"; by: "system"; action: "expire" }
   | { from: "requested"; to: "cancelled"; by: "rider"; action: "cancel" }
@@ -20,6 +24,10 @@ export type Transition =
 export type Action = Transition["action"];
 
 export const TRANSITIONS: readonly Transition[] = [
+  { from: "scheduled", to: "accepted", by: "system", action: "start_booking" },
+  { from: "scheduled", to: "requested", by: "system", action: "open_booking" },
+  { from: "scheduled", to: "cancelled", by: "rider", action: "cancel" },
+  { from: "scheduled", to: "expired", by: "system", action: "expire" },
   { from: "requested", to: "accepted", by: "driver", action: "accept" },
   { from: "requested", to: "expired", by: "system", action: "expire" },
   { from: "requested", to: "cancelled", by: "rider", action: "cancel" },

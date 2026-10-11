@@ -117,6 +117,11 @@ export function ProfilePanel() {
           <button type="button" className="btn btn-link" onClick={() => store.openPanel(app.mode === "drive" ? "earnings" : "history")}>
             {t(app.mode === "drive" ? "profile.earnings" : "profile.history")}
           </button>
+          {app.mode && (
+            <button type="button" className="btn btn-link" onClick={() => store.openPanel("bookings")} data-testid="profile-bookings">
+              {t("profile.bookings")}
+            </button>
+          )}
           {(app.mode === "drive" || app.vehicle) && (
             <button type="button" className="btn btn-link" onClick={() => store.openPanel("vehicle")}>
               {app.vehicle ? `${t("profile.editVehicle")} (${app.vehicle.plate})` : t("profile.vehicle")}

@@ -4,6 +4,7 @@
 
 import { Engine, type EngineConfig } from "../../core/engine";
 import type {
+  BookingInput,
   DeploymentConfig,
   DriverPos,
   DriverPresence,
@@ -90,6 +91,21 @@ export class MockBackend implements Backend {
   }
   join(code: string, deviceId: string) {
     return this.call((e) => e.join(this.uid, code, deviceId));
+  }
+  bookRide(input: BookingInput) {
+    return this.call((e) => e.bookRide(this.uid, input));
+  }
+  bookings() {
+    return this.call((e) => e.bookings(this.uid));
+  }
+  openBookings(pos: LatLng | null) {
+    return this.call((e) => e.openBookings(this.uid, pos));
+  }
+  claimBooking(rideId: string) {
+    return this.call((e) => e.claimBooking(this.uid, rideId));
+  }
+  async releaseBooking(rideId: string) {
+    await this.call((e) => e.releaseBooking(this.uid, rideId));
   }
   createTransfer() {
     return this.call((e) => e.createTransfer(this.uid));

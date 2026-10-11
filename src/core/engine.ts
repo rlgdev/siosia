@@ -17,6 +17,7 @@ import { isActive } from "./lifecycle";
 import { summarizeRatings } from "./rating";
 import {
   ServerError,
+  type BookingInput,
   type DeploymentConfig,
   type DriverCancelReason,
   type Earnings,
@@ -25,6 +26,7 @@ import {
   type MyState,
   type OfferStatus,
   type OfferView,
+  type OpenBooking,
   type Place,
   type Profile,
   type RatingSummary,
@@ -126,6 +128,8 @@ export interface RideRow {
   round: number;
   /** Drivers who cancelled this ride; they never get it again (§6). */
   excluded: string[];
+  /** Booked pickup time for a ride booked in advance (status "scheduled" until it starts). */
+  scheduledFor?: number | null;
 }
 
 export interface OfferRow {
@@ -441,6 +445,14 @@ export class Engine {
   deleteProfile(uid: string): void {
     const u = this.requireUser(uid);
     if (this.activeRideOf(uid)) throw new ServerError("active_ride");
+    for (const r of Object.values(this.db.rides)) {
+      if (r.status !== "scheduled") continue;
+      if (r.riderId === uid) this.endRide(r, "cancelled", "rider", null);
+      else if (r.driverId === uid) {
+        r.driverId = null;
+        this.effects.notify.add(r.riderId);
+      }
+    }
     this.goOffline(uid);
     delete this.db.vehicles[uid];
     delete this.db.members[uid];
@@ -465,7 +477,9 @@ export class Engine {
       driverOnline: !!driver?.online,
       hasVehicle: !!this.db.vehicles[uid],
       nearbyRequests: pos && isValidLatLng(pos) ? this.countNearby(uid, pos) : null,
-      pendingReceipt: this.pendingReceipt(uid)
+      pendingReceipt: this.pendingReceipt(uid),
+      bookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && (r.riderId === uid || r.driverId === uid)).length,
+      openBookings: this.linkedRole(uid) === "rider" ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length
     };
   }
 
@@ -480,7 +494,7 @@ export class Engine {
   history(uid: string): RideView[] {
     this.requireMember(uid);
     return Object.values(this.db.rides)
-      .filter((r) => r.riderId === uid || r.driverId === uid)
+      .filter((r) => (r.riderId === uid || r.driverId === uid) && r.status !== "scheduled")
       .sort((a, b) => b.requestedAt - a.requestedAt)
       .slice(0, SERVER.historyLimit)
       .map((r) => this.rideView(r, uid));
@@ -522,6 +536,15 @@ export class Engine {
       if (this.now - asDriver.lastSeen > SERVER.driverStaleS * 1000) this.goOffline(uid);
       else throw new ServerError("online_as_driver");
     }
+    const ride = this.newRide(uid, input);
+    this.db.rides[ride.id] = ride;
+    this.effects.pingDrivers = true;
+    this.effects.notify.add(uid);
+    return this.rideView(ride, uid);
+  }
+
+  /** A validated new ride (now or booked): never shorter than the straight line, fare frozen. */
+  private newRide(uid: string, input: RideRequestInput): RideRow {
     const { pickup, dropoff } = input;
     if (!isValidLatLng(pickup) || !isValidLatLng(dropoff)) throw new ServerError("bad_input");
     if (!Number.isFinite(input.estKm) || !Number.isFinite(input.estMin) || input.estKm <= 0 || input.estMin < 0)
@@ -562,12 +585,90 @@ export class Engine {
       notifiedCount: 0,
       redispatchCount: 0,
       round: 1,
-      excluded: []
+      excluded: [],
+      scheduledFor: null
     };
+    return ride;
+  }
+
+  // ---------- bookings (rides booked in advance) ----------
+
+  /** Books a ride for later (30 min … 30 days ahead by default); the fare is frozen now. */
+  bookRide(uid: string, input: BookingInput): RideView {
+    this.requireUser(uid);
+    if (this.linkedRole(uid) === "driver") throw new ServerError("driver_only");
+    this.sweep();
+    const ride = this.newRide(uid, input);
+    const { minLeadMin, maxDays } = this.cfg.booking;
+    const t = input.scheduledFor;
+    if (!Number.isFinite(t) || t < this.now + minLeadMin * 60_000 || t > this.now + maxDays * 86_400_000) throw new ServerError("bad_time");
+    if (Object.values(this.db.rides).filter((r) => r.status === "scheduled" && r.riderId === uid).length >= SERVER.maxBookings)
+      throw new ServerError("too_many");
+    ride.status = "scheduled";
+    ride.scheduledFor = t;
+    ride.dispatchStartedAt = t;
     this.db.rides[ride.id] = ride;
-    this.effects.pingDrivers = true;
     this.effects.notify.add(uid);
     return this.rideView(ride, uid);
+  }
+
+  /** My upcoming bookings, as rider or as the driver who took them, soonest first. */
+  bookings(uid: string): RideView[] {
+    this.requireMember(uid);
+    this.sweep();
+    return Object.values(this.db.rides)
+      .filter((r) => r.status === "scheduled" && (r.riderId === uid || r.driverId === uid))
+      .sort((a, b) => (a.scheduledFor ?? 0) - (b.scheduledFor ?? 0))
+      .map((r) => this.rideView(r, uid));
+  }
+
+  /** Bookings without a driver that this driver could take, soonest first. */
+  openBookings(uid: string, pos: LatLng | null): OpenBooking[] {
+    this.requireUser(uid);
+    if (this.linkedRole(uid) === "rider") throw new ServerError("rider_only");
+    this.sweep();
+    return Object.values(this.db.rides)
+      .filter((r) => this.claimable(r, uid))
+      .sort((a, b) => (a.scheduledFor ?? 0) - (b.scheduledFor ?? 0))
+      .map((r) => ({ ride: this.rideView(r, uid), distanceKm: pos && isValidLatLng(pos) ? round1(haversineKm(pos, r.pickup)) : null }));
+  }
+
+  private claimable(r: RideRow, uid: string): boolean {
+    return r.status === "scheduled" && !r.driverId && r.riderId !== uid && !r.excluded.includes(uid);
+  }
+
+  /** A driver takes a booking in advance (atomic: one driver wins); no two overlapping ones. */
+  claimBooking(uid: string, rideId: string): "won" {
+    this.requireUser(uid);
+    if (this.linkedRole(uid) === "rider") throw new ServerError("rider_only");
+    if (!this.db.vehicles[uid]) throw new ServerError("no_vehicle");
+    this.sweep();
+    const r = this.db.rides[rideId];
+    if (!r || r.riderId === uid || r.excluded.includes(uid)) throw new ServerError("not_found");
+    if (r.status !== "scheduled" || r.driverId) throw new ServerError("taken");
+    const clash = Object.values(this.db.rides).some(
+      (x) =>
+        x.status === "scheduled" &&
+        x.driverId === uid &&
+        Math.abs((x.scheduledFor ?? 0) - (r.scheduledFor ?? 0)) < (Math.max(x.estMin, r.estMin) + 30) * 60_000
+    );
+    if (clash) throw new ServerError("overlap");
+    r.driverId = uid;
+    this.notifyRide(r);
+    return "won";
+  }
+
+  /** The driver gives a booking back (close to its time this counts as a driver cancellation). */
+  releaseBooking(uid: string, rideId: string): void {
+    this.requireUser(uid);
+    this.sweep();
+    const r = this.db.rides[rideId];
+    if (!r || r.driverId !== uid) throw new ServerError("not_found");
+    if (r.status !== "scheduled") throw new ServerError("illegal_transition");
+    if ((r.scheduledFor ?? 0) - this.now < SERVER.lateBookingChangeS * 1000) this.db.users[uid].driverCancels++;
+    r.driverId = null;
+    this.effects.notify.add(uid);
+    this.effects.notify.add(r.riderId);
   }
 
   cancelRide(uid: string, rideId: string, reason?: string): void {
@@ -582,6 +683,11 @@ export class Engine {
 
   private riderCancel(r: RideRow): void {
     const u = this.db.users[r.riderId];
+    if (r.status === "scheduled") {
+      if (u && (r.scheduledFor ?? 0) - this.now < SERVER.lateBookingChangeS * 1000) u.riderCancels++;
+      this.endRide(r, "cancelled", "rider", null);
+      return;
+    }
     if (r.status === "requested" || r.status === "accepted" || r.status === "arrived") {
       if (u) {
         u.riderCancels++;
@@ -595,6 +701,7 @@ export class Engine {
 
   private driverCancel(r: RideRow, reason: DriverCancelReason): void {
     const driverId = r.driverId!;
+    if (r.status === "scheduled") return this.releaseBooking(driverId, r.id);
     if (r.status === "arrived" && reason === "no_show") {
       if (r.arrivedAt === null || this.now < r.arrivedAt + this.cfg.timers.noShowS * 1000)
         throw new ServerError("too_early");
@@ -781,7 +888,8 @@ export class Engine {
 
   /** Timeouts, expiry, lost drivers. Runs on every call ("expiry check on read") and on a timer. */
   sweep(): void {
-    const { offerS, expiryS } = this.cfg.timers;
+    const { offerS } = this.cfg.timers;
+    this.sweepBookings();
     for (const o of Object.values(this.db.offers)) {
       if (o.status === "offered" && o.offeredAt !== null && this.now >= o.offeredAt + offerS * 1000) this.closeOffer(o, "timed_out");
     }
@@ -800,9 +908,11 @@ export class Engine {
       }
     }
     for (const r of Object.values(this.db.rides)) {
-      if (r.status === "requested" && this.now >= r.dispatchStartedAt + expiryS * 1000) {
+      if (r.status === "requested" && this.now >= this.expiresAt(r)) {
         this.endRide(r, "expired", "system", null);
       } else if ((r.status === "accepted" || r.status === "arrived") && r.driverId) {
+        // A booked ride gives its driver until 15 min after the booked time to show up.
+        if (r.scheduledFor != null && this.now < r.scheduledFor + SERVER.bookingLateS * 1000) continue;
         const d = this.db.drivers[r.driverId];
         if (!d || this.now - d.lastSeen > SERVER.driverLostS * 1000) {
           const lost = r.driverId;
@@ -812,6 +922,58 @@ export class Engine {
         }
       }
     }
+  }
+
+  /**
+   * Bookings: a claimed one starts (driver on the way) `leadMin` before its time; an unclaimed one
+   * opens to normal dispatch `openMin` before. Either waits while its people are busy and gives up
+   * 15 minutes after the booked time.
+   */
+  private sweepBookings(): void {
+    const { leadMin, openMin } = this.cfg.booking;
+    const lateMs = SERVER.bookingLateS * 1000;
+    for (const r of Object.values(this.db.rides)) {
+      if (r.status !== "scheduled" || r.scheduledFor == null) continue;
+      const t = r.scheduledFor;
+      if (this.now < t - (r.driverId ? leadMin : openMin) * 60_000) continue;
+      const riderBusy = !!this.activeRideOf(r.riderId);
+      if (r.driverId && !riderBusy && !this.activeDriverRideOf(r.driverId)) this.startBooking(r);
+      else if (!r.driverId && !riderBusy) this.openBooking(r);
+      else if (this.now > t + lateMs) {
+        if (riderBusy) this.endRide(r, "expired", "system", null);
+        else this.openBooking(r);
+      }
+    }
+  }
+
+  /** Claimed booking: the ride is now accepted and the driver on duty (even before their app opens). */
+  private startBooking(r: RideRow): void {
+    const driverId = r.driverId!;
+    r.status = "accepted";
+    r.acceptedAt = this.now;
+    r.dispatchStartedAt = this.now;
+    this.db.drivers[driverId] = { online: true, lastSeen: this.now };
+    for (const o of Object.values(this.db.offers))
+      if (o.driverId === driverId && (o.status === "offered" || o.status === "queued")) this.closeOffer(o, "withdrawn");
+    this.notifyRide(r);
+  }
+
+  /** Unclaimed (or its driver still busy): the booking becomes a normal request. */
+  private openBooking(r: RideRow): void {
+    const had = r.driverId;
+    r.status = "requested";
+    r.driverId = null;
+    r.dispatchStartedAt = this.now;
+    r.notifiedCount = 0;
+    this.effects.pingDrivers = true;
+    this.effects.notify.add(r.riderId);
+    if (had) this.effects.notify.add(had);
+  }
+
+  /** When an open request expires; a booked one waits at least until 15 min after its time. */
+  private expiresAt(r: RideRow): number {
+    const base = r.dispatchStartedAt + this.cfg.timers.expiryS * 1000;
+    return r.scheduledFor != null ? Math.max(base, r.scheduledFor + SERVER.bookingLateS * 1000) : base;
   }
 
   // ---------- internals ----------
@@ -1031,7 +1193,8 @@ export class Engine {
       notifiedCount: r.notifiedCount,
       redispatchCount: r.redispatchCount,
       round: r.round,
-      expiresAt: r.dispatchStartedAt + this.cfg.timers.expiryS * 1000,
+      expiresAt: this.expiresAt(r),
+      scheduledFor: r.scheduledFor ?? null,
       rider: this.party(r.riderId),
       driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.db.vehicles[r.driverId] ?? null } : null,
       myRating: mine ? mine.stars : null

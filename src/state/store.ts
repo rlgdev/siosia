@@ -17,7 +17,7 @@ import { deviceId, readPref, unsupportedFeatures, writePref } from "../services/
 export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nickname" | "ready";
 /** Outcome of opening a master-profile link, shown once. */
 export type LinkNotice = "joined" | "moved" | "bad_link" | "rate_limited" | "active_trip" | "active_ride" | "link_failed";
-export type Panel = "profile" | "history" | "vehicle" | "earnings" | null;
+export type Panel = "profile" | "history" | "vehicle" | "earnings" | "bookings" | null;
 
 export interface AppSnapshot {
   phase: Phase;

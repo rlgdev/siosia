@@ -65,6 +65,7 @@ const ride = (over: Partial<RideView> = {}): RideView => ({
   redispatchCount: 0,
   round: 1,
   expiresAt: EXP,
+  scheduledFor: null,
   rider: { nickname: "Ola", rating: { mean: null, count: 0 } },
   driver: null,
   myRating: null,

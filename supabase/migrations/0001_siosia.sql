@@ -61,6 +61,16 @@ end $$;
 alter table public.app_config add column if not exists offer_retry_s int not null default 120;
 alter table public.app_config drop constraint if exists app_config_offer_retry_s_check;
 alter table public.app_config add constraint app_config_offer_retry_s_check check (offer_retry_s between 0 and 3600);
+-- Rides booked in advance (minutes / days): earliest and latest booking, when a claimed booking
+-- starts (driver sets off) and when an unclaimed one opens to normal dispatch.
+alter table public.app_config add column if not exists booking_min_lead_min int not null default 30;
+alter table public.app_config add column if not exists booking_max_days int not null default 30;
+alter table public.app_config add column if not exists booking_lead_min int not null default 30;
+alter table public.app_config add column if not exists booking_open_min int not null default 20;
+alter table public.app_config drop constraint if exists app_config_booking_check;
+alter table public.app_config add constraint app_config_booking_check check (
+  booking_min_lead_min between 0 and 1440 and booking_max_days between 1 and 365
+  and booking_lead_min between 5 and 240 and booking_open_min between 0 and 240);
 insert into public.app_config (id) values (1) on conflict (id) do nothing;
 
 -- Secrets (one row). No policy → unreadable by clients.
@@ -193,6 +203,12 @@ create table if not exists public.rides (
   round               int not null default 1,
   excluded            uuid[] not null default '{}'
 );
+-- Rides booked in advance: status 'scheduled' until they start (see siosia_sweep).
+alter table public.rides add column if not exists scheduled_for timestamptz;
+alter table public.rides drop constraint if exists rides_status_check;
+alter table public.rides add constraint rides_status_check
+  check (status in ('scheduled','requested','accepted','arrived','in_progress','completed','cancelled','expired'));
+create index if not exists rides_scheduled_idx on public.rides (scheduled_for) where status = 'scheduled';
 create index if not exists rides_rider_idx  on public.rides (rider_id, requested_at desc);
 create index if not exists rides_driver_idx on public.rides (driver_id, requested_at desc);
 create index if not exists rides_open_idx   on public.rides (status) where status in ('requested','accepted','arrived','in_progress');
@@ -385,8 +401,10 @@ returns jsonb language sql stable security definer set search_path = public as $
     'notifiedCount', r.notified_count, 'redispatchCount', r.redispatch_count,
     'round', r.round,
     -- When an open request expires (current config, exactly as the sweep applies it).
-    'expiresAt', siosia_ms(r.dispatch_started_at
-                           + make_interval(secs => (select c.request_expiry_s from app_config c where c.id = 1))),
+    'expiresAt', siosia_ms(greatest(r.dispatch_started_at
+                                    + make_interval(secs => (select c.request_expiry_s from app_config c where c.id = 1)),
+                                    r.scheduled_for + interval '15 minutes')),
+    'scheduledFor', siosia_ms(r.scheduled_for),
     'rider', siosia_party(r.rider_id),
     'driver', case when r.driver_id is null then null
                    else siosia_party(r.driver_id) || jsonb_build_object('vehicle', siosia_vehicle_json(r.driver_id)) end,
@@ -546,10 +564,46 @@ end $$;
 -- §6 rule 7) and, when pg_cron is available, every 10 seconds.
 create or replace function public.siosia_sweep()
 returns void language plpgsql security definer set search_path = public as $$
-declare c app_config; o record; r record;
+declare c app_config; o record; r record; v_rider_busy boolean;
 begin
   if not pg_try_advisory_xact_lock(727274) then return; end if;
   select * into c from app_config where id = 1;
+  -- 0. bookings: a claimed one starts (driver on the way) booking_lead_min before its time; an
+  --    unclaimed one opens to normal dispatch booking_open_min before. Either waits while its
+  --    people are busy and gives up 15 minutes after the booked time.
+  for r in select * from rides where status = 'scheduled'
+           and scheduled_for - make_interval(mins => case when driver_id is null then c.booking_open_min
+                                                          else c.booking_lead_min end) <= now()
+           order by scheduled_for
+           for update skip locked loop
+    begin
+      v_rider_busy := exists (select 1 from rides x where x.rider_id = r.rider_id
+                              and x.status in ('requested','accepted','arrived','in_progress'));
+      if r.driver_id is not null and not v_rider_busy
+         and not exists (select 1 from rides x where x.driver_id = r.driver_id and x.status in ('accepted','arrived','in_progress')) then
+        update rides set status = 'accepted', accepted_at = now(), dispatch_started_at = now()
+         where id = r.id and status = 'scheduled';
+        -- The driver is on duty for this ride from now on, even before their app is open.
+        insert into driver_status (user_id, online, last_seen) values (r.driver_id, true, now())
+        on conflict (user_id) do update set online = true, last_seen = now();
+        for o in select id from offers where driver_id = r.driver_id and status in ('offered','queued') order by status desc loop
+          perform siosia_close_offer(o.id, 'withdrawn');
+        end loop;
+      elsif r.driver_id is null and not v_rider_busy then
+        update rides set status = 'requested', dispatch_started_at = now(), notified_count = 0
+         where id = r.id and status = 'scheduled';
+      elsif now() > r.scheduled_for + interval '15 minutes' then
+        if v_rider_busy then
+          perform siosia_end_ride(r.id, 'expired', 'system', null, array['scheduled']);
+        else
+          update rides set status = 'requested', driver_id = null, dispatch_started_at = now(), notified_count = 0
+           where id = r.id and status = 'scheduled';
+        end if;
+      end if;
+    exception when unique_violation then
+      null; -- someone became busy concurrently: the next sweep tries again
+    end;
+  end loop;
   -- 1. lapsed offer countdowns
   for o in select id from offers where status = 'offered'
            and offered_at + make_interval(secs => c.offer_timeout_s) <= now() loop
@@ -570,7 +624,8 @@ begin
   -- 4. requests nobody accepted in time. Rows being changed right now (an Accept in flight) are
   --    skipped and re-checked by the next sweep; the guarded update re-checks the status anyway.
   for r in select id from rides where status = 'requested'
-           and dispatch_started_at + make_interval(secs => c.request_expiry_s) <= now()
+           and greatest(dispatch_started_at + make_interval(secs => c.request_expiry_s),
+                        scheduled_for + interval '15 minutes') <= now()
            for update skip locked loop
     perform siosia_end_ride(r.id, 'expired', 'system', null, array['requested']);
   end loop;
@@ -578,6 +633,8 @@ begin
   for r in select x.id, x.driver_id from rides x left join driver_status d on d.user_id = x.driver_id
            where x.status in ('accepted','arrived')
              and (d.user_id is null or d.last_seen < now() - interval '60 seconds')
+             -- a booked ride gives its driver until 15 min after the booked time to show up
+             and (x.scheduled_for is null or x.scheduled_for + interval '15 minutes' <= now())
            for update of x skip locked loop
     if siosia_redispatch(r.id, 'driver_lost', r.driver_id) then
       update driver_status set online = false where user_id = r.driver_id;
@@ -677,7 +734,11 @@ begin
       (select count(*) from rides x
         where x.status = 'requested' and x.rider_id <> p_user and not (p_user = any (x.excluded))
           and siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng) <= c.dispatch_radius_km) end,
-    'pendingReceipt', case when p.id is null then null else siosia_ride_json(p, p_user) end);
+    'pendingReceipt', case when p.id is null then null else siosia_ride_json(p, p_user) end,
+    'bookings', (select count(*) from rides x where x.status = 'scheduled' and (x.rider_id = p_user or x.driver_id = p_user)),
+    'openBookings', case when siosia_master_role(p_user) = 'rider' then 0 else
+      (select count(*) from rides x where x.status = 'scheduled' and x.driver_id is null
+          and x.rider_id <> p_user and not (p_user = any (x.excluded))) end);
 end $$;
 
 -- Declined / lapsed cards on still-open requests become offerable again (same round).
@@ -723,6 +784,8 @@ returns jsonb language sql stable security definer set search_path = public as $
                                  'minimum', fare_minimum, 'currency', currency),
     'timers', jsonb_build_object('offerS', offer_timeout_s, 'expiryS', request_expiry_s, 'noShowS', no_show_wait_s,
                                  'retryS', offer_retry_s),
+    'booking', jsonb_build_object('minLeadMin', booking_min_lead_min, 'maxDays', booking_max_days,
+                                  'leadMin', booking_lead_min, 'openMin', booking_open_min),
     'serviceArea', case when service_lat is null or service_lng is null or service_radius_km is null then null
                         else jsonb_build_object('lat', service_lat, 'lng', service_lng, 'radiusKm', service_radius_km) end,
     'dispatchRadiusKm', dispatch_radius_km,
@@ -1018,6 +1081,9 @@ begin
              and (rider_id = v_uid or driver_id = v_uid)) then
     return siosia_err('active_ride');
   end if;
+  update rides set status = 'cancelled', ended_at = now(), cancelled_by = 'rider'
+   where rider_id = v_uid and status = 'scheduled';
+  update rides set driver_id = null where driver_id = v_uid and status = 'scheduled';
   perform siosia_go_offline(v_uid);
   delete from vehicles where user_id = v_uid;
   delete from memberships where user_id = v_uid;
@@ -1052,7 +1118,7 @@ begin
   if v_err is not null then return siosia_err(v_err); end if;
   return siosia_ok(coalesce((
     select jsonb_agg(siosia_ride_json(x, auth.uid()) order by x.requested_at desc)
-    from (select * from rides where rider_id = auth.uid() or driver_id = auth.uid()
+    from (select * from rides where (rider_id = auth.uid() or driver_id = auth.uid()) and status <> 'scheduled'
           order by requested_at desc limit 50) x), '[]'::jsonb));
 end $$;
 
@@ -1134,6 +1200,129 @@ exception when unique_violation then
   return siosia_err('active_ride');
 end $$;
 
+-- ---------------------------------------------------------------------------------------------
+-- Rides booked in advance
+-- ---------------------------------------------------------------------------------------------
+
+create or replace function public.siosia_book_ride(p_pickup jsonb, p_dropoff jsonb, p_est_km float8, p_est_min float8,
+                                                   p_fare_is_estimate boolean, p_scheduled_for timestamptz)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text := siosia_guard(true); v_uid uuid := auth.uid(); c app_config; r rides;
+  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if siosia_master_role(v_uid) = 'driver' then return siosia_err('driver_only'); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  perform siosia_sweep();
+  begin
+    plat := (p_pickup ->> 'lat')::float8;  plng := (p_pickup ->> 'lng')::float8;
+    dlat := (p_dropoff ->> 'lat')::float8; dlng := (p_dropoff ->> 'lng')::float8;
+  exception when others then return siosia_err('bad_input');
+  end;
+  if plat is null or plng is null or dlat is null or dlng is null
+     or abs(plat) > 90 or abs(dlat) > 90 or abs(plng) > 180 or abs(dlng) > 180
+     or p_est_km is null or p_est_min is null or p_est_km <= 0 or p_est_min < 0
+     or p_est_km = 'Infinity'::float8 or p_est_min = 'Infinity'::float8 then
+    return siosia_err('bad_input');
+  end if;
+  select * into c from app_config where id = 1;
+  if c.service_lat is not null and c.service_lng is not null and c.service_radius_km is not null
+     and siosia_km(c.service_lat, c.service_lng, plat, plng) > c.service_radius_km then
+    return siosia_err('outside_area');
+  end if;
+  v_km := greatest(p_est_km, siosia_km(plat, plng, dlat, dlng));
+  if v_km > c.max_trip_km then return siosia_err('too_far'); end if;
+  v_min := greatest(1, p_est_min);
+  if p_scheduled_for is null or p_scheduled_for < now() + make_interval(mins => c.booking_min_lead_min)
+     or p_scheduled_for > now() + make_interval(days => c.booking_max_days) then
+    return siosia_err('bad_time');
+  end if;
+  if (select count(*) from rides where rider_id = v_uid and status = 'scheduled') >= 5 then
+    return siosia_err('too_many');
+  end if;
+  v_fixed := case when (siosia_master_of(v_uid)).role = 'rider' then (siosia_master_of(v_uid)).fixed_fare end;
+  insert into rides (rider_id, status, scheduled_for, dispatch_started_at, pickup_lat, pickup_lng, pickup_label,
+                     dropoff_lat, dropoff_lng, dropoff_label, est_km, est_min, fare, currency, fare_is_estimate)
+  values (v_uid, 'scheduled', p_scheduled_for, p_scheduled_for, plat, plng, left(coalesce(p_pickup ->> 'label', ''), 120),
+          dlat, dlng, left(coalesce(p_dropoff ->> 'label', ''), 120),
+          round(v_km::numeric, 1), round(v_min)::int,
+          coalesce(v_fixed, siosia_fare(v_km::numeric, v_min::numeric)), c.currency,
+          v_fixed is null and coalesce(p_fare_is_estimate, false))
+  returning * into r;
+  return siosia_ok(siosia_ride_json(r, v_uid));
+end $$;
+
+-- My upcoming bookings, as rider or as the driver who took them, soonest first.
+create or replace function public.siosia_bookings()
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(false);
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  return siosia_ok(coalesce((
+    select jsonb_agg(siosia_ride_json(x, auth.uid()) order by x.scheduled_for)
+      from rides x where x.status = 'scheduled' and (x.rider_id = auth.uid() or x.driver_id = auth.uid())), '[]'::jsonb));
+end $$;
+
+-- Bookings without a driver that this driver could take, soonest first, with the distance from
+-- the position sent with the call (used for this answer only, never stored).
+create or replace function public.siosia_open_bookings(p_lat float8, p_lng float8)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if siosia_master_role(v_uid) = 'rider' then return siosia_err('rider_only'); end if;
+  perform siosia_sweep();
+  return siosia_ok(coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'ride', siosia_ride_json(x, v_uid),
+             'distanceKm', case when p_lat is null or p_lng is null or abs(p_lat) > 90 or abs(p_lng) > 180 then null
+                                else round(siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng)::numeric, 1) end)
+           order by x.scheduled_for)
+      from rides x where x.status = 'scheduled' and x.driver_id is null and x.rider_id <> v_uid
+                     and not (v_uid = any (x.excluded))), '[]'::jsonb));
+end $$;
+
+-- A driver takes a booking in advance (atomic: one driver wins); no two overlapping ones.
+create or replace function public.siosia_claim_booking(p_ride uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r rides;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if siosia_master_role(v_uid) = 'rider' then return siosia_err('rider_only'); end if;
+  if not exists (select 1 from vehicles where user_id = v_uid) then return siosia_err('no_vehicle'); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  perform siosia_sweep();
+  select * into r from rides where id = p_ride;
+  if r.id is null or r.rider_id = v_uid or v_uid = any (r.excluded) then return siosia_err('not_found'); end if;
+  if r.status <> 'scheduled' or r.driver_id is not null then return siosia_err('taken'); end if;
+  if exists (select 1 from rides x where x.status = 'scheduled' and x.driver_id = v_uid
+             and abs(extract(epoch from x.scheduled_for - r.scheduled_for)) < (greatest(x.est_min, r.est_min) + 30) * 60) then
+    return siosia_err('overlap');
+  end if;
+  update rides set driver_id = v_uid where id = p_ride and status = 'scheduled' and driver_id is null;
+  if not found then return siosia_err('taken'); end if;
+  return siosia_ok('"won"'::jsonb);
+end $$;
+
+-- The driver gives a booking back (close to its time this counts as a driver cancellation).
+create or replace function public.siosia_release_booking(p_ride uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r rides;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into r from rides where id = p_ride for update;
+  if r.id is null or r.driver_id is distinct from v_uid then return siosia_err('not_found'); end if;
+  if r.status <> 'scheduled' then return siosia_err('illegal_transition'); end if;
+  if r.scheduled_for - now() < interval '60 minutes' then
+    update profiles set driver_cancels = driver_cancels + 1 where user_id = v_uid;
+  end if;
+  update rides set driver_id = null where id = p_ride;
+  return siosia_ok('true'::jsonb);
+end $$;
+
 create or replace function public.siosia_cancel_ride(p_ride uuid, p_reason text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r rides; c app_config;
@@ -1143,7 +1332,15 @@ begin
   perform siosia_sweep();
   select * into r from rides where id = p_ride for update;
   if r.id is null then return siosia_err('not_found'); end if;
-  if r.rider_id = v_uid then
+  if r.rider_id = v_uid and r.status = 'scheduled' then
+    if r.scheduled_for - now() < interval '60 minutes' then
+      update profiles set rider_cancels = rider_cancels + 1 where user_id = v_uid;
+    end if;
+    perform siosia_end_ride(r.id, 'cancelled', 'rider', null, array['scheduled']);
+    return siosia_ok('true'::jsonb);
+  elsif r.driver_id = v_uid and r.status = 'scheduled' then
+    return siosia_release_booking(r.id);
+  elsif r.rider_id = v_uid then
     if r.status not in ('requested','accepted','arrived') then return siosia_err('illegal_transition'); end if;
     update profiles set rider_cancels = rider_cancels + 1,
                         late_cancels = late_cancels + case when r.status = 'arrived' then 1 else 0 end
@@ -1419,6 +1616,11 @@ grant execute on function public.siosia_history() to authenticated;
 grant execute on function public.siosia_earnings() to authenticated;
 grant execute on function public.siosia_request_ride(jsonb, jsonb, float8, float8, boolean) to authenticated;
 grant execute on function public.siosia_cancel_ride(uuid, text) to authenticated;
+grant execute on function public.siosia_book_ride(jsonb, jsonb, float8, float8, boolean, timestamptz) to authenticated;
+grant execute on function public.siosia_bookings() to authenticated;
+grant execute on function public.siosia_open_bookings(float8, float8) to authenticated;
+grant execute on function public.siosia_claim_booking(uuid) to authenticated;
+grant execute on function public.siosia_release_booking(uuid) to authenticated;
 grant execute on function public.siosia_set_online(boolean) to authenticated;
 grant execute on function public.siosia_heartbeat(float8, float8) to authenticated;
 grant execute on function public.siosia_refresh_offers(float8, float8) to authenticated;

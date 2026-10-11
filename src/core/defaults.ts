@@ -8,6 +8,7 @@ import type { DeploymentConfig } from "./types";
 export const DEFAULT_CONFIG: DeploymentConfig = {
   tariff: { base: 5, perKm: 2.5, perMin: 0.5, minimum: 10, currency: "PLN" },
   timers: { offerS: 20, expiryS: 1200, noShowS: 300, retryS: 120 },
+  booking: { minLeadMin: 30, maxDays: 30, leadMin: 30, openMin: 20 },
   serviceArea: null,
   dispatchRadiusKm: 8,
   maxTripKm: 50,
@@ -28,6 +29,12 @@ export const SERVER = {
   historyLimit: 50,
   /** A "move to the app" code works this long, once. */
   transferS: 30 * 60,
+  /** A booking whose people are still busy gives up this long after its time. */
+  bookingLateS: 15 * 60,
+  /** Open bookings per rider. */
+  maxBookings: 5,
+  /** Cancelling / releasing a booking closer than this to its time counts as a cancellation. */
+  lateBookingChangeS: 60 * 60,
   ratingWindow: 20,
   ratingMinCount: 3
 } as const;
