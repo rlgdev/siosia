@@ -54,7 +54,8 @@ describe("push-dispatch", () => {
 
   it("sends to every device of the user, drops gone subscriptions, retries transient failures", async () => {
     const { deps, log } = fake(
-      [row(1, "rider"), row(2, "gone"), row(3, "flaky"), row(4, "flaky", MAX_ATTEMPTS - 1), row(5, "nobody")],
+      // attempts as claimed (each claim counts): 4 is on its last try
+      [row(1, "rider", 1), row(2, "gone", 1), row(3, "flaky", 1), row(4, "flaky", MAX_ATTEMPTS), row(5, "nobody", 1)],
       { rider: [sub("https://push/a"), sub("https://push/b")], gone: [sub("https://push/410")], flaky: [sub("https://push/503")] },
       { "https://push/410": 410, "https://push/503": 503 }
     );

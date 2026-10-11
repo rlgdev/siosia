@@ -309,7 +309,7 @@ export class Engine {
     const key = normalizeTransfer(code);
     const t = this.db.transfers?.[key];
     const old = t && t.expiresAt > this.now ? t.userId : null;
-    if (!old || !this.db.users[old] || this.db.users[old].deleted) {
+    if (!old || !this.db.users[old] || this.db.users[old].deleted || !this.isMember(old)) {
       this.db.inviteFails[uid] = [...fails, this.now];
       throw new ServerError("bad_transfer");
     }
@@ -328,6 +328,11 @@ export class Engine {
       if (r.driverId === old) r.driverId = uid;
       r.excluded = r.excluded.map((x) => (x === old ? uid : x));
     }
+    // Both accounts may hold a card for the same ride, or have rated the same ride: keep the new one.
+    for (const [k, o] of Object.entries(this.db.offers))
+      if (o.driverId === old && Object.values(this.db.offers).some((n) => n.driverId === uid && n.rideId === o.rideId && n.round === o.round))
+        delete this.db.offers[k];
+    this.db.ratings = this.db.ratings.filter((g) => !(g.fromUser === old && this.db.ratings.some((n) => n.fromUser === uid && n.rideId === g.rideId)));
     for (const o of Object.values(this.db.offers)) if (o.driverId === old) o.driverId = uid;
     for (const g of this.db.ratings) {
       if (g.fromUser === old) g.fromUser = uid;
@@ -458,10 +463,13 @@ export class Engine {
     if (this.activeRideOf(uid)) throw new ServerError("active_ride");
     for (const r of Object.values(this.db.rides)) {
       if (r.status !== "scheduled") continue;
-      if (r.riderId === uid) this.endRide(r, "cancelled", "rider", null);
-      else if (r.driverId === uid) {
+      if (r.riderId === uid) {
+        if (r.driverId) this.pushTo(r.driverId, "booking_cancelled", r, { pickup: r.pickup.label });
+        this.endRide(r, "cancelled", "rider", null);
+      } else if (r.driverId === uid) {
         r.driverId = null;
         this.effects.notify.add(r.riderId);
+        this.pushTo(r.riderId, "booking_released", r, {});
       }
     }
     this.goOffline(uid);
@@ -490,7 +498,8 @@ export class Engine {
       nearbyRequests: pos && isValidLatLng(pos) ? this.countNearby(uid, pos) : null,
       pendingReceipt: this.pendingReceipt(uid),
       bookings: Object.values(this.db.rides).filter((r) => r.status === "scheduled" && (r.riderId === uid || r.driverId === uid)).length,
-      openBookings: this.linkedRole(uid) === "rider" ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length
+      openBookings:
+        this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length
     };
   }
 
@@ -613,7 +622,12 @@ export class Engine {
     const { minLeadMin, maxDays } = this.cfg.booking;
     const t = input.scheduledFor;
     if (!Number.isFinite(t) || t < this.now + minLeadMin * 60_000 || t > this.now + maxDays * 86_400_000) throw new ServerError("bad_time");
-    if (Object.values(this.db.rides).filter((r) => r.status === "scheduled" && r.riderId === uid).length >= SERVER.maxBookings)
+    const mine = Object.values(this.db.rides).filter((r) => r.riderId === uid);
+    // At most 5 open, and 10 new bookings a day (each one notifies drivers).
+    if (
+      mine.filter((r) => r.status === "scheduled").length >= SERVER.maxBookings ||
+      mine.filter((r) => r.scheduledFor != null && r.requestedAt > this.now - 86_400_000).length >= SERVER.maxBookingsPerDay
+    )
       throw new ServerError("too_many");
     ride.status = "scheduled";
     ride.scheduledFor = t;
@@ -622,7 +636,7 @@ export class Engine {
     this.effects.notify.add(uid);
     // Everyone who can take it hears about it (Supabase: only those with notifications on).
     for (const d of Object.keys(this.db.vehicles))
-      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider")
+      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider" && this.isMember(d))
         this.pushTo(d, "booking_new", ride, { pickup: ride.pickup.label, dropoff: ride.dropoff.label });
     return this.rideView(ride, uid);
   }
@@ -641,6 +655,7 @@ export class Engine {
   openBookings(uid: string, pos: LatLng | null): OpenBooking[] {
     this.requireUser(uid);
     if (this.linkedRole(uid) === "rider") throw new ServerError("rider_only");
+    if (!this.db.vehicles[uid]) throw new ServerError("no_vehicle");
     this.sweep();
     return Object.values(this.db.rides)
       .filter((r) => this.claimable(r, uid))
@@ -958,8 +973,16 @@ export class Engine {
       if (r.status !== "scheduled" || r.scheduledFor == null) continue;
       const t = r.scheduledFor;
       if (this.now < t - (r.driverId ? leadMin : openMin) * 60_000) continue;
+      // A booking whose rider no longer exists ends; one whose driver is gone loses its driver.
+      const rider = this.db.users[r.riderId];
+      if (!rider || rider.deleted) {
+        this.endRide(r, "cancelled", "system", "user_gone");
+        continue;
+      }
+      if (r.driverId && (!this.db.users[r.driverId] || this.db.users[r.driverId].deleted)) r.driverId = null;
+      // Busy = any active ride in either role (a rider who is driving someone is busy too).
       const riderBusy = !!this.activeRideOf(r.riderId);
-      if (r.driverId && !riderBusy && !this.activeDriverRideOf(r.driverId)) this.startBooking(r);
+      if (r.driverId && !riderBusy && !this.activeRideOf(r.driverId)) this.startBooking(r);
       else if (!r.driverId && !riderBusy) this.openBooking(r);
       else if (this.now > t + lateMs) {
         if (riderBusy) this.endRide(r, "expired", "system", null);
@@ -996,6 +1019,7 @@ export class Engine {
   }
 
   private pushTo(userId: string, kind: PushKind, r: RideRow, params: PushParams): void {
+    if (!this.isMember(userId)) return;
     this.effects.push.push({ userId, kind, rideId: r.id, params: { at: r.scheduledFor ?? null, ...params } });
   }
 

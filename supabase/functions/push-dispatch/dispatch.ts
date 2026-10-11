@@ -22,12 +22,13 @@ export interface Subscription {
 }
 
 export interface Deps {
-  /** Unsent rows, oldest first. */
+  /** Claims unsent rows atomically (siosia_claim_push: each claim counts as an attempt). */
   pending(limit: number): Promise<OutboxRow[]>;
   subscriptions(userId: string): Promise<Subscription[]>;
   /** Encrypts and posts one message; throws an error with `statusCode` when the push service refuses. */
   send(sub: Subscription, payload: string): Promise<void>;
   markSent(id: number): Promise<void>;
+  /** Releases the claim so a later run tries again. */
   markFailed(id: number): Promise<void>;
   dropSubscription(endpoint: string): Promise<void>;
 }
@@ -38,7 +39,7 @@ export interface DispatchResult {
   dropped: number;
 }
 
-/** A message tries up to this many runs; then it is left as failed. */
+/** A message is claimed at most this many times (= runs); then it is given up. */
 export const MAX_ATTEMPTS = 5;
 
 export async function dispatch(deps: Deps, limit = 100): Promise<DispatchResult> {
@@ -62,7 +63,7 @@ export async function dispatch(deps: Deps, limit = 100): Promise<DispatchResult>
         } else retry = true;
       }
     }
-    if (delivered > 0 || subs.length === 0 || !retry || row.attempts + 1 >= MAX_ATTEMPTS) {
+    if (delivered > 0 || subs.length === 0 || !retry || row.attempts >= MAX_ATTEMPTS) {
       await deps.markSent(row.id);
       if (delivered > 0) result.sent++;
     } else {

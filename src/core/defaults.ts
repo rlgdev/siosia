@@ -33,6 +33,8 @@ export const SERVER = {
   bookingLateS: 15 * 60,
   /** Open bookings per rider. */
   maxBookings: 5,
+  /** New bookings per rider per day (each one notifies drivers). */
+  maxBookingsPerDay: 10,
   /** Cancelling / releasing a booking closer than this to its time counts as a cancellation. */
   lateBookingChangeS: 60 * 60,
   ratingWindow: 20,

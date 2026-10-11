@@ -535,8 +535,10 @@ describe("SQL backend (PGlite)", () => {
     const B1 = "00000000-0000-4000-8000-000000000041";
     const B2 = "00000000-0000-4000-8000-000000000042";
     const BD = "00000000-0000-4000-8000-000000000043";
-    const sub = (n: string) => [`https://push.example/${n}`, "p".repeat(40), "a".repeat(16)];
+    const sub = (n: string) => [`https://web.push.apple.com/${n}`, "p".repeat(40), "a".repeat(16)];
     expect(await errorOf(call(B1, "siosia_save_push", ["http://insecure/x", "p".repeat(40), "a".repeat(16)]))).toBe("bad_input");
+    // Only real push services: the sender posts to this URL.
+    expect(await errorOf(call(B1, "siosia_save_push", ["https://attacker.example/x", "p".repeat(40), "a".repeat(16)]))).toBe("bad_input");
     await call(B1, "siosia_save_push", sub("b1"));
     await call(BD, "siosia_save_push", sub("bd"));
     await call(B1, "siosia_save_profile", ["Bella", "pl"]);
@@ -567,11 +569,63 @@ describe("SQL backend (PGlite)", () => {
     await admin("delete from public.push_outbox");
     await call(U.d3, "siosia_claim_booking", [b2.id]);
     expect(await outbox()).toEqual([]);
+    // The sender claims rows atomically: a second run right after gets nothing.
+    await call(B2, "siosia_cancel_ride", [b2.id, null]);
+    await admin("delete from public.push_outbox");
+    await admin("select public.siosia_push($1, 'driver_arrived', null, '{}'::jsonb)", [B1]);
+    const first = (await admin("select id, attempts from public.siosia_claim_push(10)")).rows;
+    expect(first).toEqual([{ id: expect.anything(), attempts: 1 }]);
+    expect((await admin("select id from public.siosia_claim_push(10)")).rows).toEqual([]);
     // Turning them off removes this device.
-    await call(BD, "siosia_delete_push", ["https://push.example/bd"]);
+    await call(BD, "siosia_delete_push", ["https://web.push.apple.com/bd"]);
     expect((await admin("select count(*)::int as n from public.push_subscriptions where user_id = $1", [BD])).rows[0]).toEqual({ n: 0 });
     await call(B1, "siosia_cancel_ride", [b.id, null]);
-    await call(B2, "siosia_cancel_ride", [b2.id, null]);
+  });
+
+  it("keeps the sweep alive when a user with a booking is removed, and checks busy in either role", async () => {
+    const G1 = "00000000-0000-4000-8000-000000000051";
+    const GD = "00000000-0000-4000-8000-000000000052";
+    const G2 = "00000000-0000-4000-8000-000000000053";
+    for (const id of [G1, GD, G2]) await admin("insert into auth.users (id) values ($1)", [id]);
+    await onboard(G1, "Gosia");
+    await onboard(GD, "Grzegorz", true);
+    await onboard(G2, "Gabi");
+    const at = (min: number) => new Date(Date.now() + min * 60_000).toISOString();
+    const b = await call<Json>(G1, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(120)]);
+    await call(GD, "siosia_claim_booking", [b.id]);
+    // The operator removes the driver (Authentication → Users): the booking loses its driver,
+    // and every other call keeps working.
+    await admin("delete from auth.users where id = $1", [GD]);
+    await admin("update public.rides set scheduled_for = now() + interval '29 minutes' where id = $1", [b.id]);
+    expect((await call<Json>(U.rider2, "siosia_my_state")).ride).toBeNull();
+    expect(await call<Json>(G1, "siosia_get_ride", [b.id])).toMatchObject({ status: "requested", driver: null });
+    await call(G1, "siosia_cancel_ride", [b.id, null]);
+    // The rider removed: their booking ends.
+    const b2 = await call<Json>(G2, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(120)]);
+    await admin("delete from auth.users where id = $1", [G2]);
+    await admin("update public.rides set scheduled_for = now() + interval '19 minutes' where id = $1", [b2.id]);
+    await call(U.rider2, "siosia_my_state");
+    expect((await admin("select status, cancel_reason from public.rides where id = $1", [b2.id])).rows[0]).toEqual({ status: "cancelled", cancel_reason: "user_gone" });
+    // A rider who is driving someone right now is busy: their booking waits.
+    const b3 = await call<Json>(U.d3, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(120)]);
+    const req = await call<Json>(G1, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    await call(U.d3, "siosia_set_online", [true]);
+    const s = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    expect((s.offer as Json).rideId).toBe(req.id);
+    await call(U.d3, "siosia_decide_offer", [(s.offer as Json).id, "accept"]);
+    await admin("update public.rides set scheduled_for = now() + interval '19 minutes' where id = $1", [b3.id]);
+    await call(U.d3, "siosia_my_state");
+    expect((await admin("select status from public.rides where id = $1", [b3.id])).rows[0]).toEqual({ status: "scheduled" });
+    await call(G1, "siosia_cancel_ride", [req.id, null]);
+    await call(U.d3, "siosia_cancel_ride", [b3.id, null]);
+    // Open bookings need a car; new bookings are capped at 10 a day.
+    expect(await errorOf(call(G1, "siosia_open_bookings", [null, null]))).toBe("no_vehicle");
+    expect((await call<Json>(G1, "siosia_my_state")).openBookings).toBe(0);
+    for (let i = 0; i < 9; i++) { // G1 booked once today already: 10 in all
+      const x = await call<Json>(G1, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(200 + i)]);
+      await call(G1, "siosia_cancel_ride", [x.id, null]);
+    }
+    expect(await errorOf(call(G1, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(300)]))).toBe("too_many");
   });
 
   it("moves a profile into the app with a one-time code (iOS Home Screen apps have their own storage)", async () => {
@@ -601,6 +655,15 @@ describe("SQL backend (PGlite)", () => {
     expect(await errorOf(call(APP2, "siosia_redeem_transfer", [again, "dev-app2", false]))).toBe("has_profile");
     expect(await call<Json>(APP2, "siosia_redeem_transfer", [again, "dev-app2", true])).toMatchObject({ userId: APP2, nickname: before.nickname });
     expect(((await call<Json[]>(APP2, "siosia_history")) ?? []).length).toBe(rides);
+    // A phone on a master link that was since replaced cannot move into a full membership.
+    const LINK = "00000000-0000-4000-8000-000000000033";
+    const APP3 = "00000000-0000-4000-8000-000000000034";
+    for (const id of [LINK, APP3]) await admin("insert into auth.users (id) values ($1)", [id]);
+    await admin("select public.siosia_set_master('mvx', 'mvx-link-token-0123456789', 'Mover', null, null, 'rider')");
+    await call(LINK, "siosia_join_master", ["mvx-link-token-0123456789", "dev-link", "en", false]);
+    const code3 = String((await call<Json>(LINK, "siosia_create_transfer")).code);
+    await admin("select public.siosia_set_master('mvx', 'mvx-link-token-NEW-01234567', 'Mover', null, null, 'rider')");
+    expect(await errorOf(call(APP3, "siosia_redeem_transfer", [code3, "dev-app3", false]))).toBe("bad_transfer");
   });
 
   it("upgrades a database from the 3-minute version to 20 minutes once, never overriding a later choice", async () => {

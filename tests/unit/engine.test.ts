@@ -568,6 +568,35 @@ describe("rides booked in advance", () => {
     expect(db.rides[b.id]).toMatchObject({ status: "requested", driverId: null });
   });
 
+  it("ends bookings of removed users, waits while a person is busy in either role, caps new bookings", () => {
+    const b = book();
+    at((e) => e.claimBooking("d1", b.id));
+    delete db.users.d1; // the operator removed the driver
+    now = b.scheduledFor! - 30 * MIN;
+    at((e) => e.sweep());
+    expect(db.rides[b.id]).toMatchObject({ status: "requested", driverId: null });
+    const b2 = book("rider2", 120);
+    delete db.users.rider2;
+    now = b2.scheduledFor! - 20 * MIN;
+    at((e) => e.sweep());
+    expect(db.rides[b2.id]).toMatchObject({ status: "cancelled", cancelReason: "user_gone" });
+    // A driver with an open request as a rider is busy: the booking they took waits.
+    user("r9", "Renia");
+    const b3 = book("r9", 120);
+    at((e) => e.claimBooking("d2", b3.id));
+    db.drivers.d2 = { online: false, lastSeen: now };
+    at((e) => e.requestRide("d2", { pickup: PICKUP, dropoff: DROPOFF, estKm: 3, estMin: 8, fareIsEstimate: false }));
+    now = b3.scheduledFor! - 30 * MIN;
+    at((e) => e.sweep());
+    expect(db.rides[b3.id].status).toBe("scheduled");
+    // Car-less users see no bookings to take; at most 10 new bookings a day.
+    expect(code(() => at((e) => e.openBookings("rider", null)))).toBe("no_vehicle");
+    expect(at((e) => e.myState("rider")).openBookings).toBe(0);
+    user("r8", "Rysia");
+    for (let i = 0; i < 10; i++) at((e) => e.cancelRide("r8", book("r8", 200 + i).id));
+    expect(code(() => book("r8", 400))).toBe("too_many");
+  });
+
   it("lets a driver give a booking back (late counts), and keeps one-role master profiles apart", () => {
     const b = book();
     at((e) => e.claimBooking("d1", b.id));
@@ -673,6 +702,26 @@ describe("moving a profile into the app (iOS Home Screen apps have their own sto
     for (let i = 0; i < 10; i++) code_(() => at((e) => e.redeemTransfer("x", "AAAA-AAAA", "dev-x")));
     const next = at((e) => e.createTransfer("rider2")).code;
     expect(code_(() => at((e) => e.redeemTransfer("x", next, "dev-x")))).toBe("rate_limited");
+  });
+
+  it("refuses a code of a phone whose master link was replaced; merges clashing cards and ratings", () => {
+    const M = [{ id: "mv", token: "tok-mv-0123456789ab", nickname: "Mover", icon: null, fixedFare: null, role: "rider" as const }];
+    const E = <T>(fn: (e: Engine) => T, masters = M): T => fn(new Engine(db, { ...CFG, masters }, now));
+    E((e) => e.joinMaster("lk", "tok-mv-0123456789ab", "dev-lk", "en"));
+    const { code } = E((e) => e.createTransfer("lk"));
+    expect(code_(() => E((e) => e.redeemTransfer("app", code, "dev-app"), []))).toBe("bad_transfer");
+    // d1 (browser) and d2 (the app) both got a card for one ride and both rated one ride.
+    const ride = request();
+    online("d1", near(1));
+    online("d2", near(2));
+    db.ratings.push({ rideId: "rx", fromUser: "d1", toUser: "rider", stars: 5, comment: "", createdAt: now });
+    db.ratings.push({ rideId: "rx", fromUser: "d2", toUser: "rider", stars: 4, comment: "", createdAt: now });
+    at((e) => e.setOnline("d1", false));
+    at((e) => e.setOnline("d2", false));
+    const c2 = at((e) => e.createTransfer("d1")).code;
+    at((e) => e.redeemTransfer("d2", c2, "dev-d2", true));
+    expect(Object.values(db.offers).filter((o) => o.rideId === ride.id && o.driverId === "d2")).toHaveLength(1);
+    expect(db.ratings.filter((g) => g.rideId === "rx")).toEqual([expect.objectContaining({ fromUser: "d2", stars: 4 })]);
   });
 
   it("keeps a master profile's link membership when it moves into the app", () => {

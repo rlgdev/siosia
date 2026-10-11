@@ -8,7 +8,7 @@
 // Deno runtime (npm: specifiers, Deno globals): outside the app's TypeScript project; Supabase checks it at deploy.
 import { createClient } from "npm:@supabase/supabase-js@2.57.0";
 import webpush from "npm:web-push@3.6.7";
-import { dispatch, MAX_ATTEMPTS } from "./dispatch.ts";
+import { dispatch } from "./dispatch.ts";
 
 Deno.serve(async (req) => {
   const secret = Deno.env.get("PUSH_SECRET");
@@ -17,13 +17,8 @@ Deno.serve(async (req) => {
   const db = createClient(Deno.env.get("SUPABASE_URL"), Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"), { auth: { persistSession: false } });
   const result = await dispatch({
     async pending(limit) {
-      const { data, error } = await db
-        .from("push_outbox")
-        .select("id, user_id, kind, ride_id, params, lang, tz, attempts")
-        .is("sent_at", null)
-        .lt("attempts", MAX_ATTEMPTS)
-        .order("id")
-        .limit(limit);
+      // Atomic claim: overlapping runs (cron + webhook) never send the same row twice.
+      const { data, error } = await db.rpc("siosia_claim_push", { p_limit: limit });
       if (error) throw error;
       return data ?? [];
     },
@@ -39,8 +34,7 @@ Deno.serve(async (req) => {
       await db.from("push_outbox").update({ sent_at: new Date().toISOString() }).eq("id", id);
     },
     async markFailed(id) {
-      const { data } = await db.from("push_outbox").select("attempts").eq("id", id).single();
-      await db.from("push_outbox").update({ attempts: (data?.attempts ?? 0) + 1 }).eq("id", id);
+      await db.from("push_outbox").update({ claimed_at: null }).eq("id", id);
     },
     async dropSubscription(endpoint) {
       await db.from("push_subscriptions").delete().eq("endpoint", endpoint);

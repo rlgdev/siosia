@@ -186,6 +186,7 @@ create table if not exists public.push_outbox (
   attempts   int not null default 0
 );
 create index if not exists push_outbox_pending_idx on public.push_outbox (id) where sent_at is null;
+alter table public.push_outbox add column if not exists claimed_at timestamptz;
 
 create table if not exists public.invite_failures (
   user_id uuid not null,
@@ -490,12 +491,28 @@ end $$;
 create or replace function public.siosia_push(p_user uuid, p_kind text, p_ride uuid, p_params jsonb)
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user) then return; end if;
+  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user)
+     or not siosia_member_ok(p_user) then
+    return;
+  end if;
   insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
   values (p_user, p_kind, p_ride, coalesce(p_params, '{}'::jsonb),
           coalesce((select language from profiles where user_id = p_user), 'en'),
           coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
 end $$;
+
+-- The sender takes a batch atomically (overlapping runs never send a row twice): each claim counts
+-- as an attempt; a claim older than 2 minutes (crashed run) is taken again. Service role only.
+create or replace function public.siosia_claim_push(p_limit int)
+returns setof public.push_outbox language sql security definer set search_path = public as $$
+  update push_outbox set attempts = attempts + 1, claimed_at = now()
+   where id in (select id from push_outbox
+                 where sent_at is null and attempts < 5
+                   and (claimed_at is null or claimed_at < now() - interval '2 minutes')
+                 order by id limit greatest(1, least(coalesce(p_limit, 100), 500))
+                 for update skip locked)
+  returning *;
+$$;
 
 create or replace function public.siosia_nick(p_user uuid)
 returns text language sql stable security definer set search_path = public as $$
@@ -628,10 +645,21 @@ begin
            order by scheduled_for
            for update skip locked loop
     begin
-      v_rider_busy := exists (select 1 from rides x where x.rider_id = r.rider_id
+      -- A booking whose rider no longer exists ends; one whose driver is gone loses its driver.
+      if not exists (select 1 from profiles where user_id = r.rider_id and not deleted) then
+        perform siosia_end_ride(r.id, 'cancelled', 'system', 'user_gone', array['scheduled']);
+        continue;
+      end if;
+      if r.driver_id is not null and not exists (select 1 from profiles where user_id = r.driver_id and not deleted) then
+        update rides set driver_id = null where id = r.id;
+        r.driver_id := null;
+      end if;
+      -- Busy = any active ride in either role (a rider who is driving someone is busy too).
+      v_rider_busy := exists (select 1 from rides x where (x.rider_id = r.rider_id or x.driver_id = r.rider_id)
                               and x.status in ('requested','accepted','arrived','in_progress'));
       if r.driver_id is not null and not v_rider_busy
-         and not exists (select 1 from rides x where x.driver_id = r.driver_id and x.status in ('accepted','arrived','in_progress')) then
+         and not exists (select 1 from rides x where (x.driver_id = r.driver_id or x.rider_id = r.driver_id)
+                         and x.status in ('requested','accepted','arrived','in_progress')) then
         update rides set status = 'accepted', accepted_at = now(), dispatch_started_at = now()
          where id = r.id and status = 'scheduled';
         -- The driver is on duty for this ride from now on, even before their app is open.
@@ -657,8 +685,9 @@ begin
           perform siosia_push(r.rider_id, 'booking_open', r.id, jsonb_build_object('at', r.scheduled_for));
         end if;
       end if;
-    exception when unique_violation then
-      null; -- someone became busy concurrently: the next sweep tries again
+    exception when others then
+      -- One booking must never stop the sweep (it runs inside every API call): skip it, retry later.
+      raise warning 'siosia_sweep: booking % skipped: %', r.id, sqlerrm;
     end;
   end loop;
   -- 1. lapsed offer countdowns
@@ -793,7 +822,8 @@ begin
           and siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng) <= c.dispatch_radius_km) end,
     'pendingReceipt', case when p.id is null then null else siosia_ride_json(p, p_user) end,
     'bookings', (select count(*) from rides x where x.status = 'scheduled' and (x.rider_id = p_user or x.driver_id = p_user)),
-    'openBookings', case when siosia_master_role(p_user) = 'rider' then 0 else
+    'openBookings', case when siosia_master_role(p_user) = 'rider'
+                           or not exists (select 1 from vehicles where user_id = p_user) then 0 else
       (select count(*) from rides x where x.status = 'scheduled' and x.driver_id is null
           and x.rider_id <> p_user and not (p_user = any (x.excluded))) end);
 end $$;
@@ -974,7 +1004,10 @@ begin
   v_hash := encode(digest(upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g')), 'sha256'), 'hex');
   select * into t from account_transfers where code_hash = v_hash and expires_at > now();
   v_old := t.user_id;
-  if v_old is null or not exists (select 1 from profiles where user_id = v_old and not deleted) then
+  -- The old account must still have its profile and a valid membership (a revoked master link
+  -- must not turn into a full membership here).
+  if v_old is null or not exists (select 1 from profiles where user_id = v_old and not deleted)
+     or not siosia_member_ok(v_old) then
     insert into invite_failures (user_id) values (v_uid);
     return siosia_err('bad_transfer');
   end if;
@@ -985,6 +1018,11 @@ begin
   -- Both accounts, always in the same order (no deadlock with a concurrent move).
   perform pg_advisory_xact_lock(hashtextextended(least(v_old, v_uid)::text, 7));
   perform pg_advisory_xact_lock(hashtextextended(greatest(v_old, v_uid)::text, 7));
+  -- Re-check under the locks: a second tap that waited here finds the code already used.
+  select * into t from account_transfers where code_hash = v_hash and expires_at > now() for update;
+  if t.user_id is distinct from v_old or not exists (select 1 from profiles where user_id = v_old and not deleted) then
+    return siosia_err('bad_transfer');
+  end if;
   perform siosia_sweep();
   if exists (select 1 from rides where status in ('requested','accepted','arrived','in_progress')
              and (rider_id in (v_old, v_uid) or driver_id in (v_old, v_uid))) then
@@ -998,6 +1036,11 @@ begin
   update rides set rider_id = v_uid where rider_id = v_old;
   update rides set driver_id = v_uid where driver_id = v_old;
   update rides set excluded = array_replace(excluded, v_old, v_uid) where v_old = any (excluded);
+  -- Both accounts may hold a card for the same ride, or have rated the same ride: keep the new one.
+  delete from offers o using offers n
+   where o.driver_id = v_old and n.driver_id = v_uid and n.ride_id = o.ride_id and n.round = o.round;
+  delete from ratings g using ratings n
+   where g.from_user = v_old and n.from_user = v_uid and n.ride_id = g.ride_id;
   update offers set driver_id = v_uid where driver_id = v_old;
   update ratings set from_user = v_uid where from_user = v_old;
   update ratings set to_user = v_uid where to_user = v_old;
@@ -1132,13 +1175,20 @@ end $$;
 -- Delete = anonymise (nickname "Deleted user"), remove vehicle and memberships (§9 retention).
 create or replace function public.siosia_delete_profile()
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r record;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   if exists (select 1 from rides where status in ('requested','accepted','arrived','in_progress')
              and (rider_id = v_uid or driver_id = v_uid)) then
     return siosia_err('active_ride');
   end if;
+  for r in select id, driver_id, scheduled_for, pickup_label from rides
+           where rider_id = v_uid and status = 'scheduled' and driver_id is not null loop
+    perform siosia_push(r.driver_id, 'booking_cancelled', r.id, jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label));
+  end loop;
+  for r in select id, rider_id, scheduled_for from rides where driver_id = v_uid and status = 'scheduled' loop
+    perform siosia_push(r.rider_id, 'booking_released', r.id, jsonb_build_object('at', r.scheduled_for));
+  end loop;
   update rides set status = 'cancelled', ended_at = now(), cancelled_by = 'rider'
    where rider_id = v_uid and status = 'scheduled';
   update rides set driver_id = null where driver_id = v_uid and status = 'scheduled';
@@ -1297,8 +1347,10 @@ begin
      or p_scheduled_for > now() + make_interval(days => c.booking_max_days) then
     return siosia_err('bad_time');
   end if;
-  if (select count(*) from rides where rider_id = v_uid and status = 'scheduled') >= 5 then
-    return siosia_err('too_many');
+  if (select count(*) from rides where rider_id = v_uid and status = 'scheduled') >= 5
+     or (select count(*) from rides where rider_id = v_uid and scheduled_for is not null
+         and requested_at > now() - interval '1 day') >= 10 then
+    return siosia_err('too_many'); -- at most 5 open, and 10 new bookings a day (each one notifies drivers)
   end if;
   v_fixed := case when (siosia_master_of(v_uid)).role = 'rider' then (siosia_master_of(v_uid)).fixed_fare end;
   insert into rides (rider_id, status, scheduled_for, dispatch_started_at, pickup_lat, pickup_lng, pickup_label,
@@ -1317,7 +1369,7 @@ begin
     from push_subscriptions s
     join vehicles v on v.user_id = s.user_id
     join profiles p on p.user_id = s.user_id and not p.deleted
-   where s.user_id <> v_uid and siosia_master_role(s.user_id) is distinct from 'rider';
+   where s.user_id <> v_uid and siosia_master_role(s.user_id) is distinct from 'rider' and siosia_member_ok(s.user_id);
   return siosia_ok(siosia_ride_json(r, v_uid));
 end $$;
 
@@ -1341,6 +1393,7 @@ declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   if siosia_master_role(v_uid) = 'rider' then return siosia_err('rider_only'); end if;
+  if not exists (select 1 from vehicles where user_id = v_uid) then return siosia_err('no_vehicle'); end if;
   perform siosia_sweep();
   return siosia_ok(coalesce((
     select jsonb_agg(jsonb_build_object(
@@ -1403,7 +1456,9 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true);
 begin
   if v_err is not null then return siosia_err(v_err); end if;
-  if coalesce(p_endpoint, '') !~ '^https://' or char_length(p_endpoint) > 1000
+  -- Only real push services (Apple, Google, Mozilla, Microsoft): the sender posts to this URL.
+  if coalesce(p_endpoint, '') !~ '^https://([a-z0-9-]+\.)*(push\.apple\.com|googleapis\.com|push\.services\.mozilla\.com|notify\.windows\.com)/'
+     or char_length(p_endpoint) > 1000
      or char_length(coalesce(p_p256dh, '')) not between 10 and 200 or char_length(coalesce(p_auth, '')) not between 8 and 100 then
     return siosia_err('bad_input');
   end if;
@@ -1558,9 +1613,13 @@ begin
       return siosia_err('active_trip');
     end if;
     -- Atomic claim (§6 rule 3): succeeds only while the ride is still requested in this round.
-    update rides set status = 'accepted', driver_id = v_uid, accepted_at = now()
-     where id = o.ride_id and status = 'requested' and round = o.round
-    returning id into v_won;
+    begin
+      update rides set status = 'accepted', driver_id = v_uid, accepted_at = now()
+       where id = o.ride_id and status = 'requested' and round = o.round
+      returning id into v_won;
+    exception when unique_violation then
+      return siosia_err('active_trip'); -- a booking of this driver started at this very moment
+    end;
     if v_won is null then
       perform siosia_close_offer(o.id, 'withdrawn');
       return siosia_err('taken');
@@ -1728,6 +1787,12 @@ grant execute on function public.siosia_claim_booking(uuid) to authenticated;
 grant execute on function public.siosia_release_booking(uuid) to authenticated;
 grant execute on function public.siosia_save_push(text, text, text) to authenticated;
 grant execute on function public.siosia_delete_push(text) to authenticated;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.siosia_claim_push(int) to service_role;
+  end if;
+end $$;
 grant execute on function public.siosia_set_online(boolean) to authenticated;
 grant execute on function public.siosia_heartbeat(float8, float8) to authenticated;
 grant execute on function public.siosia_refresh_offers(float8, float8) to authenticated;
