@@ -584,6 +584,24 @@ describe("SQL backend (PGlite)", () => {
     await call(B1, "siosia_cancel_ride", [b.id, null]);
   });
 
+  it("sets up notifications without hand-entered secrets; only the public key leaves the database", async () => {
+    const sec = (await admin("select push_secret, vapid_public, vapid_private from public.app_secrets where id = 1")).rows[0];
+    expect(String(sec.push_secret)).toMatch(/^[0-9a-f]{48}$/);
+    expect(await errorOf(as(U.rider, "select push_secret from public.app_secrets"))).toMatch(/permission denied/);
+    expect(await errorOf(as(U.rider, "select public.siosia_kick_push()"))).toMatch(/permission denied/);
+    await admin("select public.siosia_kick_push()"); // not set up yet: a no-op
+    await admin("update public.app_config set push_function_url = 'https://x.supabase.co/functions/v1/push-dispatch' where id = 1");
+    await admin("select public.siosia_kick_push()"); // no pg_net here: still never fails
+    await admin("update public.app_config set push_function_url = null where id = 1");
+    expect(await as<Json>(U.rider, "select public.siosia_config()")).toMatchObject({ vapidPublicKey: null });
+    await admin("update public.app_secrets set vapid_public = 'BPublicKeyExample', vapid_private = 'privateKeyExample' where id = 1");
+    const cfg = await as<Json>(U.rider, "select public.siosia_config()");
+    expect(cfg.vapidPublicKey).toBe("BPublicKeyExample");
+    expect(JSON.stringify(cfg)).not.toContain("privateKeyExample");
+    expect(JSON.stringify(cfg)).not.toContain(String(sec.push_secret));
+    await admin("update public.app_secrets set vapid_public = null, vapid_private = null where id = 1");
+  });
+
   it("keeps an online driver whose app went quiet on standby: new requests become notifications", async () => {
     const SD = "00000000-0000-4000-8000-000000000061";
     const SR = "00000000-0000-4000-8000-000000000062";

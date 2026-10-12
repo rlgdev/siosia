@@ -16,7 +16,8 @@
     "e2e:install": "playwright install --with-deps chromium",
     "icons": "node scripts/make-icons.mjs",
     "invite-hash": "node scripts/invite-hash.mjs",
-    "smoke": "node scripts/smoke-supabase.mjs"
+    "smoke": "node scripts/smoke-supabase.mjs",
+    "push:bundle": "esbuild supabase/functions/push-dispatch/index.ts --bundle --format=esm --platform=neutral --external:npm:* --outfile=supabase/functions/push-dispatch/dist-bundle.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.0",

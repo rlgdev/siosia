@@ -87,6 +87,8 @@ export interface DeploymentConfig {
    */
   standbyHours: number;
   operatorContact: string;
+  /** Web Push public key made by the server's push sender (null until it first ran). */
+  vapidPublicKey?: string | null;
 }
 
 export interface RatingSummary {

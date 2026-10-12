@@ -75,6 +75,10 @@ alter table public.app_config add constraint app_config_booking_check check (
 alter table public.app_config add column if not exists driver_standby_h int not null default 4;
 alter table public.app_config drop constraint if exists app_config_driver_standby_check;
 alter table public.app_config add constraint app_config_driver_standby_check check (driver_standby_h between 0 and 24);
+-- Where the notification sender lives (https://<project ref>.supabase.co/functions/v1/push-dispatch;
+-- null = notifications not set up) and the site address (also the Web Push contact).
+alter table public.app_config add column if not exists push_function_url text;
+alter table public.app_config add column if not exists site_url text;
 insert into public.app_config (id) values (1) on conflict (id) do nothing;
 
 -- Secrets (one row). No policy → unreadable by clients.
@@ -83,6 +87,13 @@ create table if not exists public.app_secrets (
   invite_code_hash text
 );
 insert into public.app_secrets (id) values (1) on conflict (id) do nothing;
+-- Notifications need no hand-entered secrets: the database makes the sender's secret (checked on
+-- every call to the Edge Function push-dispatch), and the function creates its Web Push (VAPID) key
+-- pair on first run and keeps it here. Only the public key ever leaves (siosia_config).
+alter table public.app_secrets add column if not exists push_secret text;
+alter table public.app_secrets add column if not exists vapid_public text;
+alter table public.app_secrets add column if not exists vapid_private text;
+update public.app_secrets set push_secret = encode(extensions.gen_random_bytes(24), 'hex') where id = 1 and push_secret is null;
 
 -- Profile = basic info only: nickname (the only personal field, NFR-06) and language.
 create table if not exists public.profiles (
@@ -309,6 +320,8 @@ do $$
 begin
   if exists (select 1 from pg_roles where rolname = 'service_role') then
     grant select, update, delete on public.push_outbox, public.push_subscriptions to service_role;
+    grant select, update on public.app_secrets to service_role;
+    grant select on public.app_config to service_role;
   end if;
 end $$;
 -- No direct table access at all: clients use the functions below, which return only what each
@@ -506,6 +519,7 @@ begin
   values (p_user, p_kind, p_ride, coalesce(p_params, '{}'::jsonb),
           coalesce((select language from profiles where user_id = p_user), 'en'),
           coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
+  perform siosia_kick_push();
 end $$;
 
 -- The sender takes a batch atomically (overlapping runs never send a row twice): each claim counts
@@ -520,6 +534,25 @@ returns setof public.push_outbox language sql security definer set search_path =
                  for update skip locked)
   returning *;
 $$;
+
+-- Ask push-dispatch to send now (pg_net, asynchronous, after commit). No-op until
+-- app_config.push_function_url is set or where pg_net is missing; once per transaction.
+create or replace function public.siosia_kick_push()
+returns void language plpgsql security definer set search_path = public as $$
+declare v_url text; v_secret text;
+begin
+  if current_setting('siosia.kicked', true) = '1' then return; end if;
+  select push_function_url into v_url from app_config where id = 1;
+  if v_url is null or to_regnamespace('net') is null then return; end if;
+  select push_secret into v_secret from app_secrets where id = 1;
+  perform set_config('siosia.kicked', '1', true);
+  begin
+    execute 'select net.http_post(url := $1, body := $2, headers := $3)'
+      using v_url, '{}'::jsonb, jsonb_build_object('x-push-secret', v_secret, 'content-type', 'application/json');
+  exception when others then
+    raise warning 'siosia_kick_push: %', sqlerrm; -- never let a notification break the caller
+  end;
+end $$;
 
 create or replace function public.siosia_nick(p_user uuid)
 returns text language sql stable security definer set search_path = public as $$
@@ -916,7 +949,8 @@ returns jsonb language sql stable security definer set search_path = public as $
     'maxTripKm', max_trip_km,
     'timezone', timezone,
     'standbyHours', driver_standby_h,
-    'operatorContact', operator_contact)
+    'operatorContact', operator_contact,
+    'vapidPublicKey', (select vapid_public from app_secrets where id = 1))
   from app_config where id = 1;
 $$;
 
@@ -1408,6 +1442,7 @@ begin
     join vehicles v on v.user_id = s.user_id
     join profiles p on p.user_id = s.user_id and not p.deleted
    where s.user_id <> v_uid and siosia_master_role(s.user_id) is distinct from 'rider' and siosia_member_ok(s.user_id);
+  perform siosia_kick_push();
   return siosia_ok(siosia_ride_json(r, v_uid));
 end $$;
 
@@ -1901,10 +1936,21 @@ end $$;
 
 do $$
 begin
+  create extension if not exists pg_net;
+exception when others then
+  raise notice 'pg_net not available (%); notifications are sent only when push-dispatch is called.', sqlerrm;
+end $$;
+
+do $$
+begin
   create extension if not exists pg_cron;
   perform cron.unschedule(jobid) from cron.job where jobname in ('siosia-sweep', 'siosia-retention');
   perform cron.schedule('siosia-sweep', '10 seconds', 'select public.siosia_sweep()');
   perform cron.schedule('siosia-retention', '17 3 * * *', 'select public.siosia_retention()');
+  -- Notifications left over (sender busy or down) are retried every minute.
+  perform cron.unschedule(jobid) from cron.job where jobname = 'siosia-push';
+  perform cron.schedule('siosia-push', '* * * * *',
+    'select public.siosia_kick_push() where exists (select 1 from public.push_outbox where sent_at is null and attempts < 5)');
 exception when others then
   raise notice 'pg_cron not available (%); expiry runs on read instead.', sqlerrm;
 end $$;

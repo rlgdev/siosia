@@ -75,7 +75,8 @@ function usePush(): [PushState | null, () => Promise<void>, () => Promise<void>]
   const app = useApp();
   const store = useStore();
   const [state, setState] = useState<PushState | null>(null);
-  const key = app.cfg?.vapidPublicKey ?? "";
+  // From the site config if set there, else the key the server's push sender made.
+  const key = app.cfg?.vapidPublicKey || app.deployment?.vapidPublicKey || "";
   useEffect(() => {
     void pushState(store.api, key).then(setState, () => setState("unsupported"));
   }, [store, key]);

@@ -136,37 +136,32 @@ app closed) they still get a notification for every new request for `driver_stan
 (default 4; 0 = off); tapping it brings them back online. *Go offline* ends it.
 `update public.app_config set driver_standby_h = 4 where id = 1;`
 
-### Optional: notifications (Web Push) — 15 min
+### Optional: notifications (Web Push) — 5 min
 
 Notifications tell riders when a driver takes their booking, is coming or has arrived, and tell
-drivers about new bookings and when it is time to go. On iPhone they work only in the **Home
-Screen app** (iOS 16.4 or newer) after the user taps *Turn on notifications* (☰ → *Siosia as an
-app*). Without this section Siosia works as before, just without notifications.
+drivers about new bookings, new requests (standby) and when it is time to go. On iPhone they work
+only in the **Home Screen app** (iOS 16.4 or newer) after the user taps *Turn on notifications*.
+There are **no keys to create or paste**: the database makes the sender's secret, and the sender
+makes its Web Push key pair on its first run.
 
-1. **Keys** (once, on your computer): `npx web-push generate-vapid-keys`. Keep the **private**
-   key secret; the **public** key is fine to publish.
-2. **Website:** GitHub → repo → *Settings → Secrets and variables → Actions → Variables* →
-   add `VAPID_PUBLIC_KEY` = the public key. The next deploy includes it.
-3. **Sender** ([Supabase CLI](https://supabase.com/docs/guides/cli)), in this repository:
-   ```bash
-   supabase login
-   supabase link --project-ref <your project ref>
-   supabase secrets set VAPID_PUBLIC_KEY=<public> VAPID_PRIVATE_KEY=<private> VAPID_SUBJECT=mailto:<your email> PUSH_SECRET=<long random text>
-   supabase functions deploy push-dispatch --no-verify-jwt
-   ```
-4. **Schedule** — SQL editor (replace the two placeholders; `pg_cron` and `pg_net` are under
-   *Database → Extensions*; without pg_cron use only the webhook below):
+1. **Deploy the sender** — either with the [Supabase CLI](https://supabase.com/docs/guides/cli):
+   `supabase functions deploy push-dispatch --no-verify-jwt`, or in the dashboard: *Edge
+   Functions → Deploy a new function → Via editor*, name `push-dispatch`, paste the contents of
+   `supabase/functions/push-dispatch/dist-bundle.ts` (`npm run push:bundle` makes it), deploy, then
+   in its *Details* turn **Enforce JWT verification** off.
+2. **Tell the database where it is** (SQL editor; `pg_net` and `pg_cron` are enabled by the
+   migration where available):
    ```sql
-   create extension if not exists pg_net;
-   select cron.schedule('siosia-push', '* * * * *', $$
-     select net.http_post(
-       url := 'https://<project ref>.supabase.co/functions/v1/push-dispatch',
-       headers := jsonb_build_object('x-push-secret', '<PUSH_SECRET>'))
-   $$);
+   update public.app_config set
+     push_function_url = 'https://<project ref>.supabase.co/functions/v1/push-dispatch',
+     site_url = 'https://<you>.github.io/siosia/'
+   where id = 1;
+   select public.siosia_kick_push();   -- first run: the sender makes its keys
    ```
-   This sends queued notifications every minute. For instant ones add a *Database Webhook*
-   (Database → Webhooks) on **insert** into `push_outbox` calling the same URL with the header
-   `x-push-secret`.
+3. Re-open the app: ☰ → *Siosia as an app* → *Turn on notifications*.
+
+The database calls the sender right after it queues a notification, and every minute while some
+are left.
 
 ## 4. Authentication settings (4 min)
 
