@@ -392,7 +392,7 @@ export class AppStore {
 
   /** Demo backend: a notification event — a banner in the app, or a system one in the background. */
   private async showPush(m: PushMessage): Promise<void> {
-    const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.rideId);
+    const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.appointmentId ?? m.rideId);
     if (typeof document !== "undefined" && document.visibilityState === "visible") this.patch({ pushToast: { title: text.title, body: text.body } });
     else await showLocal(text.title, text.body, text.tag);
   }

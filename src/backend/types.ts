@@ -12,8 +12,16 @@
 
 import type { PushKind, PushParams } from "../../supabase/functions/_shared/push-text";
 import type {
+  AppointmentView,
   BookingInput,
+  CatalogItem,
   DeploymentConfig,
+  HistoryItem,
+  Leg,
+  Place,
+  Planned,
+  RideTemplateInput,
+  ServiceRequestInput,
   DriverPos,
   DriverPresence,
   Earnings,
@@ -35,7 +43,9 @@ export type BackendKind = "mock" | "supabase";
 /** A notification event for this user (demo backend; Supabase sends real Web Push instead). */
 export interface PushMessage {
   kind: PushKind;
-  rideId: string;
+  rideId: string | null;
+  /** 2.0: appointment notifications (tag source). */
+  appointmentId?: string | null;
   params: PushParams;
 }
 export type Unsub = () => void;
@@ -123,6 +133,28 @@ export interface Backend {
   markPaid(rideId: string): Promise<void>;
   markCollected(rideId: string): Promise<void>;
   rate(rideId: string, stars: number, comment: string): Promise<void>;
+
+  // ---------- 2.0: the service catalog and appointments ----------
+
+  /** The enabled catalog with who offers each entry (public ids), without me. */
+  catalog(): Promise<CatalogItem[]>;
+  /** Send request (one provider; optionally a weekly / every-2-weeks series). */
+  requestService(input: ServiceRequestInput): Promise<AppointmentView>;
+  /** Provider: accept or decline (a series is answered as a whole). */
+  answerAppointment(id: string, decision: "accept" | "decline"): Promise<AppointmentView>;
+  /** Either party; a series: this one or all remaining. */
+  cancelAppointment(id: string, reason?: string | null, scope?: "one" | "series"): Promise<void>;
+  getAppointment(id: string): Promise<AppointmentView>;
+  /** A series' repeating ride (the caller is the passenger); bookings within the horizon at once. */
+  setRideTemplate(seriesId: string, template: RideTemplateInput): Promise<AppointmentView>;
+  dropRideTemplate(seriesId: string, leg: Leg): Promise<void>;
+  /** Everything upcoming in both roles (P1). */
+  planned(): Promise<Planned>;
+  /** Finished appointments and rides, newest first (H1). */
+  timeline(): Promise<HistoryItem[]>;
+  setOffers(ids: string[]): Promise<Profile>;
+  saveHome(place: Place | null): Promise<Profile>;
+  rateAppointment(id: string, stars: number, comment: string): Promise<void>;
 
   onMyChanges(cb: () => void): Unsub;
   /** Web Push subscription of this device (notifications). */

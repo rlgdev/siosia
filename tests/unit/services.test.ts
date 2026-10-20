@@ -112,6 +112,39 @@ describe("mock backend (FR-070)", () => {
     driver.dispose();
   });
 
+  it("runs a 2.0 request → accept round trip through the Backend interface, with notifications", async () => {
+    resetMockDb();
+    const bus = new MockBus("test-bus-" + Math.random());
+    const cfg = { ...DEFAULT_CONFIG, inviteCode: null };
+    const client = new MockBackend("c1", cfg, { bus, sweep: false });
+    const siosia = new MockBackend("s1", cfg, { bus, sweep: false });
+    await client.saveProfile("Toria", "en");
+    await siosia.saveProfile("Siosia", "pl");
+    await siosia.setOffers(["childcare"]);
+    expect((await client.getConfig()).services.map((e) => e.id)).toEqual(["ride", "learning", "childcare"]);
+    const entry = (await client.catalog()).find((e) => e.id === "childcare")!;
+    expect(entry.providers.map((p) => p.nickname)).toEqual(["Siosia"]);
+    const heard = new Promise<{ kind: string; appointmentId?: string | null; params: { service?: string } }>((resolve) => siosia.onPush((m) => resolve(m)));
+    const a = await client.requestService({
+      serviceId: "childcare",
+      providerId: entry.providers[0].publicId!,
+      startsAt: Date.now() + 26 * 3600_000,
+      durationMin: 180,
+      place: { ...A, label: "Dom" },
+      note: ""
+    });
+    const push = await heard;
+    expect(push).toMatchObject({ kind: "appt_new", appointmentId: a.id, params: { service: "Opieka nad dziećmi" } }); // her language
+    const changed = vi.fn();
+    client.onMyChanges(changed);
+    expect(await siosia.answerAppointment(a.id, "accept")).toMatchObject({ status: "accepted", role: "provider" });
+    await vi.waitFor(() => expect(changed).toHaveBeenCalled());
+    expect((await client.planned()).appointments).toEqual([expect.objectContaining({ id: a.id, status: "accepted" })]);
+    expect(await client.myState()).toMatchObject({ planned: 1, nextPlanned: { kind: "appointment", title: "Childcare" } });
+    client.dispose();
+    siosia.dispose();
+  });
+
   it("publishes driver presence under a random key, never the user id", () => {
     const bus = new MockBus("test-bus-" + Math.random());
     const driver = new MockBackend("driver-uid", { ...DEFAULT_CONFIG, inviteCode: null }, { bus, sweep: false });

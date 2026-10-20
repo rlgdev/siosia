@@ -6,6 +6,10 @@ import { Engine, type EngineConfig } from "../../core/engine";
 import type {
   BookingInput,
   DeploymentConfig,
+  Leg,
+  Place,
+  RideTemplateInput,
+  ServiceRequestInput,
   DriverPos,
   DriverPresence,
   Lang,
@@ -72,7 +76,8 @@ export class MockBackend implements Backend {
       const fx = (engine as Engine | null)?.effects;
       if (fx) {
         for (const u of fx.notify) this.bus.publish(`user:${u}`, "changed", {}, SERVER_CLIENT);
-        for (const p of fx.push) this.bus.publish(`user:${p.userId}`, "push", { kind: p.kind, rideId: p.rideId, params: p.params }, SERVER_CLIENT);
+        for (const p of fx.push)
+          this.bus.publish(`user:${p.userId}`, "push", { kind: p.kind, rideId: p.rideId, appointmentId: p.appointmentId ?? null, params: p.params }, SERVER_CLIENT);
         if (fx.pingDrivers) this.bus.publish("drivers", "ping", {}, SERVER_CLIENT);
       }
     }
@@ -84,7 +89,8 @@ export class MockBackend implements Backend {
   async ping(): Promise<void> {}
   async getConfig(): Promise<DeploymentConfig> {
     const { inviteCode: _secret, masters: _links, ...pub } = this.cfg;
-    return pub;
+    // Like siosia_config(): the enabled catalog only (appointments carry their entry's name).
+    return { ...pub, services: pub.services.filter((e) => e.enabled) };
   }
 
   isMember(deviceId: string) {
@@ -173,6 +179,45 @@ export class MockBackend implements Backend {
   }
   rate(rideId: string, stars: number, comment: string) {
     return this.call((e) => e.rate(this.uid, rideId, stars, comment));
+  }
+
+  // ---------- 2.0 ----------
+
+  catalog() {
+    return this.call((e) => e.catalog(this.uid));
+  }
+  requestService(input: ServiceRequestInput) {
+    return this.call((e) => e.requestService(this.uid, input));
+  }
+  answerAppointment(id: string, decision: "accept" | "decline") {
+    return this.call((e) => e.answerAppointment(this.uid, id, decision));
+  }
+  async cancelAppointment(id: string, reason?: string | null, scope: "one" | "series" = "one") {
+    await this.call((e) => e.cancelAppointment(this.uid, id, reason, scope));
+  }
+  getAppointment(id: string) {
+    return this.call((e) => e.getAppointment(this.uid, id));
+  }
+  setRideTemplate(seriesId: string, template: RideTemplateInput) {
+    return this.call((e) => e.setRideTemplate(this.uid, seriesId, template));
+  }
+  async dropRideTemplate(seriesId: string, leg: Leg) {
+    await this.call((e) => e.dropRideTemplate(this.uid, seriesId, leg));
+  }
+  planned() {
+    return this.call((e) => e.planned(this.uid));
+  }
+  timeline() {
+    return this.call((e) => e.timeline(this.uid));
+  }
+  setOffers(ids: string[]) {
+    return this.call((e) => e.setOffers(this.uid, ids));
+  }
+  saveHome(place: Place | null) {
+    return this.call((e) => e.saveHome(this.uid, place));
+  }
+  async rateAppointment(id: string, stars: number, comment: string) {
+    await this.call((e) => e.rateAppointment(this.uid, id, stars, comment));
   }
 
   // ---------- realtime ----------

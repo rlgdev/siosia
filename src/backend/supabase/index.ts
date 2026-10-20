@@ -4,10 +4,19 @@
 // channels authorised by policies on realtime.messages. Only the publishable key reaches the browser.
 
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
+import { DEFAULT_CONFIG } from "../../core/defaults";
 import {
   ServerError,
+  type AppointmentView,
   type BookingInput,
+  type CatalogItem,
   type DeploymentConfig,
+  type HistoryItem,
+  type Leg,
+  type Place,
+  type Planned,
+  type RideTemplateInput,
+  type ServiceRequestInput,
   type DriverPos,
   type DriverPresence,
   type Earnings,
@@ -160,8 +169,16 @@ export class SupabaseBackend implements Backend {
     }
   }
 
-  getConfig() {
-    return this.rpc<DeploymentConfig>("siosia_config");
+  async getConfig() {
+    const c = await this.rpc<DeploymentConfig>("siosia_config");
+    // A database not upgraded to 2.0 yet: the catalog falls back to rides only.
+    return {
+      ...c,
+      booking: { ...DEFAULT_CONFIG.booking, ...(c.booking ?? {}) },
+      services: c.services ?? DEFAULT_CONFIG.services.filter((e) => e.kind === "ride"),
+      appointment: c.appointment ?? DEFAULT_CONFIG.appointment,
+      calendarUrl: c.calendarUrl ?? null
+    };
   }
   isMember(deviceId: string) {
     return this.rpc<boolean>("siosia_is_member", { p_device: deviceId });
@@ -170,14 +187,17 @@ export class SupabaseBackend implements Backend {
     await this.rpc("siosia_join", { p_code: code, p_device: deviceId });
   }
   bookRide(input: BookingInput) {
-    return this.rpc<RideView>("siosia_book_ride", {
+    const args: Record<string, unknown> = {
       p_pickup: input.pickup,
       p_dropoff: input.dropoff,
       p_est_km: input.estKm,
       p_est_min: input.estMin,
       p_fare_is_estimate: input.fareIsEstimate,
       p_scheduled_for: new Date(input.scheduledFor).toISOString()
-    });
+    };
+    // 2.0 overload (appointment + leg); the v1 signature stays for plain bookings.
+    if (input.appointmentId) Object.assign(args, { p_appointment: input.appointmentId, p_leg: input.leg ?? null });
+    return this.rpc<RideView>("siosia_book_ride", args);
   }
   bookings() {
     return this.rpc<RideView[]>("siosia_bookings");
@@ -276,6 +296,53 @@ export class SupabaseBackend implements Backend {
   }
   async rate(rideId: string, stars: number, comment: string) {
     await this.rpc("siosia_rate", { p_ride: rideId, p_stars: stars, p_comment: comment });
+  }
+
+  // ---------- 2.0 ----------
+
+  catalog() {
+    return this.rpc<CatalogItem[]>("siosia_catalog");
+  }
+  requestService(input: ServiceRequestInput) {
+    return this.rpc<AppointmentView>("siosia_request_service", {
+      p_service: input.serviceId,
+      p_provider: input.providerId,
+      p_starts_at: new Date(input.startsAt).toISOString(),
+      p_duration: input.durationMin,
+      p_place: input.place,
+      p_note: input.note,
+      p_repeat: input.repeat ?? null
+    });
+  }
+  answerAppointment(id: string, decision: "accept" | "decline") {
+    return this.rpc<AppointmentView>("siosia_answer_appointment", { p_id: id, p_decision: decision });
+  }
+  async cancelAppointment(id: string, reason?: string | null, scope: "one" | "series" = "one") {
+    await this.rpc("siosia_cancel_appointment", { p_id: id, p_reason: reason ?? null, p_scope: scope });
+  }
+  getAppointment(id: string) {
+    return this.rpc<AppointmentView>("siosia_get_appointment", { p_id: id });
+  }
+  setRideTemplate(seriesId: string, template: RideTemplateInput) {
+    return this.rpc<AppointmentView>("siosia_set_ride_template", { p_series: seriesId, p_template: template });
+  }
+  async dropRideTemplate(seriesId: string, leg: Leg) {
+    await this.rpc("siosia_drop_ride_template", { p_series: seriesId, p_leg: leg });
+  }
+  planned() {
+    return this.rpc<Planned>("siosia_planned");
+  }
+  timeline() {
+    return this.rpc<HistoryItem[]>("siosia_timeline");
+  }
+  setOffers(ids: string[]) {
+    return this.rpc<Profile>("siosia_set_offers", { p_ids: ids });
+  }
+  saveHome(place: Place | null) {
+    return this.rpc<Profile>("siosia_save_home", { p_place: place });
+  }
+  async rateAppointment(id: string, stars: number, comment: string) {
+    await this.rpc("siosia_rate_appointment", { p_id: id, p_stars: stars, p_comment: comment });
   }
 
   // ---------- realtime ----------
