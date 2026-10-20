@@ -485,6 +485,46 @@ select {
   border: 1px solid var(--line);
   font-size: 0.85rem;
 }
+/* C2 request form */
+.place-value {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-weight: 400;
+}
+.place-input .row {
+  margin-top: 6px;
+}
+.repeat-box {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.narrow-input {
+  width: 84px;
+}
+textarea {
+  font: inherit;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  width: 100%;
+  resize: vertical;
+}
+fieldset.field {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+fieldset.field legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 4px;
+}
 .home-foot {
   display: flex;
   flex-wrap: wrap;

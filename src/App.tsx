@@ -11,6 +11,7 @@ import { Home } from "./screens/Home";
 import { Catalog } from "./screens/Catalog";
 import { HistoryScreen } from "./screens/HistoryScreen";
 import { Planned } from "./screens/Planned";
+import { RequestPanel } from "./screens/RequestForm";
 import { ProfilePanel } from "./screens/Profile";
 import { RiderApp } from "./screens/rider/RiderApp";
 import { Confirm } from "./components/ui";
@@ -162,6 +163,7 @@ function Screens() {
       {app.phase === "ready" && app.panel === "earnings" && <HistoryPanel earnings />}
       {app.phase === "ready" && app.panel === "vehicle" && <VehiclePanel />}
       {app.phase === "ready" && app.panel === "bookings" && <BookingsPanel />}
+      {app.phase === "ready" && app.panel === "request" && <RequestPanel />}
     </>
   );
 }
