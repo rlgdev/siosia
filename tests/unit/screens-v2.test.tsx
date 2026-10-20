@@ -1,5 +1,5 @@
 // Component tests of the 2.0 screens (spec §13 "Component"): C1 catalog, C2 request form, P1
-// planned, C3 appointment, H1 history — EN and PL, with a fake backend.
+// planned, C3 appointment, H1 history, S2 additions — EN and PL, with a fake backend.
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,17 +8,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { toLocalInput } from "../../src/components/datetime";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
-import type { AppointmentView, CatalogItem, Lang, Profile, RideView } from "../../src/core/types";
+import type { AppointmentView, CatalogItem, Lang, Place, Profile, RideView } from "../../src/core/types";
 import { I18nProvider } from "../../src/i18n";
+import { en } from "../../src/i18n/en";
+import { pl } from "../../src/i18n/pl";
 import { AppointmentPanel, derivedPickup } from "../../src/screens/Appointment";
 import { Catalog } from "../../src/screens/Catalog";
 import { HistoryScreen } from "../../src/screens/HistoryScreen";
 import { Planned } from "../../src/screens/Planned";
+import { ProfilePanel } from "../../src/screens/Profile";
 import { RequestPanel } from "../../src/screens/RequestForm";
 import { AppStore, StoreContext } from "../../src/state/store";
 
 // No network in tests: a fixed road route.
 vi.mock("../../src/services/routing", () => ({ getRoute: async () => ({ km: 5, min: 12, line: [], estimate: false }) }));
+vi.mock("../../src/services/geocode", () => ({ GeocodeError: class extends Error {}, reverseLabel: async () => "Warszawska 269", searchAddress: async () => [] }));
 
 afterEach(() => {
   vi.useRealTimers();
@@ -417,5 +421,50 @@ describe("H1 History (FR-133, FR-106)", () => {
     await userEvent.click(screen.getAllByRole("radio")[3]);
     await userEvent.click(screen.getByTestId("appt-rate-send"));
     await waitFor(() => expect(rateAppointment).toHaveBeenCalledWith("a1", 4, ""));
+  });
+});
+
+describe("S2 My place and Services I offer (FR-140, FR-093, FR-123, FR-142)", () => {
+  it("saves My place with a name, and turns offers on and off", async () => {
+    let profile: Profile = { ...PROFILE, home: null, offers: ["learning"] };
+    const saveHome = vi.fn(async (p: Place | null) => ((profile = { ...profile, home: p }), profile));
+    const setOffers = vi.fn(async (ids: string[]) => ((profile = { ...profile, offers: ids }), profile));
+    const geo = { getCurrentPosition: (ok: PositionCallback) => ok({ coords: { latitude: 52.25, longitude: 20.82 } } as GeolocationPosition) };
+    Object.defineProperty(navigator, "geolocation", { value: geo, configurable: true });
+    const { store } = setup("en", <ProfilePanel />, { getProfile: async () => profile, saveHome, setOffers } as Partial<Backend>, {
+      panel: "profile",
+      profile,
+      deployment: { ...DEFAULT_CONFIG, services: DEFAULT_SERVICES }
+    });
+    const offers = await screen.findByTestId("offers");
+    expect(offers).toHaveTextContent("Services I offer");
+    expect(screen.getByTestId("offer-learning")).toBeChecked();
+    expect(screen.getByTestId("offer-childcare")).not.toBeChecked();
+    expect(screen.queryByTestId("offer-ride")).toBeNull(); // rides: by having a car
+    await userEvent.click(screen.getByTestId("offer-childcare"));
+    await waitFor(() => expect(setOffers).toHaveBeenCalledWith(["learning", "childcare"]));
+    await waitFor(() => expect(screen.getByTestId("offer-childcare")).toBeChecked());
+
+    expect(screen.getByTestId("my-place-input-value")).toHaveTextContent("—");
+    expect(screen.getByTestId("my-place-save")).toBeDisabled();
+    await userEvent.click(screen.getByTestId("my-place-input-here"));
+    const name = await screen.findByTestId("my-place-name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Home");
+    await userEvent.click(screen.getByTestId("my-place-save"));
+    await waitFor(() => expect(saveHome).toHaveBeenCalledWith({ lat: 52.25, lng: 20.82, label: "Home" }));
+    await waitFor(() => expect(store.get().profile?.home?.label).toBe("Home"));
+    expect(screen.getByTestId("my-place-clear")).toBeInTheDocument();
+  });
+
+  it("hides the toggles on a master profile, and the delete and notification texts name appointments, in Polish", async () => {
+    const master: Profile = { ...PROFILE, language: "pl", masterId: "m", masterRole: "rider", offersPreset: true, home: { lat: 52.2, lng: 21, label: "Dom Torii" } };
+    setup("pl", <ProfilePanel />, { getProfile: async () => master }, { panel: "profile", profile: master, deployment: { ...DEFAULT_CONFIG, services: DEFAULT_SERVICES } });
+    expect(await screen.findByTestId("my-place-input-value")).toHaveTextContent("Dom Torii");
+    expect(screen.queryByTestId("offers")).toBeNull();
+    expect(pl["push.off"]).toContain("przypomnienia");
+    expect(en["push.off"]).toContain("reminders");
+    expect(pl["profile.deleteConfirm"]).toContain("terminy zostaną odwołane");
+    expect(en["profile.deleteConfirm"]).toContain("appointments are cancelled");
   });
 });

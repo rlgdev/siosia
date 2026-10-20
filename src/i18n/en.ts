@@ -76,7 +76,7 @@ export const en = {
   "profile.privacyTitle": "Privacy",
   "profile.privacy": "Your position is shared only while you are an online driver or have an active ride, and only with the other party. Live positions are never stored — a ride keeps only pickup, dropoff, totals and times.",
   "profile.delete": "Delete my profile",
-  "profile.deleteConfirm": "Delete your profile? Past rides stay, anonymised as \"Deleted user\"; your vehicle is removed.",
+  "profile.deleteConfirm": "Delete your profile? Your upcoming appointments are cancelled and the other side is told. Past rides and appointments stay, anonymised as \"Deleted user\"; your vehicle is removed.",
   "profile.history": "Ride history",
   "profile.earnings": "Earnings & history",
 
@@ -248,11 +248,11 @@ export const en = {
   "push.unsupported": "This browser can't show notifications.",
   "push.notConfigured": "Notifications aren't set up for this Siosia yet (ask the organiser).",
   "push.blocked": "Notifications are blocked. Allow them in the phone's Settings → Notifications → Siosia.",
-  "push.off": "Turn on to get a notification when a driver takes your booking, when your driver is coming, and when it's time to go.",
+  "push.off": "Turn on to get reminders a day and two hours before your appointments, and a notification when someone answers, when a driver takes your booking, when your driver is coming and when it's time to go. Without them, Planned shows the same.",
   "push.on": "Notifications are on for this phone.",
   "push.enable": "Turn on notifications",
   "push.disable": "Turn off",
-  "push.prompt": "Turn on notifications for bookings and your rides?",
+  "push.prompt": "Turn on notifications for appointments, bookings and your rides?",
   "move.confirmAny": "This app already has a profile. Move the other profile here and merge them? The rides of both stay in the history.",
   "move.away": "This profile moved to another app or phone. Here you can start again.",
   "trip.bookedFor": "Booked pickup: {time}",
@@ -489,7 +489,13 @@ export const en = {
   "history.rate": "Rate {name}",
   "history.rated": "You rated: {n} ★",
   "history.drove": "Ride (you drove)",
-  "history.rode": "Ride"
+  "history.rode": "Ride",
+  "profile.myPlaceHint": "Requests start here, and rides to your appointments are picked up here. Only you see it.",
+  "profile.myPlaceWhere": "Where",
+  "profile.myPlaceName": "Name shown",
+  "profile.offersTitle": "Services I offer",
+  "profile.offersHint": "Turn on what you can do: you then appear in Siosia under it and requests come to you.",
+  "profile.offersRide": "Rides: add a car, then Siosia → Ride — Go online."
 } as const;
 
 export type MessageKey = keyof typeof en;
