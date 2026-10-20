@@ -246,6 +246,36 @@ describe("i18n", () => {
       expect(vars(pl[k]), k).toBe(vars(en[k]));
     }
   });
+  it("has a message for every key the app uses, every server error code and every status word (FR-152)", async () => {
+    const { readFileSync, readdirSync, statSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const f of readdirSync(dir)) {
+        const path = join(dir, f);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (/\.tsx?$/.test(f) && !path.includes(join("src", "i18n"))) files.push(path);
+      }
+    };
+    walk("src");
+    const namespaces = new Set(Object.keys(en).map((k) => k.split(".")[0]));
+    const missing: string[] = [];
+    for (const f of files) {
+      for (const m of readFileSync(f, "utf-8").matchAll(/["'`]([a-z][a-zA-Z]*\.[a-zA-Z][a-zA-Z0-9.]*)["'`]/g)) {
+        const key = m[1];
+        if (namespaces.has(key.split(".")[0]) && !(key in en)) missing.push(`${f}: ${key}`);
+      }
+    }
+    expect(missing).toEqual([]);
+    const types = readFileSync("src/core/types.ts", "utf-8");
+    const codes = [...types.slice(types.indexOf("export type ServerErrorCode")).split(";")[0].matchAll(/"(\w+)"/g)].map((m) => m[1]);
+    expect(codes.length).toBeGreaterThan(40);
+    for (const c of codes) expect(en, `err.${c}`).toHaveProperty([`err.${c}`]);
+    for (const st of ["requested", "accepted", "declined", "cancelled", "expired", "done"]) expect(en).toHaveProperty([`appt.status.${st}`]);
+    for (const leg of ["there", "back"]) expect(en).toHaveProperty([`appt.leg.${leg}`]);
+    for (const by of ["client", "provider", "system"]) expect(en).toHaveProperty([`appt.cancelledBy.${by}`]);
+    for (const st of ["scheduled", "requested", "accepted", "arrived", "in_progress", "completed", "cancelled", "expired"]) expect(en).toHaveProperty([`status.${st}`]);
+  });
   it("interpolates variables", () => {
     expect(translator("en")("search.notified", { n: 3 })).toBe("Drivers notified: 3");
     expect(translator("pl")("search.notified", { n: 3 })).toBe("Powiadomieni kierowcy: 3");
@@ -263,5 +293,19 @@ describe("config.example.json (FR-150)", () => {
     expect(cfg.deployment.booking).toEqual(DEFAULT_CONFIG.booking);
     expect(cfg.deployment.appointment).toEqual(DEFAULT_CONFIG.appointment);
     expect(cfg.deployment.calendarUrl).toBeNull();
+  });
+});
+
+describe("in-app guide (FR-153)", () => {
+  it("describes 2.0 in English and Polish with the app's own words", async () => {
+    const { readFileSync } = await import("node:fs");
+    const html = readFileSync("public/guide.html", "utf-8");
+    const [enPart, plPart] = html.split('<section data-lang="pl">');
+    for (const k of ["start.planned", "start.history", "catalog.addCar", "catalog.goOnline", "request.send", "profile.offersTitle", "appt.needThere"] as const) {
+      expect(enPart, k).toContain(en[k]);
+      expect(plPart, k).toContain(pl[k]);
+    }
+    for (const word of ["Learning", "Childcare", "a day</strong> and <strong>two hours", "This one", "All remaining"]) expect(enPart).toContain(word);
+    for (const word of ["Nauka", "Opieka nad dziećmi", "dzień</strong> i <strong>dwie godziny", "Tylko ten", "Wszystkie pozostałe"]) expect(plPart).toContain(word);
   });
 });

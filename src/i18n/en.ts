@@ -495,7 +495,8 @@ export const en = {
   "profile.myPlaceName": "Name shown",
   "profile.offersTitle": "Services I offer",
   "profile.offersHint": "Turn on what you can do: you then appear in Siosia under it and requests come to you.",
-  "profile.offersRide": "Rides: add a car, then Siosia → Ride — Go online."
+  "profile.offersRide": "Rides: add a car, then Siosia → Ride — Go online.",
+  "err.has_profile": "This phone already has a profile. Confirm to replace it."
 } as const;
 
 export type MessageKey = keyof typeof en;

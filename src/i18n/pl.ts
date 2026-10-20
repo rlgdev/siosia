@@ -497,5 +497,6 @@ export const pl: Record<MessageKey, string> = {
   "profile.myPlaceName": "Nazwa",
   "profile.offersTitle": "Co oferuję",
   "profile.offersHint": "Włącz to, co możesz robić: pojawisz się w Siosi przy tej usłudze, a prośby trafią do Ciebie.",
-  "profile.offersRide": "Przejazdy: dodaj auto, potem Siosia → Przejazd — przejdź online."
+  "profile.offersRide": "Przejazdy: dodaj auto, potem Siosia → Przejazd — przejdź online.",
+  "err.has_profile": "Ten telefon ma już profil. Potwierdź, aby go zastąpić."
 };
