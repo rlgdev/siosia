@@ -20,29 +20,15 @@ export function ProfilePanel() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [blocked, setBlocked] = useState<"driver" | "rider" | null>(null);
 
   useEffect(() => {
     void store.reloadProfile();
     if (api.account) void api.account().then(setAccount).catch(() => {});
   }, [api, store]);
 
-  const my = app.my;
   const p = app.profile;
 
-  const switchTo = (mode: "ride" | "drive") => {
-    if (app.mode === "drive" && (my?.driverOnline || (my?.ride && my.ride.role === "driver"))) return setBlocked("driver");
-    if (app.mode === "ride" && my?.ride && my.ride.role === "rider") return setBlocked("rider");
-    store.setMode(mode);
-  };
 
-  const resolveBlock = () =>
-    run(async () => {
-      if (blocked === "driver") await api.setOnline(false);
-      if (blocked === "rider" && my?.ride) await api.cancelRide(my.ride.id);
-      await store.refresh();
-      setBlocked(null);
-    });
 
   return (
     <Panel title={t("profile.title")} onClose={() => store.closePanel()}>
@@ -92,37 +78,14 @@ export function ProfilePanel() {
       <AppSection />
 
       <section className="card stack">
-        <h3>{t("profile.mode")}</h3>
-        {blocked && (
-          <Notice kind="warn">
-            <p>{t(blocked === "driver" ? "switch.driverFirst" : "switch.riderFirst")}</p>
-            <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void resolveBlock()}>
-              {t(blocked === "driver" ? "switch.goOffline" : "switch.cancelRequest")}
-            </button>
-          </Notice>
-        )}
-        <div className="row">
-          {app.mode !== "ride" && !p?.masterRole && (
-            <button type="button" className="btn btn-secondary" onClick={() => switchTo("ride")}>
-              {t("profile.toRide")}
-            </button>
-          )}
-          {app.mode !== "drive" && !p?.masterRole && (
-            <button type="button" className="btn btn-secondary" onClick={() => switchTo("drive")}>
-              {t("profile.toDrive")}
-            </button>
-          )}
-        </div>
-        <div className="row">
-          <button type="button" className="btn btn-link" onClick={() => store.openPanel(app.mode === "drive" ? "earnings" : "history")}>
-            {t(app.mode === "drive" ? "profile.earnings" : "profile.history")}
+        <div className="row wrap">
+          <button type="button" className="btn btn-link" onClick={() => store.goFromPanel("planned")} data-testid="profile-planned">
+            {t("start.planned")}
           </button>
-          {app.mode && (
-            <button type="button" className="btn btn-link" onClick={() => store.openPanel("bookings")} data-testid="profile-bookings">
-              {t("profile.bookings")}
-            </button>
-          )}
-          {(app.mode === "drive" || app.vehicle) && (
+          <button type="button" className="btn btn-link" onClick={() => store.goFromPanel("history")} data-testid="profile-history">
+            {t("start.history")}
+          </button>
+          {(app.vehicle || (app.profile?.masterRole !== "rider" && app.screen === "drive")) && (
             <button type="button" className="btn btn-link" onClick={() => store.openPanel("vehicle")}>
               {app.vehicle ? `${t("profile.editVehicle")} (${app.vehicle.plate})` : t("profile.vehicle")}
             </button>

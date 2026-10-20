@@ -95,7 +95,13 @@ function DriverMain() {
   }, [rt.online, store]);
 
   // Going online needs a location fix first (goOnline throws not_online when location is denied).
-  const toggleOnline = () => run(() => (rt.online ? rt.goOffline() : rt.goOnline()));
+  // Going offline on D1 returns to S1 (FR-082).
+  const toggleOnline = () =>
+    run(async () => {
+      if (!rt.online) return rt.goOnline();
+      await rt.goOffline();
+      store.home();
+    });
 
   // "Show requests": bring back every pending request nearby, even ones declined or missed earlier.
   const showRequests = () =>
@@ -275,7 +281,7 @@ function DriverMain() {
 
   return (
     <div className="screen">
-      <TopBar title={t("home.drive")} right={<ScreenOnToggle />} />
+      <TopBar title={t("home.drive")} right={<ScreenOnToggle />} onBack={() => store.home()} />
       <MapView
         endpoints={cfg.map}
         center={me ?? cfg.fallbackCenter}

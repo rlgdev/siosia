@@ -74,15 +74,44 @@ const ride = (over: Partial<RideView> = {}): RideView => ({
   ...over
 });
 
-describe("S1 Home", () => {
+describe("S1 Home (FR-080, FR-083, V22)", () => {
   it.each([
-    ["en", "Hi, Ola", "Ride", "Drive"],
-    ["pl", "Cześć, Ola", "Jadę", "Wożę"]
-  ] as const)("renders in %s", (lang, hello, ride, drive) => {
+    ["en", "Hi, Ola", "Siosia", "Planned", "History"],
+    ["pl", "Cześć, Ola", "Siosia", "Zaplanowane", "Historia"]
+  ] as const)("shows three buttons in %s and no mode cards", (lang, hello, siosia, planned, history) => {
     setup(lang, <Home />);
     expect(screen.getByRole("heading", { name: hello })).toBeInTheDocument();
-    expect(screen.getByTestId("mode-ride")).toHaveTextContent(ride);
-    expect(screen.getByTestId("mode-drive")).toHaveTextContent(drive);
+    expect(screen.getByTestId("start-siosia")).toHaveTextContent(siosia);
+    expect(screen.getByTestId("start-planned")).toHaveTextContent(planned);
+    expect(screen.getByTestId("start-history")).toHaveTextContent(history);
+    expect(screen.queryByTestId("mode-ride")).toBeNull();
+    expect(screen.queryByTestId("mode-drive")).toBeNull();
+    expect(screen.queryByTestId("badge-answer")).toBeNull();
+  });
+
+  it("badges requests to answer and names the next planned item", () => {
+    const at = new Date();
+    at.setHours(at.getHours() + 3, 0, 0, 0);
+    const store = new AppStore();
+    (store as unknown as { snap: object }).snap = {
+      ...store.get(),
+      phase: "ready",
+      lang: "en",
+      profile: { userId: "u", nickname: "Ola", language: "en", riderCancels: 0, driverCancels: 0, lateCancels: 0, rating: { mean: null, count: 0 } },
+      deployment: DEFAULT_CONFIG,
+      cfg: { backend: "mock" },
+      my: { toAnswer: 2, planned: 3, nextPlanned: { kind: "appointment", at: at.getTime(), title: "Childcare", serviceId: "childcare" } }
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <I18nProvider lang="en">
+          <Home />
+        </I18nProvider>
+      </StoreContext.Provider>
+    );
+    expect(screen.getByTestId("badge-answer")).toHaveTextContent("2 to answer");
+    expect(screen.getByTestId("badge-planned")).toHaveTextContent("3");
+    expect(screen.getByTestId("planned-next")).toHaveTextContent(/^Next: Childcare, (today|tomorrow) \d\d:00$/);
   });
 });
 

@@ -236,6 +236,8 @@ export function RiderApp() {
     writePref(`dismissedReceipts.${app.uid}`, next);
     setEnded(null);
     resetToDefaults();
+    // Finishing a ride returns to S1 (FR-082).
+    store.home();
   };
 
   // ---------- map scene ----------
@@ -317,7 +319,7 @@ export function RiderApp() {
 
   return (
     <div className="screen">
-      <TopBar title={t("home.ride")} right={<ScreenOnToggle />} />
+      <TopBar title={t("home.ride")} right={<ScreenOnToggle />} onBack={() => store.home()} />
       <MapView
         endpoints={cfg.map}
         center={center}

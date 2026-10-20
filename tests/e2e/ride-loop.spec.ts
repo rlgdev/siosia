@@ -16,6 +16,16 @@ async function onboard(page: Page, nick: string) {
   await expect(page.getByRole("heading", { name: `Hi, ${nick}` })).toBeVisible();
 }
 
+/** 2.0: S1 → Siosia → Ride (R1) / Ride — Go online (D1). */
+async function openRide(page: Page) {
+  await page.getByTestId("start-siosia").click();
+  await page.getByTestId("catalog-ride").click();
+}
+async function openDrive(page: Page) {
+  await page.getByTestId("start-siosia").click();
+  await page.getByTestId("catalog-drive").click();
+}
+
 async function longPressMap(page: Page, dx: number, dy: number) {
   const box = (await page.locator(".map").boundingBox())!;
   // Leaflet turns a right-click / long-press into "contextmenu" → sets the dropoff (FR-011).
@@ -29,7 +39,7 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
 
   // --- driver: nickname → Drive → vehicle → Go online (S4 visible) ---
   await onboard(driver, "Adam");
-  await driver.getByTestId("mode-drive").click();
+  await openDrive(driver);
   await driver.getByLabel("Make").fill("Skoda");
   await driver.getByLabel("Model").fill("Octavia");
   await driver.getByLabel("Colour").fill("Grey");
@@ -41,7 +51,7 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
 
   // --- rider: nickname → Ride → pickup from GPS, dropoff by long-press → fare ---
   await onboard(rider, "Ola");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await expect(rider.getByTestId("pickup-field")).toContainText("My location");
   await longPressMap(rider, 100, 60);
   await expect(rider.getByTestId("dropoff-field")).toContainText("Pinned");
@@ -99,16 +109,15 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
   // --- earnings and history (US7) ---
   await expect(driver.getByTestId("today-earnings")).toHaveText(fare);
   await driver.getByTestId("toggle-online").click();
-  await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
+  await expect(driver.getByTestId("start-siosia")).toBeVisible(); // offline: back on S1 (FR-082)
   await expect(driver.getByTestId("sharing-banner")).toHaveCount(0);
-  await rider.getByRole("button", { name: "Menu" }).click();
-  await rider.getByRole("button", { name: "Ride history" }).click();
+  await rider.getByTestId("start-history").click(); // finishing the ride returned the rider to S1
   await expect(rider.getByTestId("history-list")).toContainText("Completed");
 });
 
 async function goOnlineAsDriver(driver: Page, nick: string, plate: string) {
   await onboard(driver, nick);
-  await driver.getByTestId("mode-drive").click();
+  await openDrive(driver);
   await driver.getByLabel("Make").fill("Kia");
   await driver.getByLabel("Model").fill("Ceed");
   await driver.getByLabel("Colour").fill("Blue");
@@ -123,7 +132,7 @@ test("a request nobody accepts stays open 20 minutes, then expires and Try again
   const rider = await context.newPage();
   await rider.clock.install(); // real time keeps flowing; fastForward jumps the server timers too
   await onboard(rider, "Ewa");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, -150, 30);
   await rider.getByTestId("request-ride").click();
   await expect(rider.getByTestId("searching-title")).toBeVisible();
@@ -144,7 +153,7 @@ test("a driver who goes online later gets the waiting request; Show requests bri
   await isolate(context);
   const rider = await context.newPage();
   await onboard(rider, "Iga");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 100, 60);
   await rider.getByTestId("request-ride").click();
   await expect(rider.getByText("No drivers nearby yet")).toBeVisible({ timeout: 8000 });
@@ -169,7 +178,8 @@ test("a driver who goes online later gets the waiting request; Show requests bri
   await driver.getByTestId("decline-offer").click();
   await expect(card).toHaveCount(0);
   await driver.getByTestId("toggle-online").click();
-  await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
+  await expect(driver.getByTestId("start-siosia")).toBeVisible(); // offline: back on S1 (FR-082)
+  await openDrive(driver);
   await driver.getByTestId("toggle-online").click();
   await expect(card).toBeVisible({ timeout: 5000 });
 
@@ -193,6 +203,7 @@ test("the Toria link rides from her default places at a fixed 18; rider only", a
   await rider.bringToFront();
   await expect(rider.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Toria.");
   await expect(rider).toHaveURL(/\/\?robots=0$/); // the token left the address bar
+  await openRide(rider);
   const chip = rider.getByTestId("master-chip");
   await expect(chip).toContainText("Toria");
   await expect(chip).toContainText("Master profile · every ride:");
@@ -221,7 +232,11 @@ test("the Roman link opens a driver profile with his green Taycan; riders see it
   await roman.goto("/?robots=0#master=demo-roman");
   await roman.bringToFront(); // GPS for going online
   await expect(roman.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
-  // Drive mode straight away, with the car preset — only the plate is added once.
+  await roman.getByTestId("start-siosia").click();
+  await expect(roman.getByTestId("catalog-learning")).toBeVisible(); // the catalog has loaded…
+  await expect(roman.getByTestId("catalog-ride")).toHaveCount(0); // …without Ride: a driver profile cannot ride
+  await roman.getByTestId("catalog-drive").click();
+  // The car is preset — only the plate is added once.
   await expect(roman.getByLabel("Make")).toHaveValue("Porsche");
   await expect(roman.getByLabel("Model")).toHaveValue("Taycan Cross Turismo");
   await expect(roman.getByLabel("Colour")).toHaveValue("Zielony");
@@ -233,11 +248,11 @@ test("the Roman link opens a driver profile with his green Taycan; riders see it
   await expect(roman.getByTestId("driver-state")).toHaveText("Online");
   await roman.getByRole("button", { name: "Menu" }).click();
   await expect(roman.getByRole("button", { name: "Switch to Ride" })).toHaveCount(0); // driver only
-  await roman.getByRole("button", { name: "Back" }).click();
+  await roman.getByRole("dialog").getByRole("button", { name: "Back" }).click();
 
   const rider = await context.newPage();
   await onboard(rider, "Ola");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 100, 60);
   await rider.getByTestId("request-ride").click();
   const card = roman.getByTestId("offer-card");
@@ -276,6 +291,8 @@ test("a master link on a phone with its own profile asks before replacing it", a
   await page.goto("/?robots=0#master=demo-master");
   await page.getByRole("alertdialog").getByRole("button", { name: "Use shared profile" }).click();
   await expect(page.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Toria.");
+  await expect(page.getByRole("heading", { name: "Hi, Toria" })).toBeVisible();
+  await openRide(page);
   await expect(page.getByTestId("master-chip")).toContainText("Toria");
 });
 
@@ -311,7 +328,7 @@ test("a rider books a ride for later; a driver takes it in advance; the rider se
 
   const rider = await context.newPage();
   await onboard(rider, "Ola");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 100, 60);
   await rider.getByTestId("when-later").click();
   const d = new Date(Date.now() + 3 * 3600_000);
@@ -356,7 +373,7 @@ test("the rider keeps the driver's car, greyed with 'last seen', when the driver
   await goOnlineAsDriver(driver, "Roman", "W1LLRUN");
   const rider = await context.newPage();
   await onboard(rider, "Toria");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 100, 60);
   await rider.getByTestId("request-ride").click();
   await driver.getByTestId("accept-offer").click();
@@ -382,10 +399,13 @@ test("Keep the screen on: a top-bar checkbox, on by itself while a driver is onl
   await expect(box).toBeChecked(); // online: the screen stays on anyway (FR-020)
   await expect(box).toBeDisabled();
   await driver.getByTestId("toggle-online").click();
+  await expect(driver.getByTestId("start-siosia")).toBeVisible(); // offline: S1 (FR-082)
+  await openDrive(driver);
   await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
   await expect(box).not.toBeChecked();
   await box.check();
-  await driver.reload();
+  await driver.reload(); // opens on S1: no mode is remembered, the checkbox is
+  await openDrive(driver);
   await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
   await expect(driver.getByTestId("screen-on")).toBeChecked();
   // The same choice in the menu, with what it does.
@@ -406,7 +426,7 @@ test("a driver whose app went quiet stays on standby and is back online with the
   await onboard(rider, "Ola");
   await rider.clock.fastForward("01:30"); // the driver has been silent for 90 s: offline, still on standby
   await rider.waitForTimeout(2500); // the demo server sweeps every 2 s
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 100, 60);
   await rider.getByTestId("request-ride").click(); // → "New ride request" notification to the driver
   const drivers = await rider.evaluate(
@@ -426,7 +446,7 @@ test("cancelling a request withdraws the offer card from the driver (US3, §5)",
   const rider = await context.newPage();
   await goOnlineAsDriver(driver, "Bea", "WX 777");
   await onboard(rider, "Ola");
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 140, 20);
   await rider.getByTestId("request-ride").click();
   await expect(driver.getByTestId("offer-card")).toBeVisible({ timeout: 5000 });
@@ -441,7 +461,7 @@ test("demo robots accept a request without any second device (FR-070)", async ({
   await rider.goto("/?robots=2");
   await rider.getByLabel("Nickname").fill("Solo");
   await rider.getByRole("button", { name: "Continue" }).click();
-  await rider.getByTestId("mode-ride").click();
+  await openRide(rider);
   await longPressMap(rider, 120, 40);
   await expect(rider.getByText(/Cars nearby: [12]/)).toBeVisible({ timeout: 15_000 });
   await rider.getByTestId("request-ride").click();

@@ -1,6 +1,10 @@
 // AppStore: boot sequence (config → backend → reachability → session → invite → nickname), the
 // user's live server state (MyState) kept fresh by realtime events plus a polling backstop, the
 // server clock offset (countdowns use server time — §12 clock skew) and UI navigation state.
+//
+// Navigation (2.0, FR-080–084): a screen stack rooted at S1 Home. Siosia (catalog), Planned and
+// History open from S1; Ride (R1…) and Drive (D1…) from the catalog. The screen follows an active
+// ride or an online driver (V1); nothing else is remembered between launches.
 
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { createBackend } from "../backend";
@@ -28,7 +32,10 @@ export type LinkNotice =
   | "active_trip"
   | "active_ride"
   | "link_failed";
-export type Panel = "profile" | "history" | "vehicle" | "earnings" | "bookings" | null;
+export type Panel = "profile" | "history" | "vehicle" | "earnings" | "bookings" | "request" | "appointment" | null;
+/** S1 Home, C1 Catalog ("Siosia"), P1 Planned, H1 History, the v1 rider (R) and driver (D) screens. */
+export type Screen = "home" | "catalog" | "planned" | "history" | "ride" | "drive";
+const modeOf = (s: Screen): Mode | null => (s === "ride" ? "ride" : s === "drive" ? "drive" : null);
 
 export interface AppSnapshot {
   phase: Phase;
@@ -38,8 +45,14 @@ export interface AppSnapshot {
   profile: Profile | null;
   vehicle: Vehicle | null;
   lang: Lang;
+  screen: Screen;
+  /** The v1 mode of the screen (ride / drive), null elsewhere. */
   mode: Mode | null;
   panel: Panel;
+  /** What the panel shows: the catalog entry of C2, the appointment of C3. */
+  panelArg: string | null;
+  /** A driver who is online tried to leave D1: ask before going offline. */
+  leaveDrive: boolean;
   my: MyState | null;
   /** serverNow − Date.now(), ms. */
   clockOffset: number;
@@ -63,8 +76,11 @@ const INITIAL: AppSnapshot = {
   profile: null,
   vehicle: null,
   lang: readPref<Lang | null>("lang", null) ?? browserLang(),
+  screen: "home",
   mode: null,
   panel: null,
+  panelArg: null,
+  leaveDrive: false,
   my: null,
   clockOffset: 0,
   online: typeof navigator === "undefined" ? true : navigator.onLine,
@@ -124,8 +140,25 @@ export class AppStore {
         this.requestRefresh();
       });
       window.addEventListener("offline", () => this.patch({ online: false }));
-      window.addEventListener("popstate", () => {
-        if (this.snap.panel) this.patch({ panel: null });
+      window.addEventListener("popstate", (ev: PopStateEvent) => {
+        if (this.snap.panel) {
+          this.patch({ panel: null, panelArg: null });
+          return;
+        }
+        const target = ((ev.state as { screen?: Screen } | null)?.screen ?? "home") as Screen;
+        const pin = this.pinned();
+        if (pin && target !== pin) {
+          // An active ride or an online driver keeps its screen (V1); offer to go offline.
+          history.pushState({ screen: pin }, "");
+          if (pin === "drive" && this.snap.my?.driverOnline && !this.snap.my.ride) this.patch({ leaveDrive: true });
+          return;
+        }
+        this.patch({ screen: target, mode: modeOf(target) });
+      });
+      // A notification tapped while the app is open (the service worker posts its link).
+      navigator.serviceWorker?.addEventListener?.("message", (ev: MessageEvent) => {
+        const d = ev.data as { type?: string; url?: string } | null;
+        if (d?.type === "siosia-open" && d.url) this.openFromUrl(d.url);
       });
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible" && this.snap.phase === "ready") this.requestRefresh();
@@ -178,7 +211,7 @@ export class AppStore {
       const uid = await api.start();
       const deployment = await api.getConfig();
       this.patch({ uid, deployment });
-      if (token) await this.openMaster(token, uid, false);
+      if (token) await this.openMaster(token, false);
       if (!(await api.isMember(deviceId()))) {
         this.patch({ phase: "invite" });
         return;
@@ -194,11 +227,10 @@ export class AppStore {
    * again. Another profile on this account is only replaced after the user confirms; until they
    * answer, the token stays in this tab, so a reload (or an app update) asks again.
    */
-  private async openMaster(token: string, uid: string, replace: boolean): Promise<void> {
+  private async openMaster(token: string, replace: boolean): Promise<void> {
     try {
-      const p = await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
+      await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
       clearMasterToken();
-      writePref(`mode.${uid}`, p.masterRole === "driver" ? "drive" : "ride");
       this.patch({ linkNotice: "joined", masterConfirm: null });
     } catch (e) {
       const code = e instanceof ServerError ? e.code : null;
@@ -217,7 +249,7 @@ export class AppStore {
     const token = this.snap.masterConfirm;
     if (!token || !this.snap.uid) return;
     this.patch({ masterConfirm: null });
-    await this.openMaster(token, this.snap.uid, true);
+    await this.openMaster(token, true);
     if (this.snap.linkNotice === "joined") await this.afterMember();
   }
 
@@ -228,7 +260,7 @@ export class AppStore {
   async redeemCode(input: string): Promise<void> {
     const link = /(?:^|[#&?])master=([A-Za-z0-9_-]{16,128})/.exec(input.trim());
     if (link && this.snap.uid) {
-      await this.openMaster(link[1], this.snap.uid, false);
+      await this.openMaster(link[1], false);
       if (this.snap.linkNotice === "joined") await this.afterMember();
       return;
     }
@@ -263,7 +295,6 @@ export class AppStore {
   }
 
   private async afterMoved(): Promise<void> {
-    writePref(`mode.${this.snap.uid}`, null);
     this.patch({ linkNotice: "moved" });
     await this.afterMember();
   }
@@ -288,30 +319,121 @@ export class AppStore {
     this.patch({ profile, vehicle, lang: profile.language });
     this.listen();
     await this.refresh();
-    this.patch({ mode: this.initialMode(), phase: "ready" });
+    const screen = this.initialScreen();
+    this.patch({ screen, mode: modeOf(screen), phase: "ready" });
+    if (screen !== "home" && typeof history !== "undefined") history.replaceState({ screen }, "");
+  }
+
+  /** May this profile use the ride (R) or drive (D) screens? A master profile has one role (FR-085). */
+  private allowed(screen: Screen): boolean {
+    const role = this.snap.profile?.masterRole ?? null;
+    if (screen === "ride") return role !== "driver";
+    if (screen === "drive") return role !== "rider";
+    return true;
+  }
+
+  /** The screen an active ride, an offer card or an online driver holds (V1), or null. */
+  private pinned(): Screen | null {
+    const my = this.snap.my;
+    if (!my) return null;
+    if (my.ride) return my.ride.role === "driver" ? "drive" : "ride";
+    if (my.offer || my.driverOnline) return "drive";
+    return null;
   }
 
   /**
-   * Mode on launch (§3: per device). A ?mode= link preselects once and is then removed from the URL,
-   * so a reload mid-trip reopens the mode this device was actually using (remembered per user).
+   * Launch (FR-082, FR-084): S1, unless a ride or an online driver holds a screen; a ?mode= or
+   * ?open= link opens that screen once and is removed from the address bar. No mode is remembered.
    */
-  private initialMode(): Mode | null {
-    const key = `mode.${this.snap.uid}`;
-    let mode: Mode | null = readPref<Mode | null>(key, null);
-    // A master profile has one role: it always opens in that mode.
-    const role = this.snap.profile?.masterRole ?? null;
-    if (role) mode = role === "driver" ? "drive" : "ride";
+  private initialScreen(): Screen {
+    // The 1.x "last mode" preference is gone for good.
+    if (this.snap.uid) writePref(`mode.${this.snap.uid}`, null);
+    // A driver on standby (app went quiet while online) reopens on D1, which brings them back online.
+    let screen: Screen = this.pinned() ?? (this.snap.my?.standby && this.allowed("drive") ? "drive" : "home");
     if (typeof location !== "undefined") {
       const url = new URL(location.href);
-      const fromUrl = url.searchParams.get("mode");
-      if ((fromUrl === "ride" || fromUrl === "drive") && !role) mode = fromUrl;
-      if (url.searchParams.has("mode")) {
+      const mode = url.searchParams.get("mode");
+      const open = url.searchParams.get("open");
+      if (screen === "home") {
+        if ((mode === "ride" || mode === "drive") && this.allowed(mode)) screen = mode;
+        else if (open === "siosia") screen = "catalog";
+        else if (open === "planned" || open === "history") screen = open;
+      }
+      if (url.searchParams.has("mode") || url.searchParams.has("open")) {
         url.searchParams.delete("mode");
+        url.searchParams.delete("open");
         history.replaceState(history.state, "", url);
       }
     }
-    writePref(key, mode);
-    return mode;
+    return screen;
+  }
+
+  /**
+   * Go to a screen. From S1 a new history entry (browser back returns to S1); between sub-screens
+   * the entry is replaced; going home walks back. A held screen (V1) stays.
+   */
+  go(screen: Screen): void {
+    if (!this.allowed(screen)) return;
+    const from = this.snap.screen;
+    if (screen === from) {
+      if (this.snap.panel) this.closePanel();
+      return;
+    }
+    const pin = this.pinned();
+    if (pin && screen !== pin) {
+      if (pin === "drive" && this.snap.my?.driverOnline && !this.snap.my.ride) this.patch({ leaveDrive: true });
+      return;
+    }
+    if (typeof history !== "undefined") {
+      if (screen === "home") {
+        if ((history.state as { screen?: Screen } | null)?.screen === from) {
+          history.back(); // popstate sets home
+          return;
+        }
+      } else if (from === "home") history.pushState({ screen }, "");
+      else history.replaceState({ screen }, "");
+    }
+    this.patch({ screen, mode: modeOf(screen), panel: null, panelArg: null });
+  }
+
+  /** A button inside a panel opens a screen: the panel's history entry becomes that screen. */
+  goFromPanel(screen: Screen): void {
+    if (!this.allowed(screen)) return;
+    const pin = this.pinned();
+    if (pin && screen !== pin) return;
+    if (typeof history !== "undefined" && (history.state as { panel?: Panel } | null)?.panel) {
+      if (screen === "home") history.back();
+      else history.replaceState({ screen }, "");
+    }
+    this.patch({ screen, mode: modeOf(screen), panel: null, panelArg: null });
+  }
+
+  /** Back to S1 from any screen (the ← in the top bar). */
+  home(): void {
+    this.go("home");
+  }
+
+  /** A link inside the app (notification tap): ./?open=planned and friends. */
+  openFromUrl(href: string): void {
+    try {
+      const open = new URL(href, typeof location !== "undefined" ? location.href : "http://x/").searchParams.get("open");
+      if (open === "siosia") this.go("catalog");
+      else if (open === "planned" || open === "history") this.go(open);
+    } catch {
+      /* not a link of ours */
+    }
+  }
+
+  /** The online driver confirmed leaving D1: go offline, then S1. */
+  async leaveDriveConfirmed(): Promise<void> {
+    this.patch({ leaveDrive: false });
+    await this.api.setOnline(false);
+    await this.refresh();
+    this.go("home");
+  }
+
+  cancelLeaveDrive(): void {
+    this.patch({ leaveDrive: false });
   }
 
   async join(code: string): Promise<void> {
@@ -334,22 +456,19 @@ export class AppStore {
     }
   }
 
-  /** The chosen mode is remembered per user on this device (§3: mode is per device session). */
+  /** v1 compatibility: the ride / drive screens (null = S1). */
   setMode(mode: Mode | null): void {
-    const role = this.snap.profile?.masterRole ?? null;
-    if (role && mode !== null && mode !== (role === "driver" ? "drive" : "ride")) return; // one-role profile
-    writePref(`mode.${this.snap.uid}`, mode);
-    this.patch({ mode, panel: null });
+    this.go(mode === "ride" ? "ride" : mode === "drive" ? "drive" : "home");
   }
 
-  openPanel(panel: Panel): void {
-    if (panel && !this.snap.panel && typeof history !== "undefined") history.pushState({ panel }, "");
-    this.patch({ panel });
+  openPanel(panel: Panel, arg: string | null = null): void {
+    if (panel && !this.snap.panel && typeof history !== "undefined") history.pushState({ panel, screen: this.snap.screen }, "");
+    this.patch({ panel, panelArg: arg });
   }
 
   closePanel(): void {
     if (this.snap.panel && typeof history !== "undefined" && history.state?.panel) history.back();
-    else this.patch({ panel: null });
+    else this.patch({ panel: null, panelArg: null });
   }
 
   async saveVehicle(v: Vehicle): Promise<Vehicle> {
@@ -366,13 +485,12 @@ export class AppStore {
 
   async deleteProfile(): Promise<void> {
     await this.api.deleteProfile();
-    writePref(`mode.${this.snap.uid}`, null);
     // The live listeners would now only get not_member errors.
     this.dispose();
     // Deleting also removes this device's membership, so a gated deployment asks for the invite
     // code again (join → afterMember → nickname); an open demo goes straight to the nickname.
     const member = await this.api.isMember(deviceId()).catch(() => false);
-    this.patch({ profile: null, vehicle: null, mode: null, panel: null, my: null, phase: member ? "nickname" : "invite" });
+    this.patch({ profile: null, vehicle: null, screen: "home", mode: null, panel: null, panelArg: null, my: null, phase: member ? "nickname" : "invite" });
   }
 
   // ---------- live state ----------
@@ -447,14 +565,15 @@ export class AppStore {
       void this.lostProfile();
       return;
     }
-    // The screen follows the active ride: a booking that starts while this phone is in the other
-    // mode (or on Home) must not stay invisible.
-    if (my.ride) {
-      const want: Mode = my.ride.role === "driver" ? "drive" : "ride";
-      if (this.snap.mode !== want) {
-        writePref(`mode.${this.snap.uid}`, want);
-        this.patch({ mode: want });
+    // The screen follows the active ride (V1): a booking that starts while this phone shows
+    // another screen must not stay invisible; an offer card shows on D1.
+    const want: Screen | null = my.ride ? (my.ride.role === "driver" ? "drive" : "ride") : my.offer ? "drive" : null;
+    if (want && this.snap.screen !== want) {
+      if (typeof history !== "undefined") {
+        if (this.snap.screen === "home") history.pushState({ screen: want }, "");
+        else history.replaceState({ screen: want }, "");
       }
+      this.patch({ screen: want, mode: modeOf(want), panel: null, panelArg: null });
     }
   }
 
@@ -466,8 +585,7 @@ export class AppStore {
     this.losing = true;
     try {
       this.dispose();
-      writePref(`mode.${this.snap.uid}`, null);
-      this.patch({ profile: null, vehicle: null, mode: null, panel: null, my: null, linkNotice: "moved_away" });
+      this.patch({ profile: null, vehicle: null, screen: "home", mode: null, panel: null, panelArg: null, my: null, linkNotice: "moved_away" });
       await this.boot();
     } finally {
       this.losing = false;

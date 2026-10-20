@@ -8,6 +8,9 @@ import { VehiclePanel } from "./screens/driver/VehicleForm";
 import { BookingsPanel } from "./screens/Bookings";
 import { HistoryPanel } from "./screens/History";
 import { Home } from "./screens/Home";
+import { Catalog } from "./screens/Catalog";
+import { HistoryScreen } from "./screens/HistoryScreen";
+import { Planned } from "./screens/Planned";
 import { ProfilePanel } from "./screens/Profile";
 import { RiderApp } from "./screens/rider/RiderApp";
 import { Confirm } from "./components/ui";
@@ -42,6 +45,22 @@ function MasterConfirm() {
       confirmLabel={t("master.confirmYes")}
       onConfirm={() => void store.confirmMaster()}
       onCancel={() => store.cancelMaster()}
+    />
+  );
+}
+
+/** An online driver leaving D1: go offline first (FR-082: leaving D1 returns to S1). */
+function LeaveDriveConfirm() {
+  const { t } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  return (
+    <Confirm
+      open={app.leaveDrive}
+      message={t("drive.leaveConfirm")}
+      confirmLabel={t("drive.leaveYes")}
+      onConfirm={() => void store.leaveDriveConfirmed().catch(() => store.cancelLeaveDrive())}
+      onCancel={() => store.cancelLeaveDrive()}
     />
   );
 }
@@ -113,7 +132,20 @@ function Screens() {
       main = <NicknameScreen />;
       break;
     default:
-      main = app.mode === "ride" ? <RiderApp /> : app.mode === "drive" ? <DriverApp /> : <Home />;
+      main =
+        app.screen === "ride" ? (
+          <RiderApp />
+        ) : app.screen === "drive" ? (
+          <DriverApp />
+        ) : app.screen === "catalog" ? (
+          <Catalog />
+        ) : app.screen === "planned" ? (
+          <Planned />
+        ) : app.screen === "history" ? (
+          <HistoryScreen />
+        ) : (
+          <Home />
+        );
   }
   return (
     <>
@@ -124,6 +156,7 @@ function Screens() {
       <PushToast />
       <MasterConfirm />
       <MoveConfirm />
+      <LeaveDriveConfirm />
       {app.phase === "ready" && app.panel === "profile" && <ProfilePanel />}
       {app.phase === "ready" && app.panel === "history" && <HistoryPanel earnings={false} />}
       {app.phase === "ready" && app.panel === "earnings" && <HistoryPanel earnings />}

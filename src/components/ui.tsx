@@ -115,12 +115,17 @@ export function Confirm({
 }
 
 /** Top bar over the map: mode title, demo badge and the profile menu. */
-export function TopBar({ title, right }: { title: string; right?: ReactNode }) {
+export function TopBar({ title, right, onBack }: { title: string; right?: ReactNode; onBack?: () => void }) {
   const { t } = useI18n();
   const app = useApp();
   const store = useStore();
   return (
     <header className="topbar">
+      {onBack && (
+        <button type="button" className="icon-btn" aria-label={t("common.back")} onClick={onBack} data-testid="back-home">
+          <span aria-hidden="true">←</span>
+        </button>
+      )}
       <button type="button" className="icon-btn" aria-label={t("common.menu")} onClick={() => store.openPanel("profile")}>
         <span aria-hidden="true">☰</span>
       </button>
@@ -128,6 +133,26 @@ export function TopBar({ title, right }: { title: string; right?: ReactNode }) {
       {app.cfg?.backend === "mock" && <span className="badge badge-demo">DEMO</span>}
       {right}
     </header>
+  );
+}
+
+/** A full screen of 2.0 (C1, P1, H1): back to S1, the title, the menu; the content scrolls. */
+export function Page({ title, children, testId }: { title: string; children: ReactNode; testId?: string }) {
+  const { t } = useI18n();
+  const store = useStore();
+  return (
+    <main className="page" data-testid={testId}>
+      <header className="page-head">
+        <button type="button" className="icon-btn" aria-label={t("common.back")} onClick={() => store.home()} data-testid="page-back">
+          <span aria-hidden="true">←</span>
+        </button>
+        <h1>{title}</h1>
+        <button type="button" className="icon-btn page-menu" aria-label={t("common.menu")} onClick={() => store.openPanel("profile")}>
+          <span aria-hidden="true">☰</span>
+        </button>
+      </header>
+      <div className="page-body">{children}</div>
+    </main>
   );
 }
 

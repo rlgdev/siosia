@@ -76,7 +76,7 @@ export function VehicleSetup() {
     <main className="center-screen">
       <h1>{t("vehicle.title")}</h1>
       <VehicleForm />
-      <button type="button" className="btn btn-link" onClick={() => store.setMode(null)}>
+      <button type="button" className="btn btn-link" onClick={() => store.home()}>
         {t("common.back")}
       </button>
     </main>
