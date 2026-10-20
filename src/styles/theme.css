@@ -1434,3 +1434,6 @@ body:has(.sharing-banner) .panel-head {
   font-style: italic;
   overflow-wrap: anywhere;
 }
+.history-item .planned-open {
+  padding: 0;
+}

@@ -273,7 +273,7 @@ function DriverMain() {
             </strong>
           </div>
         )}
-        <button type="button" className="btn btn-link" onClick={() => store.openPanel("earnings")}>
+        <button type="button" className="btn btn-link" onClick={() => store.openPanel("history")} data-testid="open-history">
           {t("profile.earnings")}
         </button>
       </Sheet>

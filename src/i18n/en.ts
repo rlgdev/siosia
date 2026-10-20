@@ -174,7 +174,7 @@ export const en = {
   "receipt.rated": "Thanks for rating!",
 
   "history.title": "Ride history",
-  "history.empty": "No rides yet.",
+  "history.empty": "Nothing finished yet. Rides and appointments appear here when they are over.",
 
   "status.scheduled": "Booked",
   "status.requested": "Requested",
@@ -484,7 +484,12 @@ export const en = {
   "appt.cancelAll": "All remaining ({n})",
   "appt.cancelYes": "Yes, cancel",
   "appt.keep": "Keep it",
-  "appt.rate": "How was it with {name}?"
+  "appt.rate": "How was it with {name}?",
+  "history.error": "Couldn't load your history.",
+  "history.rate": "Rate {name}",
+  "history.rated": "You rated: {n} ★",
+  "history.drove": "Ride (you drove)",
+  "history.rode": "Ride"
 } as const;
 
 export type MessageKey = keyof typeof en;

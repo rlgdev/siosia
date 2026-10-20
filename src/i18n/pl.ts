@@ -176,7 +176,7 @@ export const pl: Record<MessageKey, string> = {
   "receipt.rated": "Dziękujemy za ocenę!",
 
   "history.title": "Historia kursów",
-  "history.empty": "Brak kursów.",
+  "history.empty": "Nic jeszcze nie zakończono. Przejazdy i terminy pojawią się tu po zakończeniu.",
 
   "status.scheduled": "Zarezerwowany",
   "status.requested": "Zamówiony",
@@ -486,5 +486,10 @@ export const pl: Record<MessageKey, string> = {
   "appt.cancelAll": "Wszystkie pozostałe ({n})",
   "appt.cancelYes": "Tak, odwołaj",
   "appt.keep": "Zostaw",
-  "appt.rate": "Jak było z: {name}?"
+  "appt.rate": "Jak było z: {name}?",
+  "history.error": "Nie udało się wczytać historii.",
+  "history.rate": "Oceń: {name}",
+  "history.rated": "Twoja ocena: {n} ★",
+  "history.drove": "Przejazd (prowadziłeś/aś)",
+  "history.rode": "Przejazd"
 };

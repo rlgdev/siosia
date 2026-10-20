@@ -12,6 +12,7 @@ import type { AppointmentView, CatalogItem, Lang, Profile, RideView } from "../.
 import { I18nProvider } from "../../src/i18n";
 import { AppointmentPanel, derivedPickup } from "../../src/screens/Appointment";
 import { Catalog } from "../../src/screens/Catalog";
+import { HistoryScreen } from "../../src/screens/HistoryScreen";
 import { Planned } from "../../src/screens/Planned";
 import { RequestPanel } from "../../src/screens/RequestForm";
 import { AppStore, StoreContext } from "../../src/state/store";
@@ -367,5 +368,54 @@ describe("C3 Appointment and C4 accept sheet (FR-101, FR-109–112, FR-117)", ()
     expect(screen.getByTestId("cancel-one")).toHaveTextContent("This one");
     await userEvent.click(screen.getByTestId("cancel-series"));
     await waitFor(() => expect(cancelAppointment).toHaveBeenCalledWith("a1", null, "series"));
+  });
+});
+
+describe("H1 History (FR-133, FR-106)", () => {
+  it("merges appointments and rides newest first, with earnings on top for a driver and Rate for 24 h", async () => {
+    const now = Date.now();
+    const done = appt({ status: "done", startsAt: now - 5 * 3600_000, endedAt: now - 2 * 3600_000 });
+    const declined = appt({ id: "a2", status: "declined", startsAt: now - 3 * 86_400_000 });
+    const drove = booking({ id: "r2", status: "completed", role: "driver", scheduledFor: null, requestedAt: now - 86_400_000, rider: { nickname: "Ola", rating: { mean: null, count: 0 } } });
+    const timeline = async () => [
+      { kind: "appointment" as const, at: done.startsAt, appointment: done },
+      { kind: "ride" as const, at: drove.requestedAt, ride: drove },
+      { kind: "appointment" as const, at: declined.startsAt, appointment: declined }
+    ];
+    const earnings = async () => ({ todayTotal: 0, todayCount: 0, monthTotal: 42.5, monthCount: 2, currency: "PLN" });
+    const { store } = setup("en", <HistoryScreen />, { timeline, earnings }, { vehicle: { make: "Kia", model: "Ceed", colour: "Blue", plate: "WX1", seats: 4 } });
+    const list = await screen.findByTestId("history-list");
+    const rows = Array.from(list.children);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent("Childcare");
+    expect(rows[0]).toHaveTextContent("Done");
+    expect(rows[0]).toHaveTextContent("With Siosia");
+    expect(rows[1]).toHaveTextContent("Ride (you drove)");
+    expect(rows[1]).toHaveTextContent("Completed");
+    expect(rows[1]).toHaveTextContent("Ola");
+    expect(rows[2]).toHaveTextContent("Declined");
+    expect(await screen.findByTestId("earnings-month")).toHaveTextContent(/42[.,]50/);
+    await userEvent.click(screen.getByTestId("history-rate"));
+    expect(store.get().panel).toBe("appointment");
+    expect(store.get().panelArg).toBe("a1");
+  });
+
+  it("shows the empty state in Polish and no earnings to a rider", async () => {
+    setup("pl", <HistoryScreen />, { timeline: async () => [], earnings: async () => ({ todayTotal: 0, todayCount: 0, monthTotal: 0, monthCount: 0, currency: "PLN" }) });
+    expect(await screen.findByTestId("history-empty")).toHaveTextContent("Nic jeszcze nie zakończono");
+    expect(screen.queryByTestId("earnings")).toBeNull();
+  });
+
+  it("rates a done appointment once from C3", async () => {
+    const a = appt({ status: "done", startsAt: Date.now() - 5 * 3600_000, endedAt: Date.now() - 3600_000 });
+    const rateAppointment = vi.fn(async () => undefined);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, rateAppointment } as Partial<Backend>, { panel: "appointment", panelArg: "a1" });
+    const box = await screen.findByTestId("appt-rate");
+    expect(box).toHaveTextContent("How was it with Siosia?");
+    expect(screen.getByTestId("appt-rate-send")).toBeDisabled();
+    expect(screen.queryByTestId("appt-cancel")).toBeNull();
+    await userEvent.click(screen.getAllByRole("radio")[3]);
+    await userEvent.click(screen.getByTestId("appt-rate-send"));
+    await waitFor(() => expect(rateAppointment).toHaveBeenCalledWith("a1", 4, ""));
   });
 });

@@ -7,10 +7,9 @@ import { DriverApp } from "./screens/driver/DriverApp";
 import { VehiclePanel } from "./screens/driver/VehicleForm";
 import { AppointmentPanel } from "./screens/Appointment";
 import { DriverBookingsPanel } from "./screens/Bookings";
-import { HistoryPanel } from "./screens/History";
 import { Home } from "./screens/Home";
 import { Catalog } from "./screens/Catalog";
-import { HistoryScreen } from "./screens/HistoryScreen";
+import { HistoryPanel, HistoryScreen } from "./screens/HistoryScreen";
 import { Planned } from "./screens/Planned";
 import { RequestPanel } from "./screens/RequestForm";
 import { ProfilePanel } from "./screens/Profile";
@@ -160,8 +159,7 @@ function Screens() {
       <MoveConfirm />
       <LeaveDriveConfirm />
       {app.phase === "ready" && app.panel === "profile" && <ProfilePanel />}
-      {app.phase === "ready" && app.panel === "history" && <HistoryPanel earnings={false} />}
-      {app.phase === "ready" && app.panel === "earnings" && <HistoryPanel earnings />}
+      {app.phase === "ready" && app.panel === "history" && <HistoryPanel />}
       {app.phase === "ready" && app.panel === "vehicle" && <VehiclePanel />}
       {app.phase === "ready" && app.panel === "appointment" && <AppointmentPanel />}
       {app.phase === "ready" && app.panel === "bookings" && <DriverBookingsPanel />}

@@ -108,6 +108,12 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
 
   // --- earnings and history (US7) ---
   await expect(driver.getByTestId("today-earnings")).toHaveText(fare);
+  // H1 as a panel on D1: the online driver stays online (FR-133).
+  await driver.getByTestId("open-history").click();
+  await expect(driver.getByTestId("earnings-today")).toHaveText(fare);
+  await expect(driver.getByTestId("history-list")).toContainText("Completed");
+  await driver.getByRole("dialog").getByRole("button", { name: "Back" }).click();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Online");
   await driver.getByTestId("toggle-online").click();
   await expect(driver.getByTestId("start-siosia")).toBeVisible(); // offline: back on S1 (FR-082)
   await expect(driver.getByTestId("sharing-banner")).toHaveCount(0);

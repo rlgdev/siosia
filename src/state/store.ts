@@ -32,7 +32,7 @@ export type LinkNotice =
   | "active_trip"
   | "active_ride"
   | "link_failed";
-export type Panel = "profile" | "history" | "vehicle" | "earnings" | "bookings" | "request" | "appointment" | null;
+export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | null;
 /** S1 Home, C1 Catalog ("Siosia"), P1 Planned, H1 History, the v1 rider (R) and driver (D) screens. */
 export type Screen = "home" | "catalog" | "planned" | "history" | "ride" | "drive";
 const modeOf = (s: Screen): Mode | null => (s === "ride" ? "ride" : s === "drive" ? "drive" : null);
