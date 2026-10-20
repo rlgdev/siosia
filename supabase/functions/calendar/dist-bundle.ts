@@ -62,8 +62,15 @@ var W = {
 };
 var serviceName = (a, l) => a.service?.name[l] || a.service?.name.en || a.serviceId;
 var other = (a) => a.role === "client" ? a.provider.nickname : a.client.nickname;
-var link = (ctx) => ctx.siteUrl ? `${ctx.siteUrl.replace(/[?#].*$/, "")}?open=planned` : null;
+var link = (ctx) => ctx.siteUrl ? `${bare(ctx.siteUrl).replace(/[?#].*$/, "")}?open=planned` : null;
 var gone = (status) => status === "cancelled" || status === "declined" || status === "expired";
+var icsStatus = (status) => gone(status) ? "CANCELLED" : status === "requested" ? "TENTATIVE" : "CONFIRMED";
+function asSeries(a) {
+  const s = a.series;
+  if (!s) return a;
+  const allGone = s.status === "cancelled" || s.status === "expired" || s.starts.length > 0 && s.gaps.length >= s.starts.length;
+  return { ...a, status: allGone ? "cancelled" : s.status === "requested" ? "requested" : "accepted", rides: [] };
+}
 function appointmentTitle(a, lang) {
   const l = lng(lang);
   return W[l].with(serviceName(a, l), other(a));
@@ -153,8 +160,9 @@ function vtimezone(tz, from, to) {
   return lines;
 }
 function escapeText(s) {
-  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  return String(s ?? "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, "\\n").replace(/\t/g, " ").replace(/[\x00-\x1f\x7f]/g, "");
 }
+var bare = (s) => String(s ?? "").replace(/[\x00-\x1f\x7f\u0085\u2028\u2029]/g, "");
 function fold(line) {
   const enc = new TextEncoder();
   const out = [];
@@ -179,15 +187,20 @@ function calendar(events, extra = []) {
 }
 var alarm = (min, summary) => ["BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${escapeText(summary)}`, `TRIGGER:-PT${min}M`, "END:VALARM"];
 function placeLines(p) {
-  return p ? [`LOCATION:${escapeText(p.label)}`, `GEO:${p.lat.toFixed(6)};${p.lng.toFixed(6)}`] : [];
+  if (!p) return [];
+  const out = p.label ? [`LOCATION:${escapeText(p.label)}`] : [];
+  if (typeof p.lat === "number" && typeof p.lng === "number" && Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+    out.push(`GEO:${p.lat.toFixed(6)};${p.lng.toFixed(6)}`);
+  }
+  return out;
 }
 function appointmentIcs(a, ctx) {
   const summary = appointmentTitle(a, ctx.lang);
-  const status = gone(a.status) ? "CANCELLED" : a.status === "requested" ? "TENTATIVE" : "CONFIRMED";
+  const status = icsStatus(a.status);
   const back = link(ctx);
   const ev = [
     "BEGIN:VEVENT",
-    `UID:${a.id}`,
+    `UID:${bare(a.id)}`,
     `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
     `DTSTART:${utcStamp(a.startsAt)}`,
     `DTEND:${utcStamp(a.endsAt)}`,
@@ -209,11 +222,12 @@ function seriesIcs(a, ctx) {
   const last = s.starts[s.starts.length - 1] ?? a.startsAt;
   const durMs = a.endsAt - a.startsAt;
   const summary = appointmentTitle(a, ctx.lang);
-  const allGone = s.status === "cancelled" || s.status === "expired" || s.starts.length > 0 && s.gaps.length >= s.starts.length;
+  const view = asSeries(a);
+  const status = icsStatus(view.status);
   const back = link(ctx);
   const ev = [
     "BEGIN:VEVENT",
-    `UID:${s.id}`,
+    `UID:${bare(s.id)}`,
     `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
     `DTSTART;TZID=${tz}:${localStamp(first, tz)}`,
     `DTEND;TZID=${tz}:${localStamp(first + durMs, tz)}`,
@@ -221,10 +235,10 @@ function seriesIcs(a, ctx) {
     ...s.gaps.map((g) => `EXDATE;TZID=${tz}:${localStamp(g, tz)}`),
     `SUMMARY:${escapeText(summary)}`,
     ...placeLines(a.place),
-    `DESCRIPTION:${escapeText(appointmentDetails({ ...a, rides: [] }, ctx))}`,
+    `DESCRIPTION:${escapeText(appointmentDetails(view, ctx))}`,
     ...back ? [`URL:${back}`] : [],
-    `STATUS:${allGone ? "CANCELLED" : "CONFIRMED"}`,
-    ...allGone ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary)),
+    `STATUS:${status}`,
+    ...status === "CANCELLED" ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary)),
     "END:VEVENT"
   ];
   return calendar(ev, vtimezone(tz, first - 864e5, last + durMs + 864e5));
@@ -236,7 +250,7 @@ function rideIcs(r, ctx) {
   const back = link(ctx);
   const ev = [
     "BEGIN:VEVENT",
-    `UID:${r.id}`,
+    `UID:${bare(r.id)}`,
     `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
     `DTSTART:${utcStamp(at)}`,
     `DTEND:${utcStamp(at + Math.max(5, Math.round(r.estMin)) * 6e4)}`,
@@ -270,7 +284,12 @@ async function handleCalendar(req, read) {
   }
   if (!data?.view) return notFound();
   const ctx = { lang: data.lang, timezone: data.timezone, reminderMin: data.reminderMin ?? [], siteUrl: data.siteUrl };
-  const body = data.kind === "r" ? rideIcs(data.view, ctx) : data.kind === "s" ? seriesIcs(data.view, ctx) : appointmentIcs(data.view, ctx);
+  let body;
+  try {
+    body = data.kind === "r" ? rideIcs(data.view, ctx) : data.kind === "s" ? seriesIcs(data.view, ctx) : appointmentIcs(data.view, ctx);
+  } catch {
+    return new Response("unavailable", { status: 500, headers: { "cache-control": "no-store" } });
+  }
   return new Response(req.method === "HEAD" ? null : body, {
     status: 200,
     headers: {

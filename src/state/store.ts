@@ -4,7 +4,9 @@
 //
 // Navigation (2.0, FR-080–084): a screen stack rooted at S1 Home. Siosia (catalog), Planned and
 // History open from S1; Ride (R1…) and Drive (D1…) from the catalog. The screen follows an active
-// ride or an online driver (V1); nothing else is remembered between launches.
+// ride or an online driver (V1); nothing else is remembered between launches. The browser history
+// mirrors it: [S1] or [S1, screen], plus one entry while a panel is open — so ← (a step back)
+// always lands on the app's own S1, never outside the app.
 
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { createBackend } from "../backend";
@@ -36,6 +38,8 @@ export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" |
 /** S1 Home, C1 Catalog ("Siosia"), P1 Planned, H1 History, the v1 rider (R) and driver (D) screens. */
 export type Screen = "home" | "catalog" | "planned" | "history" | "ride" | "drive";
 const modeOf = (s: Screen): Mode | null => (s === "ride" ? "ride" : s === "drive" ? "drive" : null);
+/** What this app keeps in a history entry: the screen, and the panel open over it. */
+type NavState = { screen?: Screen; panel?: Panel } | null;
 
 export interface AppSnapshot {
   phase: Phase;
@@ -51,9 +55,14 @@ export interface AppSnapshot {
   panel: Panel;
   /** What the panel shows: the catalog entry of C2, the appointment of C3. */
   panelArg: string | null;
-  /** A driver who is online tried to leave D1: ask before going offline. */
-  leaveDrive: boolean;
+  /** A driver who is online tried to leave D1 for this screen: ask before going offline. */
+  leaveDrive: Screen | null;
   my: MyState | null;
+  /**
+   * Counts refreshes of my state (a change event, the app back in front, after an action) — not an
+   * online driver's heartbeat every 4 s. Lists fetched from the server reload on it (useListsKey).
+   */
+  changes: number;
   /** serverNow − Date.now(), ms. */
   clockOffset: number;
   online: boolean;
@@ -80,8 +89,9 @@ const INITIAL: AppSnapshot = {
   mode: null,
   panel: null,
   panelArg: null,
-  leaveDrive: false,
+  leaveDrive: null,
   my: null,
+  changes: 0,
   clockOffset: 0,
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   missing: [],
@@ -132,6 +142,8 @@ export class AppStore {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
+  /** navigate() stepped back over a panel's entry: the entry it lands on becomes this screen. */
+  private afterPop: Screen | null = null;
 
   constructor(private readonly factory: (cfg: AppConfig) => Promise<Backend> = createBackend) {
     if (typeof window !== "undefined") {
@@ -141,16 +153,22 @@ export class AppStore {
       });
       window.addEventListener("offline", () => this.patch({ online: false }));
       window.addEventListener("popstate", (ev: PopStateEvent) => {
+        if (this.afterPop) {
+          // The screen is already shown (navigate); only the history entry is left to update.
+          history.replaceState({ screen: this.afterPop }, "");
+          this.afterPop = null;
+          return;
+        }
         if (this.snap.panel) {
           this.patch({ panel: null, panelArg: null });
           return;
         }
-        const target = ((ev.state as { screen?: Screen } | null)?.screen ?? "home") as Screen;
+        const target = ((ev.state as NavState)?.screen ?? "home") as Screen;
         const pin = this.pinned();
         if (pin && target !== pin) {
           // An active ride or an online driver keeps its screen (V1); offer to go offline.
           history.pushState({ screen: pin }, "");
-          if (pin === "drive" && this.snap.my?.driverOnline && !this.snap.my.ride) this.patch({ leaveDrive: true });
+          if (pin === "drive" && this.snap.my?.driverOnline && !this.snap.my.ride) this.patch({ leaveDrive: target });
           return;
         }
         this.patch({ screen: target, mode: modeOf(target) });
@@ -319,9 +337,30 @@ export class AppStore {
     this.patch({ profile, vehicle, lang: profile.language });
     this.listen();
     await this.refresh();
-    const screen = this.initialScreen();
-    this.patch({ screen, mode: modeOf(screen), phase: "ready" });
-    if (screen !== "home" && typeof history !== "undefined") history.replaceState({ screen }, "");
+    this.land(this.initialScreen());
+  }
+
+  /**
+   * Shows the first screen. Launched on an entry that is not the app's (a new window, a
+   * notification's ./?open=planned, the first launch, a 1.x entry), that entry becomes S1 and the
+   * screen goes on top, so ← finds S1 (otherwise a step back would leave the app, or do nothing in
+   * an installed app). A reload of the app's own entry steps from it as a navigation does: it is S1
+   * or sits right on S1 already, and making it S1 again left one more S1 under D1 on every reload.
+   * Already running (a profile link or move code accepted): a normal navigation.
+   */
+  private land(screen: Screen): void {
+    if (this.snap.phase === "ready") {
+      this.navigate(screen);
+      return;
+    }
+    if (typeof history !== "undefined") {
+      if ((history.state as NavState)?.screen) this.step(screen);
+      else {
+        history.replaceState({ screen: "home" }, "");
+        if (screen !== "home") history.pushState({ screen }, "");
+      }
+    }
+    this.patch({ screen, mode: modeOf(screen), panel: null, panelArg: null, phase: "ready" });
   }
 
   /** May this profile use the ride (R) or drive (D) screens? A master profile has one role (FR-085). */
@@ -368,44 +407,60 @@ export class AppStore {
     return screen;
   }
 
-  /**
-   * Go to a screen. From S1 a new history entry (browser back returns to S1); between sub-screens
-   * the entry is replaced; going home walks back. A held screen (V1) stays.
-   */
+  /** Go to a screen (FR-082). A held screen (V1) stays; an online driver is asked first (C11). */
   go(screen: Screen): void {
     if (!this.allowed(screen)) return;
-    const from = this.snap.screen;
-    if (screen === from) {
+    if (screen === this.snap.screen) {
       if (this.snap.panel) this.closePanel();
       return;
     }
     const pin = this.pinned();
     if (pin && screen !== pin) {
-      if (pin === "drive" && this.snap.my?.driverOnline && !this.snap.my.ride) this.patch({ leaveDrive: true });
+      // Remember where they were going: after going offline they get there, not to S1.
+      if (pin === "drive" && this.snap.my?.driverOnline && !this.snap.my.ride) this.patch({ leaveDrive: screen });
       return;
     }
-    if (typeof history !== "undefined") {
-      if (screen === "home") {
-        if ((history.state as { screen?: Screen } | null)?.screen === from) {
-          history.back(); // popstate sets home
-          return;
-        }
-      } else if (from === "home") history.pushState({ screen }, "");
-      else history.replaceState({ screen }, "");
-    }
-    this.patch({ screen, mode: modeOf(screen), panel: null, panelArg: null });
+    this.navigate(screen);
   }
 
-  /** A button inside a panel opens a screen: the panel's history entry becomes that screen. */
+  /** A button inside a panel opens a screen: the panel closes and the history is [S1, screen]. */
   goFromPanel(screen: Screen): void {
     if (!this.allowed(screen)) return;
     const pin = this.pinned();
     if (pin && screen !== pin) return;
-    if (typeof history !== "undefined" && (history.state as { panel?: Panel } | null)?.panel) {
-      if (screen === "home") history.back();
-      else history.replaceState({ screen }, "");
-    }
-    this.patch({ screen, mode: modeOf(screen), panel: null, panelArg: null });
+    this.navigate(screen);
+  }
+
+  /** Shows `target`, the history following it (step). */
+  private navigate(target: Screen): void {
+    if (typeof history !== "undefined") this.step(target);
+    // At once (the popstate of a step back only confirms it).
+    this.patch({ screen: target, mode: modeOf(target), panel: null, panelArg: null });
+  }
+
+  /**
+   * Moves the history to `target` keeping it at [S1] or [S1, target]: from S1 a new entry, between
+   * sub-screens the entry is replaced, S1 is a step back. A panel's entry is dropped on the way,
+   * else ← from the new screen would step back to the screen under the panel (C2 → C3 → Planned).
+   */
+  private step(target: Screen): void {
+    const st = history.state as NavState;
+    if (st?.panel) {
+      const below = st.screen ?? "home";
+      if (target === below) history.back();
+      else if (target === "home") history.go(-2);
+      else if (below === "home") history.replaceState({ screen: target }, "");
+      else {
+        // [S1, screen, panel]: back over the panel, then that screen's entry becomes the target.
+        this.afterPop = target;
+        history.back();
+      }
+    } else if (target === "home") {
+      // A screen's entry always sits right on S1's (land), so S1 is one step back.
+      if (st?.screen && st.screen !== "home") history.back();
+      else history.replaceState({ screen: "home" }, "");
+    } else if ((st?.screen ?? "home") === "home") history.pushState({ screen: target }, "");
+    else history.replaceState({ screen: target }, "");
   }
 
   /** Back to S1 from any screen (the ← in the top bar). */
@@ -424,16 +479,17 @@ export class AppStore {
     }
   }
 
-  /** The online driver confirmed leaving D1: go offline, then S1. */
+  /** The online driver confirmed leaving D1: go offline, then where they were going (S1, or e.g. Planned from a notification). */
   async leaveDriveConfirmed(): Promise<void> {
-    this.patch({ leaveDrive: false });
+    const target = this.snap.leaveDrive ?? "home";
+    this.patch({ leaveDrive: null });
     await this.api.setOnline(false);
     await this.refresh();
-    this.go("home");
+    this.go(target);
   }
 
   cancelLeaveDrive(): void {
-    this.patch({ leaveDrive: false });
+    this.patch({ leaveDrive: null });
   }
 
   async join(code: string): Promise<void> {
@@ -540,7 +596,7 @@ export class AppStore {
           this.refreshAgain = false;
           const t0 = Date.now();
           const my = await this.api.myState();
-          this.applyMy(my, t0);
+          this.applyMy(my, t0, true);
         } while (this.refreshAgain);
       } catch (e) {
         if (e instanceof ServerError && (e.code === "not_member" || e.code === "no_profile")) void this.lostProfile();
@@ -552,14 +608,14 @@ export class AppStore {
     return this.refreshing;
   }
 
-  /** Accepts a MyState from any call (heartbeat returns one too). */
-  applyMy(my: MyState, sentAt = Date.now()): void {
+  /** Accepts a MyState from any call (heartbeat returns one too); `refreshed`: from refresh(). */
+  applyMy(my: MyState, sentAt = Date.now(), refreshed = false): void {
     const now = Date.now();
     const rtt = now - sentAt;
     const offset = my.serverNow - (sentAt + rtt / 2);
     // Smooth the offset so a single slow response doesn't make countdowns jump.
     const clockOffset = this.snap.my ? this.snap.clockOffset * 0.7 + offset * 0.3 : offset;
-    this.patch({ my, clockOffset });
+    this.patch(refreshed ? { my, clockOffset, changes: this.snap.changes + 1 } : { my, clockOffset });
     if (this.snap.phase !== "ready") return;
     if (my.hasProfile === false) {
       void this.lostProfile();
@@ -568,13 +624,7 @@ export class AppStore {
     // The screen follows the active ride (V1): a booking that starts while this phone shows
     // another screen must not stay invisible; an offer card shows on D1.
     const want: Screen | null = my.ride ? (my.ride.role === "driver" ? "drive" : "ride") : my.offer ? "drive" : null;
-    if (want && this.snap.screen !== want) {
-      if (typeof history !== "undefined") {
-        if (this.snap.screen === "home") history.pushState({ screen: want }, "");
-        else history.replaceState({ screen: want }, "");
-      }
-      this.patch({ screen: want, mode: modeOf(want), panel: null, panelArg: null });
-    }
+    if (want && this.snap.screen !== want) this.navigate(want);
   }
 
   private losing = false;
@@ -611,4 +661,15 @@ export function useStore(): AppStore {
 export function useApp(): AppSnapshot {
   const s = useStore();
   return useSyncExternalStore(s.subscribe, s.get, s.get);
+}
+
+/**
+ * Changes when lists fetched from the server (History, Planned, C3, bookings) may be out of date:
+ * a refresh of my state or a change in what it counts. Not every new MyState: an online driver's
+ * heartbeat brings one every 4 s, and reloading on each refetched the lists all the time.
+ */
+export function useListsKey(): string {
+  const app = useApp();
+  const my = app.my;
+  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings].join("|");
 }

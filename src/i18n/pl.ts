@@ -51,6 +51,8 @@ export const pl: Record<MessageKey, string> = {
   "home.signIn": "Zachowaj konto na innych urządzeniach",
   "home.profile": "Profil",
   "home.guide": "Jak to działa",
+  "home.receiptRider": "Przejazd zakończony — zapłać i oceń",
+  "home.receiptDriver": "Kurs zakończony — pobierz opłatę i oceń",
 
   "profile.title": "Profil",
   "profile.nickname": "Pseudonim",
@@ -155,6 +157,7 @@ export const pl: Record<MessageKey, string> = {
   "active.seats": "Miejsca: {n}",
   "active.waitingFix": "Czekam na pozycję kierowcy…",
   "active.cancelledByDriver": "Kierowca zakończył kurs: {reason}.",
+  "active.appointmentCancelled": "Termin został odwołany, więc ten przejazd też został odwołany.",
   "active.awayFromPin": "Jesteś {m} m od pinezki odbioru — kierowca jedzie do pinezki. Wróć do niej albo włącz udostępnianie.",
 
   "receipt.title": "Kurs zakończony",
@@ -296,6 +299,7 @@ export const pl: Record<MessageKey, string> = {
   "trip.reasonTitle": "Dlaczego anulujesz?",
   "trip.noShowIn": "Nieobecność dostępna za {t}",
   "trip.riderCancelled": "Pasażer anulował kurs.",
+  "trip.appointmentCancelled": "Termin, na który był ten przejazd, został odwołany, więc kurs też jest odwołany.",
   "trip.distance": "Przejechano: {km} km",
 
   "reason.no_show": "Pasażer się nie pojawił",
@@ -304,6 +308,7 @@ export const pl: Record<MessageKey, string> = {
   "reason.other": "Inny powód",
   "reason.driver_lost": "kierowca stracił połączenie",
   "reason.late_cancel": "późne anulowanie",
+  "reason.appointment_cancelled": "termin został odwołany",
 
   "summary.title": "Podsumowanie kursu",
   "summary.collected": "Pobrano",
@@ -348,7 +353,7 @@ export const pl: Record<MessageKey, string> = {
   "err.no_account": "Żadne konto nie używa jeszcze tego e-maila. Połącz go na pierwszym telefonie, potem zaloguj się tutaj.",
   "err.bad_transfer": "Ten kod jest nieprawidłowy lub wygasł. Pokaż nowy w drugiej aplikacji.",
   "err.bad_time": "Ta godzina odbioru jest za wcześnie lub za daleko w przyszłości.",
-  "err.too_many": "Masz już 5 nadchodzących rezerwacji.",
+  "err.too_many": "Osiągnięto limit otwartych próśb lub rezerwacji — najpierw zakończ albo anuluj którąś z nich.",
   "err.overlap": "Masz już rezerwację w tym czasie.",
   "err.bad_link": "Ten link jest już nieważny. Poproś organizatora o nowy.",
   "err.rider_only": "Ten wspólny profil służy tylko do zamawiania kursów.",
@@ -391,7 +396,10 @@ export const pl: Record<MessageKey, string> = {
   "catalog.duration": "zwykle {d}",
   "catalog.perHour": "za godzinę",
   "catalog.nobody": "Nikt tego jeszcze nie oferuje",
+  "catalog.error": "Nie udało się wczytać wszystkiego, co oferuje Siosia.",
   "request.title": "Prośba",
+  "request.error": "Nie udało się wczytać tej usługi.",
+  "request.gone": "Ta usługa nie jest już dostępna.",
   "request.provider": "Kto",
   "request.pickProvider": "Wybierz, kogo prosisz.",
   "request.start": "Dzień i początek",

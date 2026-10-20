@@ -10,7 +10,7 @@ import { dayText, rangeTimes, sameDay, timeText } from "../components/when";
 import { Money, Page, useBusy } from "../components/ui";
 import type { AppointmentView, Planned as PlannedData, RideView } from "../core/types";
 import { useI18n } from "../i18n";
-import { useApp, useStore } from "../state/store";
+import { useApp, useListsKey, useStore } from "../state/store";
 import { DriverBookingCard, OpenBookingsList, RiderBookingCard, Route, useOpenBookings } from "./Bookings";
 import { EntryIcon, localText } from "./Catalog";
 
@@ -33,10 +33,11 @@ export function Planned() {
       ),
     [store]
   );
-  const my = app.my;
+  // Not on every MyState: an online driver's heartbeat brings one every 4 s.
+  const listsKey = useListsKey();
   useEffect(() => {
     void load();
-  }, [load, my]);
+  }, [load, listsKey]);
   useEffect(() => {
     const id = setInterval(() => {
       void load();

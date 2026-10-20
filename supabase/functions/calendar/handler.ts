@@ -35,8 +35,14 @@ export async function handleCalendar(req: Request, read: ReadView): Promise<Resp
   }
   if (!data?.view) return notFound();
   const ctx: IcsContext = { lang: data.lang, timezone: data.timezone, reminderMin: data.reminderMin ?? [], siteUrl: data.siteUrl };
-  const body =
-    data.kind === "r" ? rideIcs(data.view as IcsRide, ctx) : data.kind === "s" ? seriesIcs(data.view as IcsAppointment, ctx) : appointmentIcs(data.view as IcsAppointment, ctx);
+  let body: string;
+  try {
+    body =
+      data.kind === "r" ? rideIcs(data.view as IcsRide, ctx) : data.kind === "s" ? seriesIcs(data.view as IcsAppointment, ctx) : appointmentIcs(data.view as IcsAppointment, ctx);
+  } catch {
+    // A view the module cannot write: a plain error, not a crash whose log could carry the event.
+    return new Response("unavailable", { status: 500, headers: { "cache-control": "no-store" } });
+  }
   return new Response(req.method === "HEAD" ? null : body, {
     status: 200,
     headers: {

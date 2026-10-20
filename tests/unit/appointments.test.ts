@@ -4,8 +4,8 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
-import { Engine, emptyDb, type DbState, type EngineConfig, type PushEvent } from "../../src/core/engine";
-import { ServerError, type AppointmentView, type Place, type RepeatInput } from "../../src/core/types";
+import { Engine, emptyDb, type DbState, type EngineConfig, type PushEvent, type StoredTemplate } from "../../src/core/engine";
+import { ServerError, type AppointmentView, type Place, type RepeatInput, type RideTemplateInput } from "../../src/core/types";
 
 const MIN = 60_000;
 const HOME: Place = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
@@ -335,6 +335,113 @@ describe("series (FR-107–109, FR-117, V23–V26)", () => {
     at((e) => e.dropRideTemplate("siosia", sid, "there"));
     expect(db.series![sid].rideTemplates).toEqual([]);
     expect(Object.values(db.rides).filter((r) => r.status === "scheduled").length).toBe(2);
+  });
+});
+
+describe("bounded templates, an isolated sweep, clean places (review C0–C7)", () => {
+  const TPL: RideTemplateInput = { leg: "there", pickup: HOME, dropoff: SCHOOL, offsetMin: -30, estKm: 3, estMin: 8, fareIsEstimate: false };
+  /** An accepted weekly series of 4 starting in 20 days (two dates within the booking horizon). */
+  function acceptedSeries() {
+    const s = request("client", "siosia", 20 * 24 * 60, { service: "learning", duration: 60, repeat: { every: 1, count: 4 } });
+    answer("siosia", s.id, "accept");
+    return s.series!.id;
+  }
+  const setTpl = (uid: string, sid: string, t: unknown) => at((e) => e.setRideTemplate(uid, sid, t as RideTemplateInput));
+
+  it("refuses a ride estimate over a day or a trip over maxTripKm (C0, C1)", () => {
+    const sid = acceptedSeries();
+    expect(code(() => setTpl("siosia", sid, { ...TPL, estMin: 1e300 }))).toBe("bad_input");
+    expect(code(() => setTpl("siosia", sid, { ...TPL, estMin: 3e8 }))).toBe("bad_input");
+    expect(code(() => setTpl("siosia", sid, { ...TPL, estMin: 1441 }))).toBe("bad_input");
+    // Too far, as for a one-off booking of the same trip (a bad estimate is still bad_input first).
+    expect(code(() => setTpl("siosia", sid, { ...TPL, estKm: 51 }))).toBe("too_far");
+    expect(code(() => setTpl("siosia", sid, { ...TPL, estKm: 51, estMin: 1441 }))).toBe("bad_input");
+    expect(db.series![sid].rideTemplates).toEqual([]);
+    const ride = { pickup: HOME, dropoff: SCHOOL, estKm: 3, fareIsEstimate: false };
+    expect(code(() => at((e) => e.bookRide("client", { ...ride, estKm: 51, estMin: 8, scheduledFor: now + 3 * 60 * MIN })))).toBe("too_far");
+    expect(code(() => at((e) => e.bookRide("client", { ...ride, estMin: 3e8, scheduledFor: now + 3 * 60 * MIN })))).toBe("bad_input");
+    expect(code(() => at((e) => e.requestRide("client", { ...ride, estMin: 1e300 })))).toBe("bad_input");
+    expect(book("client", 3 * 60)).toMatchObject({ status: "scheduled", estMin: 8 });
+  });
+
+  it("keeps the sweep (and everyone's calls) working past a bad stored template (C0, C1)", () => {
+    const sid = acceptedSeries();
+    db.series![sid].rideTemplates = [
+      { ...TPL, passenger: "provider", estMin: 1e300 },
+      { ...TPL, passenger: "provider", leg: "back", offsetMin: 0, estMin: 3e8 },
+      null as unknown as StoredTemplate, // not even a template
+      { ...TPL, passenger: "client", leg: "back", offsetMin: 0 } // a good one still books
+    ];
+    db.series![sid].templatesAt = null;
+    expect(() => sweep()).not.toThrow();
+    expect(at((e) => e.myState("other"))).toMatchObject({ planned: 0 });
+    expect(db.series![sid].templatesAt).toBe(now);
+    const rides = Object.values(db.rides).filter((r) => appt(r.appointmentId ?? "")?.seriesId === sid);
+    expect(rides.map((r) => `${r.riderId}:${r.leg}`)).toEqual(["client:back", "client:back"]);
+  });
+
+  it("refuses a template with missing fields and stores only the known keys (C5)", () => {
+    const sid = acceptedSeries();
+    expect(code(() => setTpl("siosia", sid, { leg: "there" }))).toBe("bad_input");
+    for (const k of ["pickup", "dropoff", "offsetMin", "estKm", "estMin"] as const) {
+      const t: Partial<RideTemplateInput> = { ...TPL };
+      delete t[k];
+      expect(code(() => setTpl("siosia", sid, t))).toBe("bad_input");
+    }
+    expect(code(() => setTpl("siosia", sid, { ...TPL, dropoff: { lat: 52.2, label: "No lng" } }))).toBe("bad_input");
+    setTpl("siosia", sid, { ...TPL, junk: "x".repeat(5000), pickup: { ...HOME, junk: "y".repeat(5000) }, fareIsEstimate: "yes" });
+    expect(db.series![sid].rideTemplates).toEqual([{ passenger: "provider", leg: "there", pickup: HOME, dropoff: SCHOOL, offsetMin: -30, estKm: 3, estMin: 8, fareIsEstimate: false }]);
+  });
+
+  it("refuses a place without lng for a request and for My place (C6)", () => {
+    const noLng = { lat: 52.2504843, label: "Warszawska 269" } as Place;
+    expect(code(() => request("client", "siosia", 24 * 60, { place: noLng }))).toBe("bad_input");
+    expect(code(() => at((e) => e.saveHome("client", noLng)))).toBe("bad_input");
+    expect(code(() => at((e) => e.saveHome("client", { lng: 20.8, label: "No lat" } as Place)))).toBe("bad_input");
+    expect(at((e) => e.saveHome("client", { ...HOME, junk: 1 } as Place)).home).toEqual(HOME);
+  });
+
+  it("tells the other party once when the same template is set again (C7)", () => {
+    const sid = acceptedSeries();
+    const added = () => pushes.filter((p) => p.kind === "appt_ride_added" && p.userId === "client").length;
+    setTpl("siosia", sid, TPL);
+    setTpl("siosia", sid, TPL);
+    setTpl("siosia", sid, { ...TPL, pickup: { ...HOME }, junk: 1 });
+    expect(added()).toBe(1);
+    setTpl("siosia", sid, { ...TPL, offsetMin: -45 });
+    expect(added()).toBe(2);
+    expect(db.series![sid].rideTemplates).toEqual([expect.objectContaining({ passenger: "provider", leg: "there", offsetMin: -45 })]);
+  });
+
+  it("keeps a template's estimates to 3 decimals and its offset in whole minutes, cut toward 0", () => {
+    const sid = acceptedSeries();
+    expect(code(() => setTpl("siosia", sid, { ...TPL, estKm: 0.0004 }))).toBe("bad_input"); // rounds to no trip
+    setTpl("siosia", sid, { ...TPL, offsetMin: -30.5, estKm: 3.14159, estMin: 8.12345 });
+    expect(db.series![sid].rideTemplates).toEqual([expect.objectContaining({ offsetMin: -30, estKm: 3.142, estMin: 8.123 })]);
+    const rides = Object.values(db.rides).filter((r) => appt(r.appointmentId ?? "")?.seriesId === sid);
+    expect(rides.map((r) => (appt(r.appointmentId!).startsAt - r.scheduledFor!) / MIN)).toEqual([30, 30]);
+    setTpl("siosia", sid, { ...TPL, leg: "back", offsetMin: 10.9 });
+    expect(db.series![sid].rideTemplates).toEqual([expect.objectContaining({ leg: "there" }), expect.objectContaining({ leg: "back", offsetMin: 10 })]);
+  });
+
+  it("accepts any non-blank place label, stored trimmed and cut to 120, and refuses a blank one", () => {
+    const sid = acceptedSeries();
+    const LONG = { ...HOME, label: "W".repeat(200) }; // a geocoded label can be that long
+    const CUT = { ...HOME, label: "W".repeat(120) };
+    const BLANK = { ...HOME, label: "   " };
+    expect(at((e) => e.saveHome("client", LONG)).home).toEqual(CUT);
+    expect(at((e) => e.saveHome("client", { ...HOME, label: `  ${HOME.label}  ` })).home).toEqual(HOME);
+    expect(request("client", "siosia", 24 * 60, { place: LONG }).place).toEqual(CUT);
+    setTpl("siosia", sid, { ...TPL, pickup: LONG, dropoff: { ...SCHOOL, label: ` ${SCHOOL.label} ` } });
+    expect(db.series![sid].rideTemplates).toEqual([expect.objectContaining({ pickup: CUT, dropoff: SCHOOL })]);
+    const booked = Object.values(db.rides).filter((r) => r.autoBooked);
+    expect(booked.map((r) => [r.pickup.label, r.dropoff.label])).toEqual([[CUT.label, SCHOOL.label], [CUT.label, SCHOOL.label]]);
+    const one = at((e) => e.bookRide("client", { pickup: LONG, dropoff: SCHOOL, estKm: 3, estMin: 8, fareIsEstimate: false, scheduledFor: now + 3 * 60 * MIN }));
+    expect(one.pickup).toEqual(CUT);
+    expect(code(() => at((e) => e.saveHome("client", BLANK)))).toBe("bad_input");
+    expect(code(() => request("client", "siosia", 2 * 24 * 60, { place: BLANK }))).toBe("bad_input");
+    expect(code(() => setTpl("siosia", sid, { ...TPL, pickup: BLANK }))).toBe("bad_input");
+    expect(code(() => setTpl("siosia", sid, { ...TPL, dropoff: { ...SCHOOL, label: "" } }))).toBe("bad_input");
   });
 });
 

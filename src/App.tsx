@@ -51,14 +51,14 @@ function MasterConfirm() {
   );
 }
 
-/** An online driver leaving D1: go offline first (FR-082: leaving D1 returns to S1). */
-function LeaveDriveConfirm() {
+/** An online driver leaving D1: go offline first, then on to S1 (FR-082) or the screen they asked for. */
+export function LeaveDriveConfirm() {
   const { t } = useI18n();
   const app = useApp();
   const store = useStore();
   return (
     <Confirm
-      open={app.leaveDrive}
+      open={!!app.leaveDrive}
       message={t("drive.leaveConfirm")}
       confirmLabel={t("drive.leaveYes")}
       onConfirm={() => void store.leaveDriveConfirmed().catch(() => store.cancelLeaveDrive())}

@@ -19,12 +19,52 @@ export function RequestPanel() {
   const app = useApp();
   const store = useStore();
   const [entry, setEntry] = useState<CatalogItem | null>(null);
+  // Never Loading for ever: a failed load offers Retry; an entry gone from the catalog says so.
+  const [state, setState] = useState<"loading" | "failed" | "gone" | "ready">("loading");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    void store.api.catalog().then((all) => setEntry(all.find((e) => e.id === app.panelArg) ?? null), () => setEntry(null));
-  }, [store, app.panelArg]);
+    let live = true;
+    store.api.catalog().then(
+      (all) => {
+        if (!live) return;
+        const e = all.find((x) => x.id === app.panelArg && x.kind === "time" && x.duration) ?? null;
+        setEntry(e);
+        setState(e ? "ready" : "gone");
+      },
+      () => {
+        if (live) setState("failed");
+      }
+    );
+    return () => {
+      live = false;
+    };
+  }, [store, app.panelArg, attempt]);
   return (
     <Panel title={entry ? localText(entry.name, lang) : t("request.title")} onClose={() => store.closePanel()}>
-      {!entry ? <p className="muted">{t("common.loading")}</p> : <RequestForm key={entry.id} entry={entry} locale={locale} />}
+      {state === "ready" && entry ? (
+        <RequestForm key={entry.id} entry={entry} locale={locale} />
+      ) : state === "failed" ? (
+        <div className="stack" data-testid="request-failed">
+          <p className="form-error">{t("request.error")}</p>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              setState("loading");
+              setAttempt((n) => n + 1);
+            }}
+            data-testid="request-retry"
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      ) : state === "gone" ? (
+        <p className="muted" data-testid="request-gone">
+          {t("request.gone")}
+        </p>
+      ) : (
+        <p className="muted">{t("common.loading")}</p>
+      )}
     </Panel>
   );
 }

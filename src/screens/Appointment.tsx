@@ -18,7 +18,7 @@ import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { navigationUrl } from "../services/device";
 import { getRoute } from "../services/routing";
-import { useApp, useStore } from "../state/store";
+import { useApp, useListsKey, useStore } from "../state/store";
 import { EntryIcon, localText } from "./Catalog";
 
 export function AppointmentPanel() {
@@ -31,10 +31,11 @@ export function AppointmentPanel() {
   const [a, setA] = useState<AppointmentView | null>(null);
   const [failed, setFailed] = useState(false);
   const load = useCallback(() => store.api.getAppointment(id).then(setA, () => setFailed(true)), [store, id]);
-  const my = app.my;
+  // Not on every MyState: an online driver's heartbeat brings one every 4 s.
+  const listsKey = useListsKey();
   useEffect(() => {
     void load();
-  }, [load, my]);
+  }, [load, listsKey]);
   return (
     <Panel title={a ? localText(a.service?.name, app.lang) || a.serviceId : t("appt.title")} onClose={() => store.closePanel()}>
       {failed && !a ? <p className="form-error">{t("err.not_found")}</p> : !a ? <p className="muted">{t("common.loading")}</p> : <AppointmentDetails a={a} reload={load} accepting={accepting} />}

@@ -367,6 +367,11 @@ create table if not exists public.appointment_series (
   requested_at   timestamptz not null default now(),
   answered_at    timestamptz
 );
+-- The templates are always a list (every reader takes its elements; siosia_set_ride_template and
+-- siosia_drop_ride_template write it), whatever is written behind the functions.
+alter table public.appointment_series drop constraint if exists appointment_series_ride_templates_check;
+alter table public.appointment_series add constraint appointment_series_ride_templates_check
+  check (jsonb_typeof(ride_templates) = 'array');
 create index if not exists appointment_series_client_idx on public.appointment_series (client_id, status);
 create index if not exists appointment_series_provider_idx on public.appointment_series (provider_id, status);
 
@@ -681,7 +686,9 @@ returns jsonb language sql stable security definer set search_path = public as $
              then t || jsonb_build_object('mine', true)
              else jsonb_build_object('passenger', t ->> 'passenger', 'leg', t ->> 'leg', 'offsetMin', t -> 'offsetMin',
                                      'mine', false) end)
-        from jsonb_array_elements(s.ride_templates) t), '[]'::jsonb),
+        -- only a list is read as one (as in siosia_materialize_templates): a non-list is no templates
+        from jsonb_array_elements(case when jsonb_typeof(s.ride_templates) = 'array'
+                                       then s.ride_templates else '[]'::jsonb end) t), '[]'::jsonb),
     'ics', siosia_ics_link('s', s.id, p_viewer))
   from appointment_series s where s.id = p_series;
 $$;
@@ -1026,8 +1033,13 @@ declare c app_config; o record; r record; v_rider_busy boolean;
 begin
   if not pg_try_advisory_xact_lock(727274) then return; end if;
   select * into c from app_config where id = 1;
-  -- 2.0: appointments (expiry, done, reminders, series rides) before the v1 steps.
-  perform siosia_sweep_appointments();
+  -- 2.0: appointments (expiry, done, reminders, series rides) before the v1 steps. Its rows are
+  -- isolated one by one; this guard keeps the ride steps below running whatever happens there.
+  begin
+    perform siosia_sweep_appointments();
+  exception when others then
+    raise warning 'siosia_sweep: appointments skipped: %', sqlerrm;
+  end;
   -- 0. bookings: a claimed one starts (driver on the way) booking_lead_min before its time; an
   --    unclaimed one opens to normal dispatch booking_open_min before. Either waits while its
   --    people are busy and gives up 15 minutes after the booked time.
@@ -1343,12 +1355,24 @@ returns void language sql security definer set search_path = public as $$
                                       plate = excluded.plate, seats = excluded.seats, updated_at = now();
 $$;
 
--- A place {lat, lng, label} as stored for default pickups / dropoffs (null is fine).
+-- A place {lat, lng, label} as stored for default pickups / dropoffs (null is fine). Never null
+-- itself: a missing lat or lng is false (a null here used to let such a place through). A
+-- coordinate is 0 or at least 1e-300 in size (a smaller one fails its float8 cast); any label
+-- that is not blank is fine, however long (geocoded ones can be): siosia_clean_place cuts it.
 create or replace function public.siosia_valid_place(p jsonb)
 returns boolean language sql immutable as $$
-  select p is null or (jsonb_typeof(p -> 'lat') = 'number' and jsonb_typeof(p -> 'lng') = 'number'
-                       and abs((p ->> 'lat')::float8) <= 90 and abs((p ->> 'lng')::float8) <= 180
-                       and char_length(coalesce(p ->> 'label', '')) between 1 and 120);
+  select p is null or coalesce(jsonb_typeof(p -> 'lat') = 'number' and jsonb_typeof(p -> 'lng') = 'number'
+                               and abs((p ->> 'lat')::numeric) <= 90 and abs((p ->> 'lng')::numeric) <= 180
+                               and ((p ->> 'lat')::numeric = 0 or abs((p ->> 'lat')::numeric) >= 1e-300)
+                               and ((p ->> 'lng')::numeric = 0 or abs((p ->> 'lng')::numeric) >= 1e-300)
+                               and btrim(coalesce(p ->> 'label', '')) <> '', false);
+$$;
+
+-- A valid place as stored: just {lat, lng, label}, the label trimmed and cut to 120 characters
+-- (twin of cleanPlace), never the caller's JSON.
+create or replace function public.siosia_clean_place(p jsonb)
+returns jsonb language sql immutable as $$
+  select jsonb_build_object('lat', (p ->> 'lat')::float8, 'lng', (p ->> 'lng')::float8, 'label', left(btrim(p ->> 'label'), 120));
 $$;
 
 -- Opens a master profile from its link: this device's user becomes that profile (nickname, icon,
@@ -1514,7 +1538,7 @@ begin
   end if;
   if p_role is null or p_role not in ('rider', 'driver') then raise exception 'p_role must be rider or driver'; end if;
   if not siosia_valid_place(p_pickup) or not siosia_valid_place(p_dropoff) then
-    raise exception 'A place is {"lat": number, "lng": number, "label": "1-120 characters"}';
+    raise exception 'A place is {"lat": number, "lng": number, "label": "not blank, kept to 120 characters"}';
   end if;
   if p_vehicle is not null and (
        char_length(coalesce(p_vehicle ->> 'make', '')) not between 1 and 30
@@ -1533,7 +1557,9 @@ begin
    where mb.via_master = m.id and m.id = p_id and m.token_hash <> v_hash;
   insert into master_profiles (id, token_hash, nickname, icon, fixed_fare, active, role, default_pickup, default_dropoff, vehicle, offers)
   values (p_id, v_hash, btrim(p_nickname), nullif(btrim(coalesce(p_icon, '')), ''),
-          p_fixed_fare, true, p_role, p_pickup, p_dropoff, p_vehicle, p_offers)
+          p_fixed_fare, true, p_role,
+          case when p_pickup is null then null else siosia_clean_place(p_pickup) end,
+          case when p_dropoff is null then null else siosia_clean_place(p_dropoff) end, p_vehicle, p_offers)
   on conflict (id) do update set token_hash = excluded.token_hash, nickname = excluded.nickname, icon = excluded.icon,
                                   fixed_fare = excluded.fixed_fare, active = true, role = excluded.role,
                                   default_pickup = excluded.default_pickup, default_dropoff = excluded.default_dropoff,
@@ -1739,7 +1765,8 @@ begin
   if plat is null or plng is null or dlat is null or dlng is null
      or abs(plat) > 90 or abs(dlat) > 90 or abs(plng) > 180 or abs(dlng) > 180
      or p_est_km is null or p_est_min is null or p_est_km <= 0 or p_est_min < 0
-     or p_est_km = 'Infinity'::float8 or p_est_min = 'Infinity'::float8 then
+     -- a day at most: a bigger one overflows est_min / the fare (NaN counts as bigger)
+     or p_est_min > 1440 or p_est_km = 'Infinity'::float8 then
     return siosia_err('bad_input');
   end if;
   select * into c from app_config where id = 1;
@@ -1755,8 +1782,8 @@ begin
   v_fixed := case when (siosia_master_of(v_uid)).role = 'rider' then (siosia_master_of(v_uid)).fixed_fare end;
   insert into rides (rider_id, pickup_lat, pickup_lng, pickup_label, dropoff_lat, dropoff_lng, dropoff_label,
                      est_km, est_min, fare, currency, fare_is_estimate)
-  values (v_uid, plat, plng, left(coalesce(p_pickup ->> 'label', ''), 120),
-          dlat, dlng, left(coalesce(p_dropoff ->> 'label', ''), 120),
+  values (v_uid, plat, plng, left(btrim(coalesce(p_pickup ->> 'label', '')), 120),
+          dlat, dlng, left(btrim(coalesce(p_dropoff ->> 'label', '')), 120),
           round(v_km::numeric, 1), round(v_min)::int,
           coalesce(v_fixed, siosia_fare(v_km::numeric, v_min::numeric)), c.currency,
           v_fixed is null and coalesce(p_fare_is_estimate, false))
@@ -2336,7 +2363,9 @@ begin
   if plat is null or plng is null or dlat is null or dlng is null
      or abs(plat) > 90 or abs(dlat) > 90 or abs(plng) > 180 or abs(dlng) > 180
      or p_est_km is null or p_est_min is null or p_est_km <= 0 or p_est_min < 0
-     or p_est_km = 'Infinity'::float8 or p_est_min = 'Infinity'::float8 then
+     -- a day at most: a bigger one overflows est_min / the fare and, from a series template,
+     -- would fail every sweep (NaN counts as bigger)
+     or p_est_min > 1440 or p_est_km = 'Infinity'::float8 then
     return siosia_err('bad_input');
   end if;
   select * into c from app_config where id = 1;
@@ -2378,8 +2407,9 @@ begin
   insert into rides (rider_id, status, scheduled_for, dispatch_started_at, pickup_lat, pickup_lng, pickup_label,
                      dropoff_lat, dropoff_lng, dropoff_label, est_km, est_min, fare, currency, fare_is_estimate,
                      appointment_id, leg, auto_booked)
-  values (p_uid, 'scheduled', p_scheduled_for, p_scheduled_for, plat, plng, left(coalesce(p_pickup ->> 'label', ''), 120),
-          dlat, dlng, left(coalesce(p_dropoff ->> 'label', ''), 120),
+  values (p_uid, 'scheduled', p_scheduled_for, p_scheduled_for,
+          plat, plng, left(btrim(coalesce(p_pickup ->> 'label', '')), 120),
+          dlat, dlng, left(btrim(coalesce(p_dropoff ->> 'label', '')), 120),
           round(v_km::numeric, 1), round(v_min)::int,
           coalesce(v_fixed, siosia_fare(v_km::numeric, v_min::numeric)), c.currency,
           v_fixed is null and coalesce(p_fare_is_estimate, false),
@@ -2414,16 +2444,22 @@ begin
   select * into c from app_config where id = 1;
   select * into s from appointment_series where id = p_series;
   if s.id is null then return; end if;
-  for t in select value from jsonb_array_elements(s.ride_templates) loop
+  for t in select value from jsonb_array_elements(case when jsonb_typeof(s.ride_templates) = 'array'
+                                                      then s.ride_templates else '[]'::jsonb end) loop
     v_user := case when t ->> 'passenger' = 'client' then s.client_id else s.provider_id end;
     for a in select * from appointments where series_id = s.id and status = 'accepted' and starts_at > now() order by starts_at loop
-      v_at := case when t ->> 'leg' = 'there' then a.starts_at else a.starts_at + make_interval(mins => a.duration_min) end
-              + make_interval(mins => (t ->> 'offsetMin')::int);
-      continue when v_at < now() + make_interval(mins => c.booking_min_lead_min)
-                 or v_at > now() + make_interval(days => c.booking_max_days);
-      continue when exists (select 1 from rides where appointment_id = a.id and rider_id = v_user and leg = t ->> 'leg');
-      perform siosia_book_for(v_user, t -> 'pickup', t -> 'dropoff', (t ->> 'estKm')::float8, (t ->> 'estMin')::float8,
-                              coalesce((t ->> 'fareIsEstimate')::boolean, false), v_at, a.id, t ->> 'leg', true);
+      begin
+        v_at := case when t ->> 'leg' = 'there' then a.starts_at else a.starts_at + make_interval(mins => a.duration_min) end
+                + make_interval(mins => (t ->> 'offsetMin')::int);
+        continue when v_at < now() + make_interval(mins => c.booking_min_lead_min)
+                   or v_at > now() + make_interval(days => c.booking_max_days);
+        continue when exists (select 1 from rides where appointment_id = a.id and rider_id = v_user and leg = t ->> 'leg');
+        perform siosia_book_for(v_user, t -> 'pickup', t -> 'dropoff', (t ->> 'estKm')::float8, (t ->> 'estMin')::float8,
+                                coalesce((t ->> 'fareIsEstimate')::boolean, false), v_at, a.id, t ->> 'leg', true);
+      exception when others then
+        -- A bad template (or booking) must never stop the sweep, which runs inside every API call.
+        raise warning 'siosia_materialize_templates: series % occurrence % skipped: %', s.id, a.id, sqlerrm;
+      end;
     end loop;
   end loop;
   update appointment_series set templates_at = now() where id = s.id;
@@ -2437,18 +2473,28 @@ returns void language plpgsql security definer set search_path = public as $$
 declare a appointments; s appointment_series; c app_config; v_slot int; v_max int;
 begin
   select * into c from app_config where id = 1;
+  -- Every row below is handled in its own block: one bad row is skipped with a warning and never
+  -- fails the sweep, which runs inside every API call (and every 10 s from pg_cron).
   -- An unanswered series expires as a whole when its first occurrence starts (one notification).
   for s in select * from appointment_series where status = 'requested' and first_start <= now() for update skip locked loop
-    update appointments set status = 'expired', ended_at = now() where series_id = s.id and status = 'requested';
-    update appointment_series set status = 'expired' where id = s.id;
-    select * into a from appointments where series_id = s.id order by seq limit 1;
-    perform siosia_push_appt(s.client_id, 'appt_expired', a.id, siosia_appt_params(a) || siosia_series_params(s.id));
+    begin
+      update appointments set status = 'expired', ended_at = now() where series_id = s.id and status = 'requested';
+      update appointment_series set status = 'expired' where id = s.id;
+      select * into a from appointments where series_id = s.id order by seq limit 1;
+      perform siosia_push_appt(s.client_id, 'appt_expired', a.id, siosia_appt_params(a) || siosia_series_params(s.id));
+    exception when others then
+      raise warning 'siosia_sweep_appointments: series % skipped: %', s.id, sqlerrm;
+    end;
   end loop;
   -- A request unanswered at its start expires; the client is told.
   for a in select * from appointments where status = 'requested' and series_id is null and starts_at <= now()
            for update skip locked loop
-    update appointments set status = 'expired', ended_at = now() where id = a.id;
-    perform siosia_push_appt(a.client_id, 'appt_expired', a.id, siosia_appt_params(a));
+    begin
+      update appointments set status = 'expired', ended_at = now() where id = a.id;
+      perform siosia_push_appt(a.client_id, 'appt_expired', a.id, siosia_appt_params(a));
+    exception when others then
+      raise warning 'siosia_sweep_appointments: appointment % skipped: %', a.id, sqlerrm;
+    end;
   end loop;
   -- An accepted appointment is done at its end ("in progress" is derived, never stored).
   update appointments set status = 'done', ended_at = starts_at + make_interval(mins => duration_min)
@@ -2457,21 +2503,31 @@ begin
   select coalesce(max(x), 0) into v_max from unnest(c.appt_reminder_min) x;
   for a in select * from appointments where status in ('requested', 'accepted') and starts_at > now()
              and starts_at <= now() + make_interval(mins => v_max) for update skip locked loop
-    foreach v_slot in array c.appt_reminder_min loop
-      if now() >= a.starts_at - make_interval(mins => v_slot) and a.requested_at <= a.starts_at - make_interval(mins => v_slot)
-         and not (v_slot = any (a.reminded)) then
-        update appointments set reminded = reminded || v_slot where id = a.id and not (v_slot = any (reminded));
-        if found then
-          perform siosia_push_appt(a.client_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'client'));
-          perform siosia_push_appt(a.provider_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'provider'));
+    begin
+      foreach v_slot in array c.appt_reminder_min loop
+        if now() >= a.starts_at - make_interval(mins => v_slot) and a.requested_at <= a.starts_at - make_interval(mins => v_slot)
+           and not (v_slot = any (a.reminded)) then
+          update appointments set reminded = reminded || v_slot where id = a.id and not (v_slot = any (reminded));
+          if found then
+            perform siosia_push_appt(a.client_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'client'));
+            perform siosia_push_appt(a.provider_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'provider'));
+          end if;
         end if;
-      end if;
-    end loop;
+      end loop;
+    exception when others then
+      raise warning 'siosia_sweep_appointments: reminders of % skipped: %', a.id, sqlerrm;
+    end;
   end loop;
   -- Series rides: occurrences that came within the booking horizon (once a day per series).
   for s in select * from appointment_series where status = 'answered' and ride_templates <> '[]'::jsonb
              and (templates_at is null or templates_at < now() - interval '1 day') for update skip locked loop
-    perform siosia_materialize_templates(s.id);
+    begin
+      perform siosia_materialize_templates(s.id);
+    exception when others then
+      raise warning 'siosia_sweep_appointments: templates of series % skipped: %', s.id, sqlerrm;
+      -- Still counts as this day's run, so a broken series is not retried on every call.
+      update appointment_series set templates_at = now() where id = s.id;
+    end;
   end loop;
 end $$;
 
@@ -2594,19 +2650,21 @@ begin
      + (select count(*) from appointment_series where client_id = v_uid and requested_at > now() - interval '1 day') >= 20 then
     return siosia_err('too_many');
   end if;
+  -- The place as siosia_clean_place keeps it: the label trimmed and cut to the columns' 120.
   if cardinality(v_starts) > 1 then
     insert into appointment_series (client_id, provider_id, service_id, rule, first_start, duration_min, count, until,
                                     place_lat, place_lng, place_label, note, price, currency)
     values (v_uid, v_prov, p_service, case when v_every = 1 then 'weekly' else 'biweekly' end, v_starts[1], p_duration,
             cardinality(v_starts), v_starts[cardinality(v_starts)],
-            (v_place ->> 'lat')::float8, (v_place ->> 'lng')::float8, left(v_place ->> 'label', 120), v_note, v_price, c.currency)
+            (v_place ->> 'lat')::float8, (v_place ->> 'lng')::float8, left(btrim(v_place ->> 'label'), 120),
+            v_note, v_price, c.currency)
     returning * into s;
   end if;
   for k in 1 .. cardinality(v_starts) loop
     insert into appointments (client_id, provider_id, service_id, starts_at, duration_min, place_lat, place_lng, place_label,
                               note, price, currency, series_id, seq)
     values (v_uid, v_prov, p_service, v_starts[k], p_duration,
-            (v_place ->> 'lat')::float8, (v_place ->> 'lng')::float8, left(v_place ->> 'label', 120),
+            (v_place ->> 'lat')::float8, (v_place ->> 'lng')::float8, left(btrim(v_place ->> 'label'), 120),
             v_note, v_price, c.currency, s.id, case when s.id is null then null else k end)
     returning * into a;
     if k = 1 then v_first := a; end if;
@@ -2723,7 +2781,8 @@ end $$;
 create or replace function public.siosia_set_ride_template(p_series uuid, p_template jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); s appointment_series; a appointments;
-  v_role text; v_leg text := p_template ->> 'leg'; v_off int; t jsonb;
+  v_role text; v_leg text := p_template ->> 'leg'; v_off int; t jsonb; c app_config; v_same boolean;
+  v_km numeric; v_min numeric;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   if siosia_master_role(v_uid) = 'driver' then return siosia_err('driver_only'); end if;
@@ -2735,32 +2794,57 @@ begin
     return siosia_err('not_accepted');
   end if;
   if v_leg is null or v_leg not in ('there', 'back') then return siosia_err('bad_leg'); end if;
-  if jsonb_typeof(p_template -> 'offsetMin') <> 'number' or jsonb_typeof(p_template -> 'estKm') <> 'number'
-     or jsonb_typeof(p_template -> 'estMin') <> 'number' or (p_template ->> 'estKm')::float8 <= 0
-     or (p_template ->> 'estMin')::float8 < 0
-     or jsonb_typeof(p_template -> 'pickup') <> 'object' or jsonb_typeof(p_template -> 'dropoff') <> 'object'
+  -- Null-safe: a missing field is a bad template, never a pass (null <> 'number' is not true).
+  if jsonb_typeof(p_template -> 'offsetMin') is distinct from 'number' or jsonb_typeof(p_template -> 'estKm') is distinct from 'number'
+     or jsonb_typeof(p_template -> 'estMin') is distinct from 'number'
+     or jsonb_typeof(p_template -> 'pickup') is distinct from 'object' or jsonb_typeof(p_template -> 'dropoff') is distinct from 'object'
      or not siosia_valid_place(p_template -> 'pickup') or not siosia_valid_place(p_template -> 'dropoff') then
     return siosia_err('bad_input');
   end if;
-  v_off := (p_template ->> 'offsetMin')::int;
+  -- Bounded like a booking (siosia_book_for): what the sweep books later must never overflow
+  -- there. All in numeric (max_trip_km too), so no number however huge or tiny fails a cast: the
+  -- estimates are kept to 3 decimals (round3 in the engine) and a trip that rounds to 0 km is none.
+  select * into c from app_config where id = 1;
+  v_km := (p_template ->> 'estKm')::numeric;
+  v_min := (p_template ->> 'estMin')::numeric;
+  if round(v_km, 3) <= 0 or v_min < 0 or v_min > 1440 then return siosia_err('bad_input'); end if;
+  -- Over the longest trip is too far, as for a booking (not a bad template).
+  if v_km > c.max_trip_km::numeric then return siosia_err('too_far'); end if;
+  if abs((p_template ->> 'offsetMin')::numeric) > 1440 then return siosia_err('bad_time'); end if;
+  -- Whole minutes, cut toward 0 like Math.trunc (a text cast to int refuses -30.5).
+  v_off := trunc((p_template ->> 'offsetMin')::numeric)::int;
   if (v_leg = 'there' and v_off not between -1440 and -1) or (v_leg = 'back' and v_off not between -s.duration_min and 1440) then
     return siosia_err('bad_time');
   end if;
   v_role := case when s.client_id = v_uid then 'client' else 'provider' end;
-  t := jsonb_build_object('passenger', v_role, 'leg', v_leg, 'pickup', p_template -> 'pickup', 'dropoff', p_template -> 'dropoff',
-                          'offsetMin', v_off, 'estKm', (p_template ->> 'estKm')::float8, 'estMin', (p_template ->> 'estMin')::float8,
-                          'fareIsEstimate', coalesce((p_template ->> 'fareIsEstimate')::boolean, false));
-  update appointment_series
-     set ride_templates = coalesce((select jsonb_agg(x) from jsonb_array_elements(ride_templates) x
-                                     where not (x ->> 'passenger' = v_role and x ->> 'leg' = v_leg)), '[]'::jsonb) || t
-   where id = s.id;
+  -- Stored clean (only the known keys, places as siosia_save_home keeps them), never the caller's JSON.
+  t := jsonb_build_object('passenger', v_role, 'leg', v_leg,
+                          'pickup', siosia_clean_place(p_template -> 'pickup'), 'dropoff', siosia_clean_place(p_template -> 'dropoff'),
+                          'offsetMin', v_off, 'estKm', round(v_km, 3)::float8, 'estMin', round(v_min, 3)::float8,
+                          'fareIsEstimate', coalesce(p_template -> 'fareIsEstimate' = 'true'::jsonb, false));
+  -- The same template again changes nothing and tells nobody (a party cannot flood the other).
+  -- (case, not and: only a list is read as one, whatever the planner does)
+  v_same := case when jsonb_typeof(s.ride_templates) = 'array'
+                 then exists (select 1 from jsonb_array_elements(s.ride_templates) x
+                               where x ->> 'passenger' = v_role and x ->> 'leg' = v_leg and x = t)
+                 else false end;
+  if not v_same then
+    update appointment_series
+       set ride_templates = coalesce((select jsonb_agg(x)
+                                        from jsonb_array_elements(case when jsonb_typeof(ride_templates) = 'array'
+                                                                       then ride_templates else '[]'::jsonb end) x
+                                       where not (x ->> 'passenger' = v_role and x ->> 'leg' = v_leg)), '[]'::jsonb) || t
+     where id = s.id;
+  end if;
   perform siosia_materialize_templates(s.id);
   select * into a from appointments where series_id = s.id and status in ('requested', 'accepted') and starts_at > now()
    order by starts_at limit 1;
   if a.id is null then select * into a from appointments where series_id = s.id order by seq desc limit 1; end if;
-  perform siosia_push_appt(case when v_role = 'client' then s.provider_id else s.client_id end, 'appt_ride_added', a.id,
-                           siosia_appt_params(a) || siosia_series_params(s.id)
-                           || jsonb_build_object('leg', v_leg, 'who', siosia_nick(v_uid), 'repeat', true));
+  if not v_same then
+    perform siosia_push_appt(case when v_role = 'client' then s.provider_id else s.client_id end, 'appt_ride_added', a.id,
+                             siosia_appt_params(a) || siosia_series_params(s.id)
+                             || jsonb_build_object('leg', v_leg, 'who', siosia_nick(v_uid), 'repeat', true));
+  end if;
   return siosia_ok(siosia_appointment_json(a, v_uid));
 end $$;
 
@@ -2774,7 +2858,9 @@ begin
   if s.id is null then return siosia_err('not_found'); end if;
   v_role := case when s.client_id = v_uid then 'client' else 'provider' end;
   update appointment_series
-     set ride_templates = coalesce((select jsonb_agg(x) from jsonb_array_elements(ride_templates) x
+     set ride_templates = coalesce((select jsonb_agg(x)
+                                      from jsonb_array_elements(case when jsonb_typeof(ride_templates) = 'array'
+                                                                     then ride_templates else '[]'::jsonb end) x
                                      where not (x ->> 'passenger' = v_role and x ->> 'leg' = p_leg)), '[]'::jsonb)
    where id = s.id;
   perform siosia_notify(s.client_id);
@@ -2849,8 +2935,7 @@ declare v_err text := siosia_guard(true); v_place jsonb := case when p_place is 
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   if v_place is not null and (not siosia_valid_place(v_place) or v_place -> 'lat' is null) then return siosia_err('bad_input'); end if;
-  update profiles set home = case when v_place is null then null else jsonb_build_object(
-      'lat', (v_place ->> 'lat')::float8, 'lng', (v_place ->> 'lng')::float8, 'label', left(v_place ->> 'label', 120)) end
+  update profiles set home = case when v_place is null then null else siosia_clean_place(v_place) end
    where user_id = auth.uid();
   return siosia_ok(siosia_profile_json(auth.uid()));
 end $$;
@@ -2892,7 +2977,7 @@ begin
 end $$;
 
 -- The calendar function's read (FR-136, NFR-20): one appointment ('a'), series ('s', as its first
--- occurrence with the series dates) or booked ride ('r') as one of its two parties sees it — only
+-- live occurrence with the series dates) or booked ride ('r') as one of its two parties sees it — only
 -- with that viewer's valid token, otherwise null (the function answers 404). Service role only.
 create or replace function public.siosia_calendar_view(p_kind text, p_id uuid, p_public text, p_token text)
 returns jsonb language plpgsql stable security definer set search_path = public, extensions as $$
@@ -2911,7 +2996,10 @@ begin
   elsif p_kind = 's' then
     select * into s from appointment_series where id = p_id and v_viewer in (client_id, provider_id);
     if s.id is null then return null; end if;
-    select * into a from appointments where series_id = s.id order by seq limit 1;
+    -- The first live occurrence stands for the series: a declined / cancelled first date must not
+    -- mark every date of a confirmed series as cancelled.
+    select * into a from appointments where series_id = s.id
+     order by (status in ('declined', 'cancelled', 'expired')), seq limit 1;
     if a.id is null then return null; end if;
     v_view := siosia_appointment_json(a, v_viewer);
   else

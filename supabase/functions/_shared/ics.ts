@@ -98,8 +98,19 @@ const W = {
 
 const serviceName = (a: IcsAppointment, l: Lang) => a.service?.name[l] || a.service?.name.en || a.serviceId;
 const other = (a: IcsAppointment) => (a.role === "client" ? a.provider.nickname : a.client.nickname);
-const link = (ctx: IcsContext) => (ctx.siteUrl ? `${ctx.siteUrl.replace(/[?#].*$/, "")}?open=planned` : null);
+const link = (ctx: IcsContext) => (ctx.siteUrl ? `${bare(ctx.siteUrl).replace(/[?#].*$/, "")}?open=planned` : null);
 const gone = (status: string) => status === "cancelled" || status === "declined" || status === "expired";
+const icsStatus = (status: string) => (gone(status) ? "CANCELLED" : status === "requested" ? "TENTATIVE" : "CONFIRMED");
+
+/** A series as its one calendar event: the status is the series' own (every date gone → cancelled,
+ *  not answered yet → requested, else confirmed), never that of the occurrence the view was read
+ *  from, which may be a declined clash or a cancelled date of a live series (C4). No ride lines. */
+function asSeries(a: IcsAppointment): IcsAppointment {
+  const s = a.series;
+  if (!s) return a;
+  const allGone = s.status === "cancelled" || s.status === "expired" || (s.starts.length > 0 && s.gaps.length >= s.starts.length);
+  return { ...a, status: allGone ? "cancelled" : s.status === "requested" ? "requested" : "accepted", rides: [] };
+}
 
 export function appointmentTitle(a: IcsAppointment, lang: string): string {
   const l = lng(lang);
@@ -210,10 +221,23 @@ export function vtimezone(tz: string, from: number, to: number): string[] {
 
 // ---------------------------------------------------------------- .ics
 
-/** RFC 5545 text escaping. */
+/** RFC 5545 text escaping. Every line break a reader may honour (CRLF, CR, LF, NEL, LS, PS) becomes
+ *  \n and the other control characters go (a tab becomes a space), so user text can never end its
+ *  content line and start one of its own (C15). */
 export function escapeText(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  return String(s ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r\n|[\r\n\u0085\u2028\u2029]/g, "\\n")
+    .replace(/\t/g, " ")
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
+    .replace(/[\x00-\x1f\x7f]/g, "");
 }
+
+/** A value written without escaping (UID, URL): ids and config, but never a line break or control. */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const bare = (s: string) => String(s ?? "").replace(/[\x00-\x1f\x7f\u0085\u2028\u2029]/g, "");
 
 /** Folds a content line at 75 octets (UTF-8), never inside a character. */
 export function fold(line: string): string {
@@ -242,18 +266,25 @@ function calendar(events: string[], extra: string[] = []): string {
 
 const alarm = (min: number, summary: string) => ["BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${escapeText(summary)}`, `TRIGGER:-PT${min}M`, "END:VALARM"];
 
+/** LOCATION when there is a label, GEO only from two real numbers (the database may hold a place
+ *  with a missing coordinate or label: no line rather than a crash or "GEO:NaN"). */
 function placeLines(p: IcsPlace | null): string[] {
-  return p ? [`LOCATION:${escapeText(p.label)}`, `GEO:${p.lat.toFixed(6)};${p.lng.toFixed(6)}`] : [];
+  if (!p) return [];
+  const out = p.label ? [`LOCATION:${escapeText(p.label)}`] : [];
+  if (typeof p.lat === "number" && typeof p.lng === "number" && Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
+    out.push(`GEO:${p.lat.toFixed(6)};${p.lng.toFixed(6)}`);
+  }
+  return out;
 }
 
 /** One appointment (C3 "This date"). */
 export function appointmentIcs(a: IcsAppointment, ctx: IcsContext): string {
   const summary = appointmentTitle(a, ctx.lang);
-  const status = gone(a.status) ? "CANCELLED" : a.status === "requested" ? "TENTATIVE" : "CONFIRMED";
+  const status = icsStatus(a.status);
   const back = link(ctx);
   const ev = [
     "BEGIN:VEVENT",
-    `UID:${a.id}`,
+    `UID:${bare(a.id)}`,
     `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
     `DTSTART:${utcStamp(a.startsAt)}`,
     `DTEND:${utcStamp(a.endsAt)}`,
@@ -277,11 +308,12 @@ export function seriesIcs(a: IcsAppointment, ctx: IcsContext): string {
   const last = s.starts[s.starts.length - 1] ?? a.startsAt;
   const durMs = a.endsAt - a.startsAt;
   const summary = appointmentTitle(a, ctx.lang);
-  const allGone = s.status === "cancelled" || s.status === "expired" || (s.starts.length > 0 && s.gaps.length >= s.starts.length);
+  const view = asSeries(a);
+  const status = icsStatus(view.status);
   const back = link(ctx);
   const ev = [
     "BEGIN:VEVENT",
-    `UID:${s.id}`,
+    `UID:${bare(s.id)}`,
     `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
     `DTSTART;TZID=${tz}:${localStamp(first, tz)}`,
     `DTEND;TZID=${tz}:${localStamp(first + durMs, tz)}`,
@@ -289,10 +321,10 @@ export function seriesIcs(a: IcsAppointment, ctx: IcsContext): string {
     ...s.gaps.map((g) => `EXDATE;TZID=${tz}:${localStamp(g, tz)}`),
     `SUMMARY:${escapeText(summary)}`,
     ...placeLines(a.place),
-    `DESCRIPTION:${escapeText(appointmentDetails({ ...a, rides: [] }, ctx))}`,
+    `DESCRIPTION:${escapeText(appointmentDetails(view, ctx))}`,
     ...(back ? [`URL:${back}`] : []),
-    `STATUS:${allGone ? "CANCELLED" : "CONFIRMED"}`,
-    ...(allGone ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary))),
+    `STATUS:${status}`,
+    ...(status === "CANCELLED" ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary))),
     "END:VEVENT"
   ];
   return calendar(ev, vtimezone(tz, first - 86_400_000, last + durMs + 86_400_000));
@@ -306,7 +338,7 @@ export function rideIcs(r: IcsRide, ctx: IcsContext): string {
   const back = link(ctx);
   const ev = [
     "BEGIN:VEVENT",
-    `UID:${r.id}`,
+    `UID:${bare(r.id)}`,
     `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
     `DTSTART:${utcStamp(at)}`,
     `DTEND:${utcStamp(at + Math.max(5, Math.round(r.estMin)) * 60_000)}`,
@@ -343,7 +375,7 @@ export function appointmentGoogleLink(a: IcsAppointment, ctx: IcsContext, wholeS
     end: start + (a.endsAt - a.startsAt),
     tz: ctx.timezone,
     location: a.place?.label ?? null,
-    details: appointmentDetails(s ? { ...a, rides: [] } : a, ctx),
+    details: appointmentDetails(s ? asSeries(a) : a, ctx),
     recur: s ? `RRULE:FREQ=WEEKLY;INTERVAL=${s.rule === "biweekly" ? 2 : 1};COUNT=${s.count}` : undefined
   });
 }

@@ -41,8 +41,9 @@ export interface DispatchResult {
   dropped: number;
 }
 
-/** Appointment notifications open Planned (FR-125); ride ones open the app (the active ride shows). */
-export const openUrl = (kind: PushKind): string => (kind.startsWith("appt_") ? "./?open=planned" : "./");
+/** Appointment and booking notifications open Planned (FR-125: a booking's Take it lives there in 2.0,
+ *  "./" is S1); ride ones open the app (the active ride shows). A held ride / D1 still wins on launch. */
+export const openUrl = (kind: PushKind): string => (kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./");
 
 /** A message is claimed at most this many times (= runs); then it is given up. */
 export const MAX_ATTEMPTS = 5;

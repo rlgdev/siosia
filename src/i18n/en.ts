@@ -49,6 +49,8 @@ export const en = {
   "home.signIn": "Keep my account across devices",
   "home.profile": "Profile",
   "home.guide": "How it works",
+  "home.receiptRider": "Your ride is over — pay and rate",
+  "home.receiptDriver": "Your ride is over — collect the fare and rate",
 
   "profile.title": "Profile",
   "profile.nickname": "Nickname",
@@ -153,6 +155,7 @@ export const en = {
   "active.seats": "{n} seats",
   "active.waitingFix": "Waiting for the driver's position…",
   "active.cancelledByDriver": "The driver ended the ride: {reason}.",
+  "active.appointmentCancelled": "The appointment was cancelled, so this ride was cancelled too.",
   "active.awayFromPin": "You are {m} m from the pickup pin — your driver is heading to the pin. Walk back to it or turn sharing on.",
 
   "receipt.title": "Trip complete",
@@ -294,6 +297,7 @@ export const en = {
   "trip.reasonTitle": "Why are you cancelling?",
   "trip.noShowIn": "No-show available in {t}",
   "trip.riderCancelled": "The rider cancelled the ride.",
+  "trip.appointmentCancelled": "The appointment this ride was for was cancelled, so the ride is cancelled too.",
   "trip.distance": "Driven: {km} km",
 
   "reason.no_show": "Rider no-show",
@@ -302,6 +306,7 @@ export const en = {
   "reason.other": "Other",
   "reason.driver_lost": "driver lost connection",
   "reason.late_cancel": "late cancellation",
+  "reason.appointment_cancelled": "the appointment was cancelled",
 
   "summary.title": "Trip summary",
   "summary.collected": "Collected",
@@ -346,7 +351,7 @@ export const en = {
   "err.no_account": "No account uses this email yet. Link it on your first phone, then sign in here.",
   "err.bad_transfer": "This code is not valid or has expired. Show a new one in the other app.",
   "err.bad_time": "That pickup time is too soon or too far ahead.",
-  "err.too_many": "You already have 5 upcoming bookings.",
+  "err.too_many": "You've reached the limit of open requests or bookings — finish or cancel one first.",
   "err.overlap": "You already have a booking around that time.",
   "err.bad_link": "This link is not valid any more. Ask the organiser for a new one.",
   "err.rider_only": "This shared profile is for riding only.",
@@ -389,7 +394,10 @@ export const en = {
   "catalog.duration": "usually {d}",
   "catalog.perHour": "per hour",
   "catalog.nobody": "Nobody offers this yet",
+  "catalog.error": "Couldn't load everything Siosia offers.",
   "request.title": "Request",
+  "request.error": "Couldn't load this service.",
+  "request.gone": "This service isn't available any more.",
   "request.provider": "Who",
   "request.pickProvider": "Choose who you ask.",
   "request.start": "Date and start",

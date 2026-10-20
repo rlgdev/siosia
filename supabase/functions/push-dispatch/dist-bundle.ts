@@ -166,7 +166,7 @@ function pushText(kind, params, lang, tz, id) {
 }
 
 // supabase/functions/push-dispatch/dispatch.ts
-var openUrl = (kind) => kind.startsWith("appt_") ? "./?open=planned" : "./";
+var openUrl = (kind) => kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 var MAX_ATTEMPTS = 5;
 async function dispatch(deps, limit = 100) {
   const result = { sent: 0, failed: 0, dropped: 0 };

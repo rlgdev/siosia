@@ -10,7 +10,7 @@ import { Money, Page, Panel } from "../components/ui";
 import type { AppointmentView, Earnings, HistoryItem, RideView } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
-import { useApp, useStore } from "../state/store";
+import { useApp, useListsKey, useStore } from "../state/store";
 import { Route } from "./Bookings";
 import { EntryIcon, localText } from "./Catalog";
 
@@ -52,10 +52,11 @@ function HistoryList() {
     );
     if (isDriver) void store.api.earnings().then(setTotals, () => {});
   }, [store, isDriver]);
-  const my = app.my;
+  // Not on every MyState: an online driver's heartbeat brings one every 4 s.
+  const listsKey = useListsKey();
   useEffect(() => {
     load();
-  }, [load, my]);
+  }, [load, listsKey]);
   useEffect(() => {
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);

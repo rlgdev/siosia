@@ -6,7 +6,7 @@ import { MapView, type MapMarker } from "../../components/MapView";
 import { Money, Notice, Sheet, TopBar, useBusy } from "../../components/ui";
 import type { DriverCancelReason, Earnings, LatLng, RideView } from "../../core/types";
 import { ServerError } from "../../core/types";
-import { useI18n } from "../../i18n";
+import { useI18n, type Translate } from "../../i18n";
 import { isIOS, readPref, writePref } from "../../services/device";
 import { clearTripKm, useDriverRuntime, useLiveRoute } from "../../state/runtime";
 import { useApp, useStore } from "../../state/store";
@@ -16,6 +16,15 @@ import { OfferCard } from "./OfferCard";
 import { MasterChip } from "../../components/ProfileIcon";
 import { VehicleSetup } from "./VehicleForm";
 import { ScreenOnToggle } from "../../components/ScreenOn";
+
+/** What the driver is told when their ride ended without them (null: nothing to say). */
+export function driverEndedNotice(t: Translate, r: RideView): string | null {
+  if (r.status !== "cancelled") return null;
+  if (r.cancelledBy === "rider") return t("trip.riderCancelled");
+  // Cancelling an appointment also ends its rides, even one already under way to the pickup.
+  if (r.cancelReason === "appointment_cancelled") return t("trip.appointmentCancelled");
+  return null;
+}
 
 export function DriverApp() {
   const app = useApp();
@@ -58,7 +67,10 @@ function DriverMain() {
       .getRide(id)
       .then((r) => {
         if (r.status === "completed" && r.role === "driver") setEnded(r);
-        else if (r.status === "cancelled" && r.cancelledBy === "rider") setNotice(t("trip.riderCancelled"));
+        else {
+          const n = driverEndedNotice(t, r);
+          if (n) setNotice(n);
+        }
       })
       .catch(() => {});
   }, [rideId, watched, api, t]);

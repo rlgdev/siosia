@@ -1,18 +1,20 @@
 // Component tests of the 2.0 screens (spec §13 "Component"): C1 catalog, C2 request form, P1
 // planned, C3 appointment, H1 history, S2 additions — EN and PL, with a fake backend.
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { toLocalInput } from "../../src/components/datetime";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
-import type { AppointmentView, CatalogItem, Lang, Place, Profile, RideView } from "../../src/core/types";
+import type { AppointmentView, CatalogItem, Lang, MyState, Place, Profile, RideView } from "../../src/core/types";
 import { I18nProvider } from "../../src/i18n";
 import { en } from "../../src/i18n/en";
 import { pl } from "../../src/i18n/pl";
+import { LeaveDriveConfirm } from "../../src/App";
 import { AppointmentPanel, derivedPickup } from "../../src/screens/Appointment";
+import { DriverBookingsPanel } from "../../src/screens/Bookings";
 import { Catalog } from "../../src/screens/Catalog";
 import { HistoryScreen } from "../../src/screens/HistoryScreen";
 import { Planned } from "../../src/screens/Planned";
@@ -101,6 +103,27 @@ describe("C1 Catalog (FR-090–092)", () => {
     expect(await screen.findByTestId("catalog-ride")).toBeInTheDocument();
     expect(screen.queryByTestId("catalog-drive")).toBeNull();
   });
+
+  it("still offers Ride from the deployment when the catalog fails, and Retry loads the rest (C9)", async () => {
+    const catalog = vi.fn<() => Promise<CatalogItem[]>>().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(CATALOG);
+    const { store } = setup("en", <Catalog />, { catalog });
+    expect(await screen.findByTestId("catalog-failed")).toHaveTextContent("Couldn't load everything Siosia offers.");
+    expect(screen.getByTestId("catalog-ride")).toHaveTextContent("Ride");
+    expect(screen.queryByTestId("catalog-childcare")).toBeNull();
+    await userEvent.click(screen.getByTestId("catalog-retry"));
+    expect(await screen.findByTestId("catalog-childcare")).toBeEnabled();
+    expect(screen.queryByTestId("catalog-failed")).toBeNull();
+    expect(catalog).toHaveBeenCalledTimes(2);
+    await userEvent.click(screen.getByTestId("catalog-ride"));
+    expect(store.get().screen).toBe("ride");
+  });
+
+  it("says so in Polish when the catalog fails, and a driver profile gets no Ride entry either way", async () => {
+    setup("pl", <Catalog />, { catalog: async () => Promise.reject(new Error("offline")) }, { profile: { ...PROFILE, language: "pl", masterRole: "driver", masterId: "m" } });
+    expect(await screen.findByTestId("catalog-failed")).toHaveTextContent("Nie udało się wczytać");
+    expect(screen.getByTestId("catalog-retry")).toHaveTextContent("Spróbuj ponownie");
+    expect(screen.queryByTestId("catalog-ride")).toBeNull();
+  });
 });
 
 describe("C2 Request form (FR-094, FR-107)", () => {
@@ -146,6 +169,19 @@ describe("C2 Request form (FR-094, FR-107)", () => {
     expect(screen.getByTestId("request-price")).toHaveTextContent(/80[,.]00/);
     await userEvent.selectOptions(screen.getByTestId("request-duration"), "120");
     expect(screen.getByTestId("request-price")).toHaveTextContent(/160[,.]00/);
+  });
+
+  it("never stays on Loading: Retry when the catalog fails, 'not available' when the entry is gone (C12)", async () => {
+    const catalog = vi.fn<() => Promise<CatalogItem[]>>().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(CATALOG);
+    const { unmount } = setup("en", <RequestPanel />, { catalog }, { panel: "request", panelArg: "childcare" });
+    expect(await screen.findByTestId("request-failed")).toHaveTextContent("Couldn't load this service.");
+    await userEvent.click(screen.getByTestId("request-retry"));
+    expect(await screen.findByTestId("request-send")).toBeInTheDocument();
+    expect(catalog).toHaveBeenCalledTimes(2);
+    unmount();
+    setup("pl", <RequestPanel />, { catalog: async () => CATALOG.filter((e) => e.id !== "childcare") }, { panel: "request", panelArg: "childcare" });
+    expect(await screen.findByTestId("request-gone")).toHaveTextContent("Ta usługa nie jest już dostępna.");
+    expect(screen.queryByText("Ładowanie…")).toBeNull();
   });
 });
 
@@ -499,5 +535,106 @@ describe("Add to calendar (FR-135, V28)", () => {
     await userEvent.click(await screen.findByTestId("cal-open"));
     expect(screen.getByTestId("cal-ics")).toHaveAttribute("href", withLink.calendar.ics);
     expect(screen.getByTestId("cal-note")).toHaveTextContent("nie aktualizują się same");
+  });
+});
+
+/** An online driver's state; the heartbeat brings a new one every 4 s. */
+const MY: MyState = {
+  serverNow: Date.now(),
+  ride: null,
+  offer: null,
+  queuedOffers: 0,
+  driverOnline: true,
+  hasVehicle: true,
+  nearbyRequests: 0,
+  pendingReceipt: null,
+  bookings: 0,
+  driverBookings: 0,
+  hasProfile: true,
+  standby: false,
+  openBookings: 2,
+  toAnswer: 0,
+  planned: 1,
+  nextPlanned: null
+};
+
+describe("lists reload on a change, not on every heartbeat (C14)", () => {
+  /** Heartbeats: a new MyState each time with nothing new in it (only the nearby count moves). */
+  const beats = (store: AppStore) => {
+    for (let i = 1; i <= 3; i++) act(() => store.applyMy({ ...MY, serverNow: Date.now(), nearbyRequests: i }));
+  };
+  const KIA = { make: "Kia", model: "Ceed", colour: "Blue", plate: "WX1", seats: 4 };
+
+  it("H1 History reloads when a ride ends, not on the heartbeat", async () => {
+    const timeline = vi.fn(async () => []);
+    const earnings = vi.fn(async () => ({ todayTotal: 0, todayCount: 0, monthTotal: 0, monthCount: 0, currency: "PLN" }));
+    const { store } = setup("en", <HistoryScreen />, { timeline, earnings }, { my: MY, vehicle: KIA });
+    await screen.findByTestId("history-empty");
+    beats(store);
+    await act(async () => {});
+    expect(timeline).toHaveBeenCalledTimes(1);
+    expect(earnings).toHaveBeenCalledTimes(1);
+    // A finished ride waiting for its receipt: History may have changed.
+    act(() => store.applyMy({ ...MY, serverNow: Date.now(), pendingReceipt: booking({ id: "r7", status: "completed", role: "driver" }) }));
+    await waitFor(() => expect(timeline).toHaveBeenCalledTimes(2));
+  });
+
+  it("P1 Planned and C3 reload on a change event (an appointment accepted counts nothing new)", async () => {
+    const planned = vi.fn(async () => ({ appointments: [appt()], rides: [] }));
+    const getAppointment = vi.fn(async () => appt());
+    const myState = vi.fn(async () => ({ ...MY, serverNow: Date.now() }));
+    const { store } = setup(
+      "en",
+      <>
+        <Planned />
+        <AppointmentPanel />
+      </>,
+      { planned, getAppointment, myState },
+      { my: MY, uid: "u", panel: "appointment", panelArg: "a1" }
+    );
+    await screen.findAllByTestId("planned-appointment");
+    await waitFor(() => expect(getAppointment).toHaveBeenCalledTimes(1));
+    beats(store);
+    await act(async () => {});
+    expect(planned).toHaveBeenCalledTimes(1);
+    expect(getAppointment).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await store.refresh(); // what a realtime "changed" event does
+    });
+    await waitFor(() => expect(planned).toHaveBeenCalledTimes(2));
+    expect(getAppointment).toHaveBeenCalledTimes(2);
+  });
+
+  it("D1's bookings panel too", async () => {
+    Object.defineProperty(navigator, "geolocation", { value: { getCurrentPosition: () => {}, watchPosition: () => 1, clearWatch: () => {} }, configurable: true });
+    const bookings = vi.fn(async () => [] as RideView[]);
+    const openBookings = vi.fn(async () => []);
+    const { store } = setup("pl", <DriverBookingsPanel />, { bookings, openBookings }, { my: MY, vehicle: KIA, panel: "bookings" });
+    await waitFor(() => expect(bookings).toHaveBeenCalledTimes(1));
+    beats(store);
+    await act(async () => {});
+    expect(bookings).toHaveBeenCalledTimes(1);
+    expect(openBookings).toHaveBeenCalledTimes(1);
+    act(() => store.applyMy({ ...MY, serverNow: Date.now(), driverBookings: 1 }));
+    await waitFor(() => expect(bookings).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("a notification tapped while online on D1 (C11)", () => {
+  it("asks first, goes offline and opens what was tapped", async () => {
+    let online = true;
+    const setOnline = vi.fn(async (on: boolean) => {
+      online = on;
+    });
+    const myState = async () => ({ ...MY, serverNow: Date.now(), driverOnline: online });
+    const { store } = setup("en", <LeaveDriveConfirm />, { setOnline, myState }, { my: MY, uid: "u", screen: "drive", mode: "drive" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    act(() => store.openFromUrl("./?open=planned"));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("You're online as a driver. Go offline and leave?");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Go offline" }));
+    await waitFor(() => expect(store.get().screen).toBe("planned"));
+    expect(setOnline).toHaveBeenCalledWith(false);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });

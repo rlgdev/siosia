@@ -720,7 +720,9 @@ export class Engine {
   private newRide(uid: string, input: RideRequestInput): RideRow {
     const { pickup, dropoff } = input;
     if (!isValidLatLng(pickup) || !isValidLatLng(dropoff)) throw new ServerError("bad_input");
-    if (!Number.isFinite(input.estKm) || !Number.isFinite(input.estMin) || input.estKm <= 0 || input.estMin < 0)
+    // A day at most: in SQL a bigger one overflows est_min / the fare (and, booked by a series
+    // template, would fail every sweep).
+    if (!Number.isFinite(input.estKm) || !Number.isFinite(input.estMin) || input.estKm <= 0 || input.estMin < 0 || input.estMin > MAX_EST_MIN)
       throw new ServerError("bad_input");
     const area = this.cfg.serviceArea;
     if (area && haversineKm(area, pickup) > area.radiusKm) throw new ServerError("outside_area");
@@ -1489,12 +1491,15 @@ export class Engine {
     if (!s || (s.clientId !== uid && s.providerId !== uid)) throw new ServerError("not_found");
     if (s.status !== "answered" || !this.occurrences(s.id).some((x) => x.status === "accepted")) throw new ServerError("not_accepted");
     if (t.leg !== "there" && t.leg !== "back") throw new ServerError("bad_leg");
+    // Bounded like a booking (bookFor): what the sweep books later must be bookable there. The
+    // estimates are kept to 3 decimals (as in SQL), and a trip that rounds to 0 km is none.
     if (
       !Number.isFinite(t.offsetMin) ||
       !Number.isFinite(t.estKm) ||
       !Number.isFinite(t.estMin) ||
-      t.estKm <= 0 ||
+      round3(t.estKm) <= 0 ||
       t.estMin < 0 ||
+      t.estMin > MAX_EST_MIN ||
       !t.pickup ||
       !t.dropoff ||
       !isValidLatLng(t.pickup) ||
@@ -1503,22 +1508,35 @@ export class Engine {
       !String(t.dropoff.label ?? "").trim()
     )
       throw new ServerError("bad_input");
+    // Over the longest trip is too far, as for a booking (not a bad template).
+    if (t.estKm > this.cfg.maxTripKm) throw new ServerError("too_far");
     const off = Math.trunc(t.offsetMin);
     if ((t.leg === "there" && (off < -1440 || off > -1)) || (t.leg === "back" && (off < -s.durationMin || off > 1440))) throw new ServerError("bad_time");
     const role: PartyRole = s.clientId === uid ? "client" : "provider";
-    s.rideTemplates = [
-      ...s.rideTemplates.filter((x) => !(x.passenger === role && x.leg === t.leg)),
-      { passenger: role, leg: t.leg, pickup: cleanPlace(t.pickup), dropoff: cleanPlace(t.dropoff), offsetMin: off, estKm: t.estKm, estMin: t.estMin, fareIsEstimate: !!t.fareIsEstimate }
-    ];
+    // Stored clean: only the known keys (cleanPlace drops anything else in the places).
+    const tpl: StoredTemplate = {
+      passenger: role,
+      leg: t.leg,
+      pickup: cleanPlace(t.pickup),
+      dropoff: cleanPlace(t.dropoff),
+      offsetMin: off,
+      estKm: round3(t.estKm),
+      estMin: round3(t.estMin),
+      fareIsEstimate: t.fareIsEstimate === true
+    };
+    // The same template again changes nothing and tells nobody (a party cannot flood the other).
+    const same = s.rideTemplates.some((x) => x.passenger === role && x.leg === t.leg && sameTemplate(x, tpl));
+    if (!same) s.rideTemplates = [...s.rideTemplates.filter((x) => !(x.passenger === role && x.leg === t.leg)), tpl];
     this.materialize(s.id);
     const occ = this.occurrences(s.id);
     const a = occ.find((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now) ?? occ[occ.length - 1];
-    this.pushAppt(role === "client" ? s.providerId : s.clientId, "appt_ride_added", a, {
-      ...this.seriesParams(s),
-      leg: t.leg,
-      who: this.db.users[uid]?.nickname ?? "",
-      repeat: true
-    });
+    if (!same)
+      this.pushAppt(role === "client" ? s.providerId : s.clientId, "appt_ride_added", a, {
+        ...this.seriesParams(s),
+        leg: t.leg,
+        who: this.db.users[uid]?.nickname ?? "",
+        repeat: true
+      });
     this.notifyAppt(a);
     return this.apptView(a, uid);
   }
@@ -1652,17 +1670,22 @@ export class Engine {
     const s = this.db.series?.[seriesId];
     if (!s) return;
     const { minLeadMin, maxDays } = this.cfg.booking;
-    for (const t of s.rideTemplates) {
-      const user = t.passenger === "client" ? s.clientId : s.providerId;
-      for (const a of this.occurrences(s.id).filter((x) => x.status === "accepted" && x.startsAt > this.now)) {
-        const at = (t.leg === "there" ? a.startsAt : this.endOf(a)) + t.offsetMin * 60_000;
-        if (at < this.now + minLeadMin * 60_000 || at > this.now + maxDays * 86_400_000) continue;
-        if (Object.values(this.db.rides).some((r) => r.appointmentId === a.id && r.riderId === user && r.leg === t.leg)) continue;
-        try {
-          this.bookFor(user, { pickup: t.pickup, dropoff: t.dropoff, estKm: t.estKm, estMin: t.estMin, fareIsEstimate: t.fareIsEstimate, scheduledFor: at }, a.id, t.leg, true);
-        } catch {
-          /* no room (open bookings) or no longer allowed: the next run tries again */
+    for (const t of Array.isArray(s.rideTemplates) ? s.rideTemplates : []) {
+      // A bad template (or booking) must never stop the sweep, which runs inside every call.
+      try {
+        const user = t.passenger === "client" ? s.clientId : s.providerId;
+        for (const a of this.occurrences(s.id).filter((x) => x.status === "accepted" && x.startsAt > this.now)) {
+          const at = (t.leg === "there" ? a.startsAt : this.endOf(a)) + t.offsetMin * 60_000;
+          if (at < this.now + minLeadMin * 60_000 || at > this.now + maxDays * 86_400_000) continue;
+          if (Object.values(this.db.rides).some((r) => r.appointmentId === a.id && r.riderId === user && r.leg === t.leg)) continue;
+          try {
+            this.bookFor(user, { pickup: t.pickup, dropoff: t.dropoff, estKm: t.estKm, estMin: t.estMin, fareIsEstimate: t.fareIsEstimate, scheduledFor: at }, a.id, t.leg, true);
+          } catch {
+            /* no room (open bookings) or no longer allowed: the next run tries again */
+          }
         }
+      } catch {
+        /* a malformed template: skipped */
       }
     }
     s.templatesAt = this.now;
@@ -1708,9 +1731,16 @@ export class Engine {
         this.pushAppt(a.providerId, "appt_reminder", a, this.reminderParams(a, slot, "provider"));
       }
     }
-    // Series rides: occurrences that came within the booking horizon (once a day per series).
+    // Series rides: occurrences that came within the booking horizon (once a day per series). One
+    // broken series is skipped (and still counts as this day's run), never the whole sweep.
     for (const s of Object.values(this.db.series ?? {}))
-      if (s.status === "answered" && s.rideTemplates.length && (s.templatesAt === null || s.templatesAt < this.now - 86_400_000)) this.materialize(s.id);
+      if (s.status === "answered" && s.rideTemplates?.length && (s.templatesAt === null || s.templatesAt < this.now - 86_400_000)) {
+        try {
+          this.materialize(s.id);
+        } catch {
+          s.templatesAt = this.now;
+        }
+      }
   }
 
   private reminderParams(a: ApptRow, slot: number, role: PartyRole): Partial<PushParams> {
@@ -2106,6 +2136,11 @@ export class Engine {
 }
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
+/** A template's estimates as stored (twin of round(…, 3) in siosia_set_ride_template). */
+const round3 = (x: number) => Math.round(x * 1000) / 1000;
+
+/** The longest ride estimate accepted, in minutes (twin of the 1440 in siosia_book_for). */
+const MAX_EST_MIN = 1440;
 
 /** How an attached ride stands for its appointment (§7 rule 7); null = not shown (twin of siosia_ride_summary). */
 export function rideSummary(r: Pick<RideRow, "status" | "driverId" | "cancelledBy" | "cancelReason">): AttachedStatus | null {
@@ -2127,6 +2162,26 @@ function randomPublicId(): string {
   return Array.from(bytes, (b) => alphabet[b & 63]).join("");
 }
 
+/**
+ * A place as stored: just {lat, lng, label}, the label trimmed and cut to 120 (twin of
+ * siosia_clean_place and the rides' labels). Any non-blank label is valid; a geocoded one can be long.
+ */
 function cleanPlace(p: Place): Place {
-  return { lat: p.lat, lng: p.lng, label: String(p.label ?? "").slice(0, 120) };
+  return { lat: p.lat, lng: p.lng, label: String(p.label ?? "").trim().slice(0, 120) };
+}
+
+const samePlace = (a: Place, b: Place) => a.lat === b.lat && a.lng === b.lng && a.label === b.label;
+
+/** Two stored templates are the same (twin of the jsonb equality in siosia_set_ride_template). */
+function sameTemplate(a: StoredTemplate, b: StoredTemplate): boolean {
+  return (
+    a.passenger === b.passenger &&
+    a.leg === b.leg &&
+    samePlace(a.pickup, b.pickup) &&
+    samePlace(a.dropoff, b.dropoff) &&
+    a.offsetMin === b.offsetMin &&
+    a.estKm === b.estKm &&
+    a.estMin === b.estMin &&
+    a.fareIsEstimate === b.fareIsEstimate
+  );
 }

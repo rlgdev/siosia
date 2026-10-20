@@ -8,12 +8,16 @@ import { describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { SharingBanner } from "../../src/components/SharingBanner";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
-import type { Lang, OfferView, RideView } from "../../src/core/types";
-import { I18nProvider } from "../../src/i18n";
+import type { Lang, MyState, OfferView, RideView } from "../../src/core/types";
+import { I18nProvider, translator } from "../../src/i18n";
+import { en } from "../../src/i18n/en";
+import { pl } from "../../src/i18n/pl";
 import { AfterRide } from "../../src/screens/AfterRide";
 import { Home } from "../../src/screens/Home";
+import { driverEndedNotice } from "../../src/screens/driver/DriverApp";
 import { OfferCard } from "../../src/screens/driver/OfferCard";
 import { RiderActive } from "../../src/screens/rider/RiderActive";
+import { endedNotice, reasonText } from "../../src/screens/rider/RiderApp";
 import { Searching } from "../../src/screens/rider/Searching";
 import type { RiderRuntime } from "../../src/state/runtime";
 import { sharing } from "../../src/state/sharing";
@@ -112,6 +116,88 @@ describe("S1 Home (FR-080, FR-083, V22)", () => {
     expect(screen.getByTestId("badge-answer")).toHaveTextContent("2 to answer");
     expect(screen.getByTestId("badge-planned")).toHaveTextContent("3");
     expect(screen.getByTestId("planned-next")).toHaveTextContent(/^Next: Childcare, (today|tomorrow) \d\d:00$/);
+  });
+});
+
+describe("S1 Home: a finished ride's receipt after a relaunch (C8, §12)", () => {
+  /** The app reopens on S1 (FR-082) while my state still holds the unrated receipt. */
+  function home(lang: Lang, my: Partial<MyState>, extra: Record<string, unknown> = {}) {
+    const store = new AppStore();
+    (store as unknown as { snap: object }).snap = {
+      ...store.get(),
+      phase: "ready",
+      lang,
+      uid: "u",
+      profile: { userId: "u", nickname: "Ola", language: lang, riderCancels: 0, driverCancels: 0, lateCancels: 0, rating: { mean: null, count: 0 } },
+      deployment: DEFAULT_CONFIG,
+      cfg: { backend: "mock" },
+      my: { toAnswer: 0, planned: 0, nextPlanned: null, ride: null, ...my },
+      ...extra
+    };
+    const view = render(
+      <StoreContext.Provider value={store}>
+        <I18nProvider lang={lang}>
+          <Home />
+        </I18nProvider>
+      </StoreContext.Provider>
+    );
+    return { store, ...view };
+  }
+
+  it("points the rider to R4 (Mark as paid, rating)", async () => {
+    const { store } = home("en", { pendingReceipt: ride({ id: "r9", status: "completed" }) });
+    const card = screen.getByTestId("home-receipt");
+    expect(card).toHaveTextContent("Your ride is over — pay and rate");
+    await userEvent.click(card);
+    expect(store.get().screen).toBe("ride");
+  });
+
+  it("points a driver to D4 in Polish; nothing once Done was tapped or while a ride is on", async () => {
+    const kia = { make: "Kia", model: "Ceed", colour: "Blue", plate: "WX1", seats: 4 };
+    const summary = ride({ id: "r8", status: "completed", role: "driver" });
+    const first = home("pl", { pendingReceipt: summary }, { vehicle: kia });
+    expect(screen.getByTestId("home-receipt")).toHaveTextContent("Kurs zakończony — pobierz opłatę i oceń");
+    await userEvent.click(screen.getByTestId("home-receipt"));
+    expect(first.store.get().screen).toBe("drive");
+    first.unmount();
+    // Done on D4 (the same per-user list DriverApp keeps).
+    localStorage.setItem("siosia.dismissedSummaries.u", JSON.stringify(["r8"]));
+    const done = home("pl", { pendingReceipt: summary }, { vehicle: kia });
+    expect(screen.queryByTestId("home-receipt")).toBeNull();
+    done.unmount();
+    localStorage.removeItem("siosia.dismissedSummaries.u");
+    home("en", { pendingReceipt: ride({ id: "r9", status: "completed" }), ride: ride({ id: "r10", status: "accepted" }) });
+    expect(screen.queryByTestId("home-receipt")).toBeNull();
+  });
+});
+
+describe("a ride ended because its appointment was cancelled (C3)", () => {
+  const ended = ride({ status: "cancelled", cancelledBy: "system", cancelReason: "appointment_cancelled", acceptedAt: Date.now() - 60_000 });
+
+  it("tells the rider and the driver why, in EN and PL, never as a raw key", () => {
+    expect(endedNotice(translator("en"), ended)).toBe("The appointment was cancelled, so this ride was cancelled too.");
+    expect(endedNotice(translator("pl"), ended)).toBe("Termin został odwołany, więc ten przejazd też został odwołany.");
+    expect(driverEndedNotice(translator("en"), { ...ended, role: "driver" })).toBe("The appointment this ride was for was cancelled, so the ride is cancelled too.");
+    expect(driverEndedNotice(translator("pl"), { ...ended, role: "driver" })).toContain("został odwołany");
+    // The reason itself has words wherever reasons are shown; an unknown one reads as Other.
+    expect(en["reason.appointment_cancelled"]).toBe("the appointment was cancelled");
+    expect(pl["reason.appointment_cancelled"]).toBe("termin został odwołany");
+    expect(reasonText(translator("en"), "appointment_cancelled")).toBe("the appointment was cancelled");
+    expect(reasonText(translator("en"), "something_new")).toBe("Other");
+  });
+
+  it("keeps the other endings as they were", () => {
+    const t = translator("en");
+    expect(endedNotice(t, ride({ status: "cancelled", cancelledBy: "driver", cancelReason: "no_show" }))).toBe("The driver ended the ride: Rider no-show.");
+    expect(endedNotice(t, ride({ status: "cancelled", cancelledBy: "rider" }))).toBeNull();
+    expect(driverEndedNotice(t, ride({ status: "cancelled", cancelledBy: "rider", role: "driver" }))).toBe("The rider cancelled the ride.");
+    expect(driverEndedNotice(t, ride({ status: "cancelled", cancelledBy: "driver", cancelReason: "no_show", role: "driver" }))).toBeNull();
+  });
+
+  it("and the too-many message names no stale number (C13)", () => {
+    expect(en["err.too_many"]).toBe("You've reached the limit of open requests or bookings — finish or cancel one first.");
+    expect(pl["err.too_many"]).not.toMatch(/\d/);
+    expect(en["err.too_many"]).not.toMatch(/\d/);
   });
 });
 

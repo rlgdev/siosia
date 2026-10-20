@@ -31,7 +31,18 @@ export function Catalog() {
   const store = useStore();
   const [items, setItems] = useState<CatalogItem[] | null>(null);
   const [failed, setFailed] = useState(false);
-  const load = useCallback(() => store.api.catalog().then(setItems, () => setFailed(true)), [store]);
+  const load = useCallback(
+    () =>
+      store.api.catalog().then(
+        (list) => (setItems(list), setFailed(false)),
+        () => setFailed(true)
+      ),
+    [store]
+  );
+  const retry = () => {
+    setFailed(false);
+    void load();
+  };
   const my = app.my;
   useEffect(() => {
     void load();
@@ -40,7 +51,12 @@ export function Catalog() {
   const role = app.profile?.masterRole ?? null;
   const offers = new Set(app.profile?.offers ?? []);
   const services = items ?? [];
-  const ride = services.find((e) => e.kind === "ride");
+  // Ride is the only way to R1: without the catalog it still comes from the deployment's entries.
+  const ride = items
+    ? services.find((e) => e.kind === "ride")
+    : failed
+      ? app.deployment?.services?.find((e) => e.kind === "ride" && e.enabled)
+      : undefined;
   const mine = services.filter((e) => e.kind === "time" && offers.has(e.id));
 
   return (
@@ -81,7 +97,14 @@ export function Catalog() {
       )}
       <section className="stack" aria-label={t("catalog.all")}>
         <h2 className="section-title">{t("catalog.all")}</h2>
-        {failed && <p className="form-error">{t("err.unavailable")}</p>}
+        {failed && !items && (
+          <div className="row spread" data-testid="catalog-failed">
+            <p className="form-error">{t("catalog.error")}</p>
+            <button type="button" className="btn btn-secondary btn-small" onClick={retry} data-testid="catalog-retry">
+              {t("common.retry")}
+            </button>
+          </div>
+        )}
         {!items && !failed && <p className="muted">{t("common.loading")}</p>}
         {ride && role !== "driver" && (
           <button type="button" className="entry-card" onClick={() => store.go("ride")} data-testid="catalog-ride">

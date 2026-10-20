@@ -112,6 +112,16 @@ describe("push-dispatch", () => {
     expect(openUrl("driver_coming")).toBe("./");
   });
 
+  it("opens Planned for booking notifications too: their Take it lives there in 2.0, ./ is S1 (C16, FR-125)", async () => {
+    const kinds = ["booking_new", "booking_open", "booking_taken", "booking_released", "booking_cancelled"] as const;
+    for (const kind of kinds) expect(openUrl(kind)).toBe("./?open=planned");
+    expect(openUrl("booking_later" as never)).toBe("./?open=planned"); // any later booking_* kind
+    for (const kind of ["time_to_go", "driver_coming", "driver_arrived", "request_new"] as const) expect(openUrl(kind)).toBe("./");
+    const { deps, log } = fake([{ ...row(7, "driver", 1), kind: "booking_new", params: { pickup: "Home", dropoff: "School", at: AT } }], { driver: [sub("https://push/d")] }, {});
+    await dispatch(deps);
+    expect(JSON.parse(log.payloads[0])).toMatchObject({ tag: "booking_new:r1", url: "./?open=planned" });
+  });
+
   it("sends to every device of the user, drops gone subscriptions, retries transient failures", async () => {
     const { deps, log } = fake(
       // attempts as claimed (each claim counts): 4 is on its last try

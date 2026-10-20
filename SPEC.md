@@ -83,6 +83,10 @@ V26: ride template on series (passenger, leg, pickup, dropoff, offsetMin) → bo
 V27: `.ics` (shared module, server & demo): UID = record id, SUMMARY "{service} with {other}" | "Ride: {pickup} → {dropoff}", DTSTART/DTEND UTC (single appt, ride; series per V29), LOCATION+GEO from place, DESCRIPTION = note + ride lines per V11, URL `?open=planned`, VALARM ∀ reminder slot (ride: −30 min), series → single VEVENT w/ RRULE FREQ=WEEKLY;INTERVAL=1|2;COUNT=n + EXDATE per cancelled|declined, cancelled → STATUS:CANCELLED; served only w/ valid HMAC token for that viewer else 404; ⊥ positions, ⊥ other uid
 V28: Google link = calendar.google.com/calendar/render?action=TEMPLATE&text&dates(start/end)&ctz=deployment tz&location&details(+ link)&recur=RRULE… for series; built client-side from the view; offered always; Apple/.ics offered iff calendarUrl | demo; action says once "events don't update by themselves"
 V29: series `.ics` & Google link keep wall-clock ∀ date across DST: series VEVENT DTSTART/DTEND/EXDATE = local time `;TZID=<deployment tz>` + VTIMEZONE from tz's real offset changes over series range (⊥ UTC + RRULE); Google `dates` = local wall-clock + `ctz`
+V30: sweep (∀ API call + cron) ⊥ abort: ∀ per-row step (expiry, reminders, template materialize, booking start/open) isolated (exception → warning, row marked done/skipped); client numbers bounded at entry (estMin ≤ 1440, estKm ≤ max_trip_km → too_far, offsetMin |·| ≤ 1440); bad input → {error}, ⊥ raise
+V31: history stack ∈ {[S1], [S1, screen]} (+ 1 panel entry): launch on non-S1 screen (link, notification, held screen) seeds S1 below unless already there; reload ⊥ extra entries; go home ⊥ leave app; held-screen prompt keeps its target
+V32: user text in `.ics` (note, nickname, label, vehicle) escaped: ∀ line break (CRLF, CR, LF, U+0085, U+2028, U+2029) → `\n`, other control chars dropped; ids/URLs stripped of breaks; GEO only w/ finite lat & lng
+V33: stored place = {lat, lng, btrim(label) cut to 120}; ⊥ extra keys; label non-blank; same rule both twins
 
 ## §T tasks
 
@@ -101,10 +105,14 @@ T11|x|demo: robot Siosia (offers learning+childcare, accepts ≤ 5 s, attaches t
 T12|x|i18n EN/PL keys (start, catalog, appt, planned, offers, place, err new codes); catalog names from config; `public/guide.html` 2.0 sections|FR-152,FR-153
 T13|x|tests: engine (lifecycle, limits, overlap, expiry/done, reminders faked clock & words, ride guards/visibility/cascade/events, delete cascade, master rules, series create/answer-clashes/cancel scopes/expiry/templates across horizon/maxOpen); sql twin PGlite (+ RLS third user, no uid in catalog, calendar.ics token, v1 signatures); ics.test (UID, alarms, RRULE/EXDATE, STATUS, visibility) + google link builder; calendar fn (bad token 404); components (S1, C1, C2 repeat, P1, H1, C3 series, C4); e2e (3 contexts request→accept+ride→take→chips; cancel cascade; weekly series → All remaining; Add to calendar google params + demo ics download; robot Siosia; opening rules; `?open=`); push.test texts; v1 suites green|V19,V20,V23–V28,§13
 T14|x|docs: USER-GUIDE (EN+PL: series, Add to calendar), ARCHITECTURE (deviations: appointments, series, reminders, calendar fn), TRACEABILITY rows FR-080–153, SETUP (catalog, reminder cfg, pg_cron note, calendar fn deploy + url), README|FR-153,NFR-15
-T15|~|release: re-run migration on live DB, redeploy push fn, deploy calendar fn + set calendar_function_url, push main (Pages), `npm run smoke` + live test, field test (short reminder slots, iPhone .ics Add All, Android google) then restore slots|§15,§13
+T15|~|release: re-run migration on live DB, redeploy push fn, deploy calendar fn + set calendar_function_url, push main (Pages), `npm run smoke` + live test, field test (short reminder slots, iPhone .ics Add All, Android google) then restore slots|§15,§13,V30–V33
 T16|x|calendar: shared `supabase/functions/_shared/ics.ts` (appt, series, ride; viewer visibility), Edge Function `supabase/functions/calendar/` (hmac check, service role read, text/calendar, 404), `npm run calendar:bundle`, client Add to calendar action (google link builder, ics link | demo browser download via blob, share-sheet fallback on iOS, one-time "doesn't update" note)|V27,V28,V29,FR-135,FR-136,NFR-20
 
 ## §B bugs
 
 id|date|cause|fix
 B1|2026-10-20|series .ics spec'd UTC DTSTART + RRULE WEEKLY → every date after DST change (ends 25 Oct 2026) shifts 1 h in phone calendar, series itself keeps wall-clock (§7)|V29
+B2|2026-10-20|pre-release review: ride template estMin unbounded + materialize/sweep_appointments w/o per-row handler → one crafted template makes siosia_sweep raise → every API call + cron fails ∀ users|V30
+B3|2026-10-20|pre-release review: launch straight on non-S1 screen (notification ?open=, held D1) overwrote first history entry → ← trapped (PWA) or left app; goFromPanel left stale entry; reload added S1 copies|V31
+B4|2026-10-20|pre-release review: escapeText only mapped `\r?\n` → lone CR / U+2028 in user text could inject .ics properties|V32
+B5|2026-10-20|pre-release review: templates stored client JSON verbatim, null-unsafe checks passed missing fields, valid_place NULL on missing lng, label rules differ by twin|V33

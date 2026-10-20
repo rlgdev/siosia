@@ -389,6 +389,195 @@ describe("series (FR-107–109, FR-117, V23–V26)", () => {
   });
 });
 
+describe("bounded templates, an isolated sweep, clean places (review C0–C7)", () => {
+  const TPL = { leg: "there", pickup: HOME, dropoff: SCHOOL, offsetMin: -30, estKm: 3, estMin: 8, fareIsEstimate: false };
+  /** An accepted weekly series of 4 starting in 20 days (two dates within the booking horizon). */
+  async function acceptedSeries() {
+    const s = await request(U.client, "siosia", 20 * 24 * 60, { service: "learning", duration: 60, repeat: { every: 1, count: 4 } });
+    await answer(U.siosia, s.id, "accept");
+    return { first: s, sid: String((s.series as Json).id) };
+  }
+  const setTpl = (uid: string, sid: string, t: unknown) => h.call<Json>(uid, "siosia_set_ride_template", [sid, t]);
+
+  it("refuses a ride estimate over a day or a trip over max_trip_km (C0, C1)", async () => {
+    const { sid } = await acceptedSeries();
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, estMin: 1e300 }))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, estMin: 3e8 }))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, estMin: 1441 }))).toBe("bad_input");
+    // Too far, as for a one-off booking of the same trip (a bad estimate is still bad_input first).
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, estKm: 51 }))).toBe("too_far");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, estKm: 51, estMin: 1441 }))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_book_ride", [HOME, SCHOOL, 51, 8, false, at(3 * 60)]))).toBe("too_far");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, offsetMin: -1e300 }))).toBe("bad_time");
+    expect((await h.admin("select ride_templates from public.appointment_series where id = $1", [sid])).rows[0].ride_templates).toEqual([]);
+    // The same bound for every booking and request (one would overflow est_min / the fare).
+    expect(await errorOf(h.call(U.client, "siosia_book_ride", [HOME, SCHOOL, 3, 3e8, false, at(3 * 60)]))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_book_ride", [HOME, SCHOOL, 3, 1e300, false, at(3 * 60), null, null]))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_request_ride", [HOME, SCHOOL, 3, 1e300, false]))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_request_ride", [HOME, SCHOOL, 3, "NaN", false]))).toBe("bad_input");
+    expect(await book(U.client, 3 * 60)).toMatchObject({ status: "scheduled", estMin: 8 });
+  });
+
+  it("keeps the sweep (and everyone's calls) working past a bad template written behind validation (C0, C1)", async () => {
+    const { sid } = await acceptedSeries();
+    const bad = [
+      { ...TPL, passenger: "provider", estMin: 1e300 }, // integer out of range
+      { ...TPL, passenger: "provider", leg: "back", offsetMin: 0, estMin: 3e8 }, // numeric field overflow
+      { passenger: "client", leg: "there", offsetMin: "soon" }, // not even a template
+      { ...TPL, passenger: "client", leg: "back", offsetMin: 0 } // a good one still books
+    ];
+    await h.admin("update public.appointment_series set ride_templates = $2::jsonb, templates_at = null where id = $1", [sid, JSON.stringify(bad)]);
+    await sweep();
+    expect(await h.call<Json>(U.other, "siosia_my_state")).toMatchObject({ planned: 0 });
+    const s = (await h.admin("select templates_at from public.appointment_series where id = $1", [sid])).rows[0];
+    expect(s.templates_at).not.toBeNull();
+    const rides = (await h.admin("select rider_id, leg from public.rides r join public.appointments a on a.id = r.appointment_id where a.series_id = $1", [sid])).rows;
+    expect(rides.map((r) => `${r.rider_id === U.client ? "client" : "siosia"}:${r.leg}`)).toEqual(["client:back", "client:back"]);
+  });
+
+  it("keeps the templates a list: the table refuses anything else, and every reader skips one that slipped in", async () => {
+    const { first, sid } = await acceptedSeries();
+    const write = (v: string) => h.admin("update public.appointment_series set ride_templates = $2::jsonb, templates_at = null where id = $1", [sid, v]);
+    expect(await errorOf(write('{"x": 1}'))).toMatch(/appointment_series_ride_templates_check/);
+    expect(await errorOf(write('"[]"'))).toMatch(/appointment_series_ride_templates_check/);
+    // A database without the check (dropped by hand): the series still reads, sweeps and drops.
+    const check = "appointment_series_ride_templates_check";
+    const def = String((await h.admin("select pg_get_constraintdef(oid) as d from pg_constraint where conname = $1", [check])).rows[0].d);
+    expect(def).toMatch(/jsonb_typeof\(ride_templates\) = 'array'/);
+    await h.admin(`alter table public.appointment_series drop constraint ${check}`);
+    try {
+      await write('{"x": 1}');
+      expect((await getAppt(U.client, first.id)).series).toMatchObject({ id: sid, rideTemplates: [] });
+      expect((await h.call<Json>(U.siosia, "siosia_planned")).appointments).toEqual(expect.arrayContaining([expect.objectContaining({ id: first.id })]));
+      // Skipped by the sweep too, and not retried on every call.
+      await sweep();
+      expect((await h.admin("select templates_at from public.appointment_series where id = $1", [sid])).rows[0].templates_at).not.toBeNull();
+      expect(await h.call<Json>(U.client, "siosia_my_state")).toMatchObject({ planned: expect.any(Number) });
+      await h.call(U.siosia, "siosia_drop_ride_template", [sid, "there"]);
+      expect((await h.admin("select ride_templates from public.appointment_series where id = $1", [sid])).rows[0].ride_templates).toEqual([]);
+    } finally {
+      await h.admin("update public.appointment_series set ride_templates = '[]' where jsonb_typeof(ride_templates) <> 'array'");
+      await h.admin(`alter table public.appointment_series add constraint ${check} ${def}`);
+    }
+  });
+
+  it("shows a confirmed series in the calendar by its first live date, not a cancelled first one (C4)", async () => {
+    const secret = String((await h.admin("select push_secret from public.app_secrets where id = 1")).rows[0].push_secret);
+    const token = (id: unknown, who: string) => createHmac("sha256", secret).update(`${id}:${who}`).digest("hex").slice(0, 32);
+    const first = await request(U.client, "siosia", 2 * 24 * 60, { repeat: { every: 1, count: 3 } });
+    await answer(U.siosia, first.id, "accept");
+    await cancel(U.client, first.id);
+    const sid = String((first.series as Json).id);
+    const v = (await h.admin("select public.siosia_calendar_view('s', $1, $2, $3) as v", [sid, pub.client, token(sid, pub.client)])).rows[0].v as Json;
+    expect(v.view).toMatchObject({ status: "accepted", series: { id: sid, seq: 2, gaps: [((first.series as Json).starts as number[])[0]] } });
+  });
+
+  it("refuses a template with missing fields and stores only the known keys (C5)", async () => {
+    const { sid } = await acceptedSeries();
+    expect(await errorOf(setTpl(U.siosia, sid, { leg: "there" }))).toBe("bad_input");
+    for (const k of ["pickup", "dropoff", "offsetMin", "estKm", "estMin"]) {
+      const t: Json = { ...TPL };
+      delete t[k];
+      expect(await errorOf(setTpl(U.siosia, sid, t))).toBe("bad_input");
+    }
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, pickup: null }))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, dropoff: { lat: 52.2, label: "No lng" } }))).toBe("bad_input");
+    await setTpl(U.siosia, sid, { ...TPL, junk: "x".repeat(5000), pickup: { ...HOME, junk: "y".repeat(5000) }, fareIsEstimate: "yes" });
+    const stored = (await h.admin("select ride_templates from public.appointment_series where id = $1", [sid])).rows[0].ride_templates;
+    expect(stored).toEqual([{ passenger: "provider", leg: "there", pickup: HOME, dropoff: SCHOOL, offsetMin: -30, estKm: 3, estMin: 8, fareIsEstimate: false }]);
+  });
+
+  it("refuses a place without lng for a request and for My place (C6)", async () => {
+    const noLng = { lat: 52.2504843, label: "Warszawska 269" };
+    expect(await errorOf(request(U.client, "siosia", 24 * 60, { place: noLng }))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_save_home", [noLng]))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_save_home", [{ lng: 20.8, label: "No lat" }]))).toBe("bad_input");
+    expect((await h.admin("select siosia_valid_place($1::jsonb) as v", [JSON.stringify(noLng)])).rows[0].v).toBe(false);
+    expect((await h.admin("select siosia_valid_place(null) as v")).rows[0].v).toBe(true);
+    expect((await h.call<Json>(U.client, "siosia_save_home", [{ ...HOME, junk: 1 }])).home).toEqual(HOME);
+  });
+
+  it("tells the other party once when the same template is set again (C7)", async () => {
+    const { sid } = await acceptedSeries();
+    const added = async () => (await outbox()).filter((o) => o.kind === "appt_ride_added" && o.user_id === U.client).length;
+    await setTpl(U.siosia, sid, TPL);
+    await setTpl(U.siosia, sid, TPL);
+    await setTpl(U.siosia, sid, { ...TPL, pickup: { ...HOME }, junk: 1 });
+    expect(await added()).toBe(1);
+    await setTpl(U.siosia, sid, { ...TPL, offsetMin: -45 });
+    expect(await added()).toBe(2);
+    expect((await h.admin("select ride_templates from public.appointment_series where id = $1", [sid])).rows[0].ride_templates).toEqual([
+      expect.objectContaining({ passenger: "provider", leg: "there", offsetMin: -45 })
+    ]);
+  });
+
+  it("answers an error, never raises, for numbers past float8; estimates to 3 decimals, offsets cut toward 0", async () => {
+    const { sid } = await acceptedSeries();
+    const stored = async () => (await h.admin("select ride_templates from public.appointment_series where id = $1", [sid])).rows[0].ride_templates;
+    // Hand-made JSON (JSON.stringify cannot write these; the engine would read Infinity / 0): in
+    // jsonb the later of two equal keys wins.
+    const raw = (extra: string) => `${JSON.stringify(TPL).slice(0, -1)}, ${extra}}`;
+    expect(await errorOf(setTpl(U.siosia, sid, raw('"estKm": 1e400')))).toBe("too_far");
+    expect(await errorOf(setTpl(U.siosia, sid, raw('"estKm": -1e400')))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, raw('"estKm": 1e-400')))).toBe("bad_input"); // rounds to no trip
+    expect(await errorOf(setTpl(U.siosia, sid, raw('"estKm": 0.0004')))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, raw('"estMin": 1e400')))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, raw('"offsetMin": -1e400')))).toBe("bad_time");
+    const tiny = '{"lat": 1e-400, "lng": 20.8, "label": "Tiny"}';
+    expect(await errorOf(setTpl(U.siosia, sid, raw(`"pickup": ${tiny}`)))).toBe("bad_input");
+    expect(await errorOf(h.call(U.client, "siosia_save_home", [tiny]))).toBe("bad_input");
+    expect(await errorOf(request(U.client, "siosia", 24 * 60, { place: tiny }))).toBe("bad_input");
+    expect(await stored()).toEqual([]);
+    await setTpl(U.siosia, sid, { ...TPL, offsetMin: -30.5, estKm: 3.14159, estMin: 8.12345 });
+    expect(await stored()).toEqual([expect.objectContaining({ offsetMin: -30, estKm: 3.142, estMin: 8.123 })]);
+    const rides = await h.admin(
+      "select (extract(epoch from a.starts_at - r.scheduled_for) / 60)::int as m from public.rides r join public.appointments a on a.id = r.appointment_id where a.series_id = $1 order by r.scheduled_for",
+      [sid]
+    );
+    expect(rides.rows.map((r) => r.m)).toEqual([30, 30]);
+    await setTpl(U.siosia, sid, { ...TPL, leg: "back", offsetMin: 10.9 });
+    expect(await stored()).toEqual([expect.objectContaining({ leg: "there" }), expect.objectContaining({ leg: "back", offsetMin: 10 })]);
+    await setTpl(U.siosia, sid, raw('"estMin": 1e-400'));
+    expect(await stored()).toEqual(expect.arrayContaining([expect.objectContaining({ leg: "there", offsetMin: -30, estKm: 3, estMin: 0 })]));
+  });
+
+  it("accepts any non-blank place label, stored trimmed and cut to 120, and refuses a blank one", async () => {
+    const { sid } = await acceptedSeries();
+    const LONG = { ...HOME, label: "W".repeat(200) }; // a geocoded label can be that long
+    const CUT = { ...HOME, label: "W".repeat(120) };
+    const BLANK = { ...HOME, label: "   " };
+    expect((await h.call<Json>(U.client, "siosia_save_home", [LONG])).home).toEqual(CUT);
+    expect((await h.call<Json>(U.client, "siosia_save_home", [{ ...HOME, label: `  ${HOME.label}  ` }])).home).toEqual(HOME);
+    expect((await request(U.client, "siosia", 24 * 60, { place: LONG })).place).toEqual(CUT);
+    await setTpl(U.siosia, sid, { ...TPL, pickup: LONG, dropoff: { ...SCHOOL, label: ` ${SCHOOL.label} ` } });
+    expect((await h.admin("select ride_templates from public.appointment_series where id = $1", [sid])).rows[0].ride_templates).toEqual([
+      expect.objectContaining({ pickup: CUT, dropoff: SCHOOL })
+    ]);
+    const booked = (await h.admin("select pickup_label, dropoff_label from public.rides where auto_booked order by scheduled_for")).rows;
+    expect(booked.map((r) => [r.pickup_label, r.dropoff_label])).toEqual([[CUT.label, SCHOOL.label], [CUT.label, SCHOOL.label]]);
+    expect((await h.call<Json>(U.client, "siosia_book_ride", [LONG, SCHOOL, 3, 8, false, at(3 * 60)])).pickup).toEqual(CUT);
+    expect((await h.call<Json>(U.client, "siosia_request_ride", [LONG, { ...SCHOOL, label: ` ${SCHOOL.label}` }, 3, 8, false]))).toMatchObject({
+      pickup: CUT,
+      dropoff: SCHOOL
+    });
+    expect(await errorOf(h.call(U.client, "siosia_save_home", [BLANK]))).toBe("bad_input");
+    expect(await errorOf(request(U.client, "siosia", 2 * 24 * 60, { place: BLANK }))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, pickup: BLANK }))).toBe("bad_input");
+    expect(await errorOf(setTpl(U.siosia, sid, { ...TPL, dropoff: { ...SCHOOL, label: "" } }))).toBe("bad_input");
+    // An operator's master profile: the same rule, the same cut (and still an error for a blank label).
+    const master = (pickup: unknown) =>
+      h.admin("select public.siosia_set_master('longlabel', 'longlabel-token-0123456789', 'Daleko', null, null, 'rider', $1::jsonb)", [JSON.stringify(pickup)]);
+    try {
+      await master(LONG);
+      expect((await h.admin("select default_pickup from public.master_profiles where id = 'longlabel'")).rows[0].default_pickup).toEqual(CUT);
+      expect(await errorOf(master(BLANK))).toMatch(/A place is/);
+      expect(await errorOf(master({ lat: HOME.lat, lng: HOME.lng }))).toMatch(/A place is/);
+    } finally {
+      await h.admin("delete from public.master_profiles where id = 'longlabel'");
+    }
+  });
+});
+
 describe("profiles, masters, calendar, compatibility", () => {
   it("cancels a deleted provider's upcoming appointments and tells the client", async () => {
     const a = await request(U.client, "gone", 24 * 60, { service: "learning", duration: 60 });

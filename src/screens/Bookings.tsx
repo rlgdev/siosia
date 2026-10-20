@@ -10,7 +10,7 @@ import { coarse, haversineKm } from "../core/geo";
 import type { OpenBooking, RideView } from "../core/types";
 import { useI18n } from "../i18n";
 import { useGeo } from "../services/geolocation";
-import { useApp, useStore } from "../state/store";
+import { useApp, useListsKey, useStore } from "../state/store";
 
 /** "Mon 12 Oct, 14:30". Booked times are wall-clock times: shown exactly as booked. */
 export function useWhen(): (ms: number) => string {
@@ -227,15 +227,15 @@ export function OpenBookingsList({ open, onChanged }: { open: OpenBooking[]; onC
 /** D1's bookings panel (v1, unchanged for an online driver who must not leave D1): P2 and the taken ones. */
 export function DriverBookingsPanel() {
   const { t } = useI18n();
-  const app = useApp();
   const store = useStore();
   const [open, reloadOpen] = useOpenBookings(true);
   const [mine, setMine] = useState<RideView[] | null>(null);
   const loadMine = useCallback(() => store.api.bookings().then((all) => setMine(all.filter((r) => r.role === "driver")), () => setMine((l) => l ?? [])), [store]);
-  const my = app.my;
+  // Not on every MyState: this panel is on D1, where the heartbeat brings one every 4 s.
+  const listsKey = useListsKey();
   useEffect(() => {
     void loadMine();
-  }, [loadMine, my]);
+  }, [loadMine, listsKey]);
   useEffect(() => {
     const id = setInterval(() => {
       void loadMine();

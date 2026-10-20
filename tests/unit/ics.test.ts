@@ -142,6 +142,72 @@ describe(".ics (V27)", () => {
     expect(ics).not.toContain("52.98");
   });
 
+  it("keeps user text inside its own content line: every line break escaped, controls dropped (C15)", () => {
+    const evil = appt({
+      note: "x\rURL:https://evil.example\rBEGIN:VEVENT",
+      place: { lat: 52.2297, lng: 21.0122, label: "Home\u2028GEO:1;1" },
+      provider: { nickname: "Sio\u0085STATUS:CANCELLED\u2029sia\x00\x1b\x7f\tX" }
+    });
+    const series = { ...evil, series: { id: "6f1c1d2e-0000-4000-8000-0000000000ss", rule: "weekly" as const, count: 2, status: "answered", starts: [START, START + WEEK], gaps: [] } };
+    const car = { make: "Porsche", model: "Taycan\nEND:VEVENT", colour: "Green", plate: "W1\r\nBEGIN:VEVENT\rUID:x" };
+    const ride = { ...RIDE, pickup: { ...RIDE.pickup, label: "Home\rURL:https://evil.example" }, driver: { nickname: "Roman", vehicle: car } };
+    for (const ics of [appointmentIcs(evil, CTX), seriesIcs(series, CTX), rideIcs(ride, CTX)]) {
+      // Read as the most lenient reader would: a line ends at any line break.
+      const l = ics.replace(/\r\n /g, "").split(/\r\n|[\r\n\u0085\u2028\u2029]/);
+      expect(l.filter((x) => x === "BEGIN:VEVENT")).toHaveLength(1);
+      expect(l.filter((x) => x === "END:VEVENT")).toHaveLength(1);
+      expect(l.filter((x) => x.startsWith("URL:"))).toEqual(["URL:https://rlgdev.github.io/siosia/?open=planned"]);
+      expect(l.filter((x) => x.startsWith("UID:"))).toHaveLength(1);
+      expect(l.filter((x) => x.startsWith("STATUS:"))).toEqual(["STATUS:CONFIRMED"]);
+      expect(l.filter((x) => x.startsWith("GEO:"))).toHaveLength(1);
+      // CR and LF only as CRLF line ends; no other control character or Unicode line break.
+      expect(/\r(?!\n)|(?<!\r)\n/.test(ics)).toBe(false);
+      // eslint-disable-next-line no-control-regex -- looking for control characters
+      expect(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029]/.test(ics)).toBe(false);
+    }
+    const l = lines(appointmentIcs(evil, CTX));
+    expect(l.find((x) => x.startsWith("DESCRIPTION:"))).toContain("Note: x\\nURL:https://evil.example\\nBEGIN:VEVENT");
+    expect(l).toContain("LOCATION:Home\\nGEO:1\\;1");
+    expect(l).toContain("SUMMARY:Childcare with Sio\\nSTATUS:CANCELLED\\nsia X");
+    expect(escapeText("a\r\nb\rc\nd\u0085e\u2028f\u2029g\x00\x08\x0b\x1b\x7fh\ti")).toBe("a\\nb\\nc\\nd\\ne\\nf\\ngh i");
+  });
+
+  it("writes no GEO line for a place missing a coordinate, no LOCATION without a label", () => {
+    const l = lines(appointmentIcs(appt({ place: { lat: 52.2297, lng: null as unknown as number, label: "Warszawska 269" } }), CTX));
+    expect(l).toContain("LOCATION:Warszawska 269");
+    expect(l.some((x) => x.startsWith("GEO:"))).toBe(false);
+    const nan = lines(rideIcs({ ...RIDE, pickup: { lat: Number.NaN, lng: 20.82, label: null as unknown as string } }, CTX));
+    expect(nan.some((x) => x.startsWith("GEO:") || x.startsWith("LOCATION:"))).toBe(false);
+    expect(nan).toContain("STATUS:CONFIRMED");
+  });
+
+  it("gives a series the series' status, not the representative date's (C4)", () => {
+    const series = (status: string, gaps: number[] = []) => ({ id: "6f1c1d2e-0000-4000-8000-0000000000ss", rule: "weekly" as const, count: 3, status, starts: [START, START + WEEK, START + 2 * WEEK], gaps });
+    const desc = (l: string[]) => l.find((x) => x.startsWith("DESCRIPTION:"))!;
+    // The first date clashed and was declined; the rest of the series is confirmed.
+    const declinedFirst = appt({ status: "declined", series: series("answered", [START]) });
+    for (const view of [declinedFirst, { ...declinedFirst, status: "cancelled" }]) {
+      const l = lines(seriesIcs(view, CTX));
+      expect(desc(l)).toContain("With Siosia\\nConfirmed");
+      expect(desc(l)).not.toContain("Cancelled");
+      expect(l).toContain("STATUS:CONFIRMED");
+      expect(l.filter((x) => x.startsWith("TRIGGER:"))).toHaveLength(2);
+      expect(new URL(appointmentGoogleLink(view, CTX, true)).searchParams.get("details")).toContain("With Siosia\nConfirmed");
+    }
+    // Not answered yet: waiting for the client, answer for the provider; tentative.
+    const asked = lines(seriesIcs(appt({ status: "requested", series: series("requested") }), CTX));
+    expect(desc(asked)).toContain("With Siosia\\nWaiting for an answer from Siosia");
+    expect(asked).toContain("STATUS:TENTATIVE");
+    expect(desc(lines(seriesIcs(appt({ role: "provider", status: "requested", series: series("requested") }), CTX)))).toContain("For Toria\\nPlease answer");
+    // Every date gone, or the series cancelled: cancelled, even when the view's date was accepted.
+    for (const view of [appt({ series: series("answered", [START, START + WEEK, START + 2 * WEEK]) }), appt({ series: series("cancelled") })]) {
+      const l = lines(seriesIcs(view, CTX));
+      expect(desc(l)).toContain("With Siosia\\nCancelled");
+      expect(l).toContain("STATUS:CANCELLED");
+      expect(l.some((x) => x.startsWith("BEGIN:VALARM"))).toBe(false);
+    }
+  });
+
   it("escapes text and folds long lines at 75 octets without splitting a character", () => {
     expect(escapeText("a,b;c\\d\ne")).toBe("a\\,b\\;c\\\\d\\ne");
     const long = "DESCRIPTION:" + "Żółć ".repeat(40);
@@ -186,6 +252,24 @@ describe("calendar function (FR-136, NFR-20)", () => {
     expect(await res.text()).toContain("SUMMARY:Childcare with Siosia");
     const series = await handleCalendar(new Request(`https://x/calendar?s=${ID}&u=pub-toria1&t=${T}`), async () => ({ ...view, kind: "s" as const }));
     expect(await series.text()).not.toContain("RRULE:"); // a view without a series falls back to one event
+  });
+
+  it("serves a valid .ics for a place with a missing coordinate; a view it cannot write is a plain 500", async () => {
+    const noLng = { ...view, view: appt({ place: { lat: 52.2297, lng: null as unknown as number, label: "Warszawska 269" } }) };
+    for (const kind of ["a", "s"] as const) {
+      const res = await handleCalendar(new Request(`https://x/calendar?${kind}=${ID}&u=pub-toria1&t=${T}`), async () => ({ ...noLng, kind }));
+      expect(res.status).toBe(200);
+      const l = lines(await res.text());
+      expect(l[0]).toBe("BEGIN:VCALENDAR");
+      expect(l).toContain("LOCATION:Warszawska 269");
+      expect(l.some((x) => x.startsWith("GEO:"))).toBe(false);
+      expect(l.filter((x) => x === "END:VCALENDAR")).toHaveLength(1);
+    }
+    const broken = { ...view, kind: "r" as const, view: { ...RIDE, fare: null as unknown as number } };
+    const res = await handleCalendar(new Request(`https://x/calendar?r=${ID}&u=pub-toria1&t=${T}`), async () => broken);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.text()).toBe("unavailable");
   });
 
   it("answers 404 to a wrong token or a non-party (null from the database) and to malformed links, without reading", async () => {

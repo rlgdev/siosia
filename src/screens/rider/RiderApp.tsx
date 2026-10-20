@@ -7,7 +7,7 @@ import { TopBar, useBusy } from "../../components/ui";
 import { haversineKm, haversineM } from "../../core/geo";
 import type { DriverPresence, LatLng, Place, RideView } from "../../core/types";
 import { useI18n, type Translate } from "../../i18n";
-import type { MessageKey } from "../../i18n/en";
+import { en, type MessageKey } from "../../i18n/en";
 import { readPref, writePref } from "../../services/device";
 import { reverseLabel } from "../../services/geocode";
 import { useGeo } from "../../services/geolocation";
@@ -36,7 +36,18 @@ function toLocalInput(ms: number): string {
 }
 
 export function reasonText(t: Translate, reason: string | null): string {
-  return reason ? t(`reason.${reason}` as MessageKey) : "";
+  if (!reason) return "";
+  // A reason without words here reads "Other", never as a raw key.
+  const key = `reason.${reason}`;
+  return t((key in en ? key : "reason.other") as MessageKey);
+}
+
+/** What the rider is told when their ride ended without them (null: nothing to say). */
+export function endedNotice(t: Translate, r: RideView): string | null {
+  if (r.status !== "cancelled" || r.cancelledBy === "rider") return null;
+  // Cancelling an appointment also ends its rides (by the system): not the driver's doing.
+  if (r.cancelReason === "appointment_cancelled") return t("active.appointmentCancelled");
+  return t("active.cancelledByDriver", { reason: reasonText(t, r.cancelReason) });
 }
 
 export function RiderApp() {
@@ -121,7 +132,10 @@ export function RiderApp() {
       .getRide(id)
       .then((r) => {
         if (r.status === "completed" || r.status === "expired") setEnded(r);
-        else if (r.status === "cancelled" && r.cancelledBy !== "rider") setNotice(t("active.cancelledByDriver", { reason: reasonText(t, r.cancelReason) }));
+        else {
+          const n = endedNotice(t, r);
+          if (n) setNotice(n);
+        }
       })
       .catch(() => {});
   }, [rideId, watched, api, t]);
