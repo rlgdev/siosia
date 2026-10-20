@@ -142,3 +142,87 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
   (same as before arrival) — the diagram only lists no-show; the reason list of FR-024 implies it.
 - Membership is enforced per user server-side; the per-device invite prompt is enforced by the
   client (the device id is not part of the JWT).
+
+## 2.0: a schedule of services next to the rides
+
+Siosia 2.0 (`siosia-spec-v2.0.md`) adds appointments — *Learning*, *Childcare* — between people
+of the group, with rides as part of them. The ride engine of 1.x is unchanged; everything new sits
+beside it and reuses its bookings.
+
+**Screens.** The start screen S1 is *Siosia* (catalog C1) / *Planned* (P1) / *History* (H1); the
+v1 rider and driver screens are reached from the catalog. Navigation is a screen stack in the
+store (`home | catalog | planned | history | ride | drive`, browser back returns to S1); requests,
+appointments, the profile and the vehicle are panels over it. An active ride, an offer card or an
+online driver *holds* its screen (V1): links and buttons that would leave it are ignored, and
+leaving D1 online asks to go offline first. Launch opens S1 unless a held screen applies; `?open=`
+(planned / history / siosia) and `?mode=` open a screen once and are removed from the address bar.
+A notification tapped while the app is open reaches it as a `siosia-open` message from the
+service worker.
+
+**Catalog.** `app_config.services` (jsonb, set by the operator with `siosia_set_services`; entries
+are disabled, never deleted) holds `ride` (kind `ride`) and the `time` entries with names and
+descriptions in EN and PL, icon, duration rule, optional price and whether a place is needed.
+Providers turn `time` entries on in `profiles.offers` (a master profile's preset in
+`master_profiles.offers` wins). The catalog lists who offers what by **public id**
+(`profiles.public_id`, random) — no user id ever reaches a client (FR-143).
+
+**Appointments and series.** `appointments` (client, provider, entry, wall-clock start, duration,
+place, note, frozen price, status `requested → accepted | declined | expired → done`, `cancelled`
+with who and why, reminders sent) and `appointment_series` (rule weekly / every 2 weeks, count,
+ride templates). A repeating request creates the series and every occurrence at once, wall-clock
+in the deployment's time zone (`siosia_add_weeks` / `addWeeksWallClock`: a weekly 16:00 stays
+16:00 across the DST change). Accept on a series accepts every occurrence that doesn't clash with
+the provider's accepted appointments or taken bookings and declines the others, in one
+notification each way. *All remaining* cancels every future occurrence (FR-109). "In progress" is
+derived; `done` and `expired` are set by the sweep (`siosia_sweep_appointments`, first thing in
+`siosia_sweep`).
+
+**Rides as part of a service.** An attached ride is a v1 advance booking with `appointment_id`,
+`leg` (there / back) and the passenger being one of the two parties
+(`siosia_book_ride` 8-argument overload, at most one live ride per leg and passenger). It lives
+the v1 booking life untouched; the appointment shows a summary per ride — pending, confirmed,
+done, failed — and the rides trigger tells the *other* party when it changes
+(`appt_ride_taken` / `_lost` / `_failed`). Drivers see a plain booking. On a series the ride is a
+**template** (passenger, leg, places, offset from the start or end); the sweep books it for every
+accepted occurrence once its pickup is within `booking.maxDays` (`siosia_materialize_templates`,
+bookings marked `auto_booked`, outside the daily booking limit). Cancelling an appointment cancels
+its rides that have not started, with reason `appointment_cancelled`.
+
+**Reminders.** The sweep queues one `appt_reminder` per party per slot of
+`app_config.appt_reminder_min` (default `{1440,120}`) once `now ≥ start − slot`, skipping slots
+already past when the appointment was requested, and records them in `appointments.reminded`.
+The words of every notification — and of the status chips and ride lines in Planned — come from
+one module, `supabase/functions/_shared/push-text.ts` (V8), so the app shows exactly what the
+reminder says.
+
+**Calendar.** `supabase/functions/_shared/ics.ts` writes the `.ics` of an appointment, a series
+or a booked ride as one viewer may see it, and the Google Calendar template link; the app, the
+demo download and the Edge Function `calendar` all use it. The server gives each party a link
+`<calendar_function_url>?a|s|r=<id>&u=<public id>&t=<token>`, the token being an HMAC of the id
+and the viewer keyed with `push_secret` (`siosia_ics_token`); the function reads through
+`siosia_calendar_view` (service role only: checks the token and the party, returns that viewer's
+view) and answers `text/calendar` or 404, logging nothing. The calendar entry is a copy; there is
+no subscription feed.
+
+**Demo.** The mock backend runs a robot **Siosia** next to the robot drivers
+(`src/backend/mock/siosiaRobot.ts`, one tab per browser under a Web Lock): she offers Learning and
+Childcare, accepts within 5 s and books a ride there when the start is at least 1 h ahead.
+`?siosia=0` turns her off.
+
+**Tests.** The engine's appointment rules (`tests/unit/appointments.test.ts`) and the SQL twin
+(`tests/unit/sql-v2.test.ts`, the real migration in PGlite) run the same cases; `ics.test.ts`
+covers the calendar module and function; `screens-v2.test.tsx` the new screens;
+`tests/e2e/v2.spec.ts` the flows across three pages.
+
+### 2.0 deviations, on purpose
+
+- **A series in the calendar is written in local time** (spec V27 said UTC): `DTSTART`, `DTEND`
+  and `EXDATE` carry `TZID=<deployment time zone>` with a `VTIMEZONE` built from the zone's real
+  offset changes, because a weekly rule on a UTC start would move every date after a DST change
+  by an hour (SPEC.md B1 → V29). Single events stay in UTC. The Google link uses local dates with
+  `ctz`.
+- **An online driver keeps D1** (V1) yet still has the v1 *Booked rides → Browse* and *Earnings &
+  history* links: they open the same Rides-to-take list and History as panels over D1 instead of
+  leaving it, so going online never hides them.
+- **Rider's own attached rides** appear inside the appointment's ride line in Planned rather than
+  as separate booking cards, to show each item once; Remove ride is on the appointment.

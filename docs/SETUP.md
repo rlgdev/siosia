@@ -42,7 +42,9 @@ what to copy. Phone-side instructions for your riders and drivers are in
    the access rules (RLS), the server functions (atomic accept, request expiry, re-dispatch …),
    the private-realtime policies and two scheduled jobs.
 
-The script is safe to run again later (e.g. after an update).
+The script is safe to run again later (e.g. after an update). **Upgrading from 1.x to 2.0:** run
+the whole file again — it adds the catalog, appointments, series and the new functions and keeps
+every ride, profile and setting.
 
 ## 3. Set your invite code and contact (2 min)
 
@@ -163,6 +165,66 @@ makes its Web Push key pair on its first run.
 The database calls the sender right after it queues a notification, and every minute while some
 are left.
 
+### Optional: services and appointments — the catalog (2.0)
+
+The catalog of what people can ask for is seeded with **Ride**, **Learning** and **Childcare**.
+People turn the services they offer on themselves (☰ → *Services I offer*); there is nothing to
+do for the defaults. To change the catalog, read it, edit it and save it whole:
+
+```sql
+select services from public.app_config where id = 1;      -- the current catalog (JSON)
+select public.siosia_set_services('[ … the edited JSON … ]'::jsonb);
+```
+
+Each entry: `id` (lowercase, fixed once used), `kind` (`ride` — exactly one — or `time`), `name`
+and `description` as `{"en": …, "pl": …}`, `icon` (one emoji), `duration` (`default`, `min`,
+`max`, `step` in minutes; `null` for the ride), `price` (`null`, `{"perHour": 80}` or
+`{"fixed": 50}`, in the tariff's currency), `needsPlace` (false allows an online lesson) and
+`enabled`. Entries are never deleted — set `"enabled": false` to hide one (its appointments stay).
+The function refuses a malformed catalog and says why.
+
+Appointment settings (defaults shown):
+
+```sql
+update public.app_config set
+  appt_reminder_min     = '{1440,120}',  -- reminders a day and two hours before (minutes)
+  appt_series_max_days  = 91,            -- a repeating request ends within ~3 months
+  appt_series_max_count = 12,            -- at most 12 dates per series
+  booking_max_open      = 12             -- open bookings per rider (series rides included)
+where id = 1;
+```
+
+Reminders are sent by the same server sweep that expires requests — every 10 s under `pg_cron`
+(enabled by the migration where available) and on every app call — so without `pg_cron` a
+reminder may come late on a quiet evening. For the field test set `appt_reminder_min = '{30,10}'`
+for an appointment soon, then put it back.
+
+A master profile can preset what its phones offer — the 10th argument of `siosia_set_master`,
+e.g. `array['childcare']`; its phones then see no *Services I offer* toggles.
+
+### Optional: Add to calendar — the calendar function (3 min)
+
+*Add to calendar* always offers **Google Calendar** (a prefilled link, nothing to set up). The
+**Apple Calendar / .ics** choice needs the small Edge Function `calendar`, next to `push-dispatch`
+on the same free tier:
+
+1. Deploy it — CLI: `supabase functions deploy calendar --no-verify-jwt`; or the dashboard editor:
+   name `calendar`, paste `supabase/functions/calendar/dist-bundle.ts` (`npm run calendar:bundle`
+   makes it), deploy, then turn **Enforce JWT verification** off (a phone's calendar opens the link
+   without signing in; each link carries its own token).
+2. Tell the database (and set `site_url` if you haven't for notifications — events link back to it):
+   ```sql
+   update public.app_config set
+     calendar_function_url = 'https://<project ref>.supabase.co/functions/v1/calendar',
+     site_url = 'https://<you>.github.io/siosia/'
+   where id = 1;
+   ```
+
+Each link is `…/calendar?a=<appointment id>&u=<viewer>&t=<token>` (series `s=`, rides `r=`); the
+token is an HMAC with the deployment's `push_secret`, so only the two people who see the link in
+the app can open it, and each sees only their own view. The function stores and logs nothing.
+Added events are copies — they don't update by themselves.
+
 ## 4. Authentication settings (4 min)
 
 1. **Authentication → Sign In / Providers** (sometimes *Providers*): turn **Allow anonymous
@@ -252,13 +314,15 @@ positions over the ride channel (outsider refused), lifecycle rules, receipts an
 | Task | Where |
 | --- | --- |
 | See rides, offers, ratings | Supabase → **Table Editor** → `rides` (endpoints, totals, times — never live positions) |
+| See appointments | **Table Editor** → `appointments` (parties, time, place, note, status, reminders sent) and `appointment_series` (rule, count, ride templates) |
+| Change the catalog or reminders | `siosia_set_services(…)` / `update public.app_config set appt_reminder_min = …` (see *services and appointments* above) |
 | Errors and logs | Supabase → **Logs** (API, Postgres, Realtime); browser console on the phone |
 | Usage vs. free limits | Supabase → **Settings → Usage**. At the pilot ceiling (§10 of the spec) Siosia stays well inside the free tier; if realtime messages ever run hot, raise the presence cadence in `src/core/defaults.ts` |
 | Change the invite code | `select public.siosia_set_invite_code('NEW-CODE');` — existing devices stay joined |
 | Change tariff / timers / area | `update public.app_config set … where id = 1;` — applies to new requests |
 | Paused project | Free projects pause after 7 quiet days. The **Keep backend awake** workflow pings weekly once `SUPABASE_URL` is set. If it paused anyway: Supabase dashboard → project → **Restore**. The app shows *Service unavailable — retry* (with your contact) meanwhile |
 | Remove a user | Authentication → Users → delete; their rides stay, anonymised |
-| Update the app | push to `main`; CI tests and redeploys. Re-run the SQL file if `supabase/migrations` changed |
+| Update the app | push to `main`; CI tests and redeploys. Re-run the SQL file if `supabase/migrations` changed; redeploy `push-dispatch` / `calendar` (`npm run push:bundle`, `npm run calendar:bundle`) if `supabase/functions` changed |
 
 ## Local development against your project
 

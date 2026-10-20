@@ -66,3 +66,64 @@ Every functional requirement of the spec (§7) mapped to an automated test or a 
 | 074 | Reduced motion, AA contrast | `theme.css` (`prefers-reduced-motion`, contrast tokens) |
 | 075 | S3 explainers | `RiderHome`, `DriverApp`, `Boot` (denied, poor accuracy, wake lock, backend down); field degradation table |
 | 076 | Config at build time or one file, no secrets | `src/config.ts`, `.env.example`, `config.example.json`; only the publishable key is read |
+
+## Siosia 2.0 (`siosia-spec-v2.0.md`, FR-080 – FR-153)
+
+Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests/unit/sql-v2.test.ts`
+(the same cases against the real migration in PGlite), `screens` = `tests/unit/screens-v2.test.tsx`,
+`components` = `tests/unit/components.test.tsx`, `push` = `tests/unit/push.test.ts`, `ics` =
+`tests/unit/ics.test.ts`, `services` = `tests/unit/services.test.ts`, `e2e2` = `tests/e2e/v2.spec.ts`,
+`e2e` = `tests/e2e/ride-loop.spec.ts`; *field* = the 2.0 steps in [FIELD-TEST.md](FIELD-TEST.md).
+
+| FR | Requirement (short) | Verified by |
+| --- | --- | --- |
+| 080 | S1: Siosia / Planned / History + v1 footer | components "S1 Home"; e2e (every test starts on S1) |
+| 081 | Each opens its screen, Back and browser back return | e2e2 "opening rules" (page back); e2e navigation steps |
+| 082 | Launch on S1 unless a ride / offer / online driver holds a screen; offline → S1 | e2e2 "opening rules" (online driver reopens on D1, leaving asks); e2e "Keep the screen on" (offline → S1, reload → S1) |
+| 083 | Badges: to answer, upcoming, next item | components "badges requests to answer and names the next planned item" |
+| 084 | `?mode=` and `?open=` open once | e2e2 "opening rules" (`?open=planned`, `?open=history`, removed from the address bar) |
+| 085 | Master restrictions on the Ride entry only | appt + sql2 "master profile preset its offers"; screens "no drive card to a rider profile" |
+| 090 | C1 entries, who offers, nobody → disabled | screens "C1 Catalog" (EN, PL) |
+| 091 | Catalog is configuration, validated | sql2 "validates the catalog"; services "config.example.json" |
+| 092 | Ride entry → R1 unchanged; Go online card with rides to take | screens "Ride — Go online"; e2e (all ride tests open R1 / D1 from C1) |
+| 093 | Services I offer on S2; master preset hides it | appt + sql2 "offers only enabled time entries"; screens "S2" |
+| 094 | C2 form, validation, price | screens "C2 Request form" (both tests) |
+| 100 | Send request validated, limits | appt + sql2 "validates a request", "refuses an 11th open request" |
+| 101 | Accept / Decline, overlap refused | appt + sql2 "accepts atomically, refuses overlaps"; screens P1 decline, C4; e2e2 three pages |
+| 102 | Cancel until start, other party told, rides cascade, nothing counted | appt + sql2 "withdraw / cancel"; e2e2 "cancel cascades" |
+| 103 | Expired at start, done at end, in progress derived | appt + sql2 "expires an unanswered request"; screens P1 ("Now until") |
+| 104 | Server-validated transitions, twin backends | appt and sql2 run the same cases (V19) |
+| 105 | Stored fields only | sql2 "keeps appointments out of clients' direct reach"; schema review |
+| 106 | Rating a done appointment once in 24 h | appt + sql2 "lets both rate a done appointment once"; screens "rates a done appointment once from C3", H1 Rate |
+| 107 | Repeat weekly / 2 weeks, 2–12 times | appt + sql2 "creates a weekly series"; screens C2 weekly; e2e2 "weekly series" |
+| 108 | Series accepted as a whole, clashes declined | appt + sql2 "answers it as a whole with clashes"; push "dates declined on answer" |
+| 109 | This one / All remaining | appt + sql2 "cancels all remaining"; screens "Cancel offers This one / All remaining"; e2e2 "weekly series" |
+| 110 | Rides there / back, guards | appt + sql2 "adds a ride to an accepted appointment with every guard" |
+| 111 | Prefilled places and times | screens "derives the pickup", "accepts with a ride back: places and time prefilled" |
+| 112 | Too soon → refuse, point to Ride | screens "refuses a ride there that would be under 30 min ahead" |
+| 113 | v1 booking lifecycle, summary per ride | appt + sql2 ride summary; e2e2 "Ride there: Adam ✓" |
+| 114 | Non-passenger sees leg, time, status, driver only | appt + sql2 "shows it to each party as allowed"; ics "no user ids … no positions" |
+| 115 | Passenger removes a ride | appt + sql2 ride guards (cancel by passenger) |
+| 116 | Other party told of taken / lost / failed | appt + sql2 "tells both parties when an attached ride finds no driver" |
+| 117 | Series ride templates within 30 days | appt + sql2 "books the series' rides from a template"; screens series template; services robot Siosia (series) |
+| 120 | Reminders 24 h and 2 h, each once | appt + sql2 "reminds both parties once per slot"; *field* step 5 |
+| 121 | Reminder words = Planned words | push "reminds with the status and the ride lines"; apptWords uses push-text |
+| 122 | Late slots skipped, none after cancel | appt + sql2 reminders test |
+| 123 | Same information without notifications | screens P1 (In 2 h, chips, ride line); S2 hint text test |
+| 124 | Right recipient, language, tag | push "tags appointment notifications"; services "2.0 round trip … her language" |
+| 125 | Notification tap opens P1 | push (open URL `?open=planned`); store `openFromUrl`; *field* step 3 |
+| 130 | P1 lists everything upcoming, grouped by day | screens "P1 Planned" (day groups, in progress first) |
+| 131 | To answer, Rides to take, Give back | screens P1 (To answer, Rides to take in Polish); e2e booking test |
+| 132 | Tap → C3 / booking card | screens "opens C3 when an appointment is tapped" |
+| 133 | H1 merged history + earnings; v1 panels replaced | screens "H1 History"; e2e "earnings and history" (D1 panel, S1 History) |
+| 134 | Refresh, loading / empty / error states | screens P1 / H1 empty states (EN, PL); refresh on state + 30 s in code |
+| 135 | Add to calendar: Google and .ics, the note | screens "Add to calendar"; ics "Google Calendar link"; e2e2 robot test (link + demo download) |
+| 136 | .ics content, token, 404 | ics ".ics (V27)", "calendar function"; sql2 "serves the calendar view only to a party"; *field* step 11 |
+| 140 | My place | appt + sql2 "saves My place"; screens "saves My place with a name" |
+| 141 | Switch mode removed from S2 | screens S2 (no switch); code review of `Profile.tsx` |
+| 142 | Delete cancels upcoming appointments | appt + sql2 "cancels a deleted provider's upcoming appointments"; screens S2 delete text |
+| 143 | Public ids, never user ids | appt + sql2 "by public id, never a user id"; ics "no user ids" |
+| 150 | Catalog and settings as configuration | sql2 config test; services "config.example.json" |
+| 151 | Robot Siosia in the demo | services "demo: the robot Siosia …"; e2e2 "one tab" |
+| 152 | EN and PL for every string | services "i18n" (keys used, error codes, status families, placeholders) |
+| 153 | Guide and docs describe 2.0 | services "in-app guide"; this file, USER-GUIDE, ARCHITECTURE, SETUP, README |

@@ -47,3 +47,24 @@ commit it (Definition of Done).
 | Supabase project paused | "Service unavailable — retry" with operator contact | |
 
 Notes / issues found:
+
+## Siosia 2.0 — two phones plus one (spec §13)
+
+Siosia phone (provider), client phone, driver phone. Notifications on in the iPhone app on both
+the client and the Siosia phone.
+
+| # | Step | Expected | ✓ |
+| --- | --- | --- | --- |
+| 1 | Siosia: ☰ → *Services I offer* → Learning + Childcare on; *My place* set. Client: *My place* set | Client's *Siosia* lists Siosia under both | |
+| 2 | Client: *Siosia → Childcare* → tomorrow 14:00, 3 h, My place, a note → *Send request* | Planned: "Waiting for an answer from Siosia"; Siosia gets *New request* | |
+| 3 | Siosia: tap the notification → *Planned → To answer → Accept* → *I need a ride there* → *Confirm* | Opens on Planned; pickup prefilled from her place; client gets *Siosia accepted*, sees "Confirmed · Ride there: no driver yet" | |
+| 4 | Driver: *Planned → Rides to take (1) → Take this ride* | Both others show "Ride there: Roman ✓" within seconds; client gets *Ride confirmed* | |
+| 5 | Operator: set `appt_reminder_min` to `{30,10}` in `app_config` | Both phones get two reminders at the right minutes with "Confirmed · Ride there: Roman ✓" | |
+| 6 | Driver: *Give back*, then take it again | Both: "no driver yet", then the name again; client gets *Ride needs a driver* | |
+| 7 | Let the ride run; the appointment starts and ends | *Now until 17:00*, then History on both; both rate | |
+| 8 | Client: a second request; Siosia *Decline* | Client notified; History "Declined" | |
+| 9 | Client: a third request accepted, then *Cancel* 2 h before | Siosia notified; her ride cancelled, the driver gets *Booking cancelled*; no counter changes | |
+| 10 | Client: *Learning*, weekly, 4 times; Siosia accepts with a ride there; client *Cancel → All remaining* on one date | Four items with "↻ every week" on both; then the future ones gone, one notification | |
+| 11 | Both: *Add to calendar* on a confirmed appointment and on a series | Android: Google Calendar prefilled; iPhone app: the .ics with *Add All*; alarms present; series repeats without the cancelled dates | |
+| 12 | Operator: inspect `appointments`, `appointment_series`, `rides` | Parties, times, place, note, statuses, reminders sent, templates; no positions | |
+| — | Operator: restore `appt_reminder_min` to `{1440,120}` | | |

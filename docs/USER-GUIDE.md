@@ -1,11 +1,13 @@
-# Siosia — guide for riders and drivers
+# Siosia — guide
 
-**English** · [Polski](#siosia--przewodnik-dla-pasażerów-i-kierowców)
+**English** · [Polski](#siosia--przewodnik)
+
+Rides, lessons and help with the kids, among people who know each other.
 
 You need: the **link** and the **invite code** from your organiser, and a phone with a current
 Chrome (Android) or Safari (iOS). No app store, no account, no payment details.
 
-## First time (both riders and drivers) — 1 minute
+## First time — 1 minute
 
 1. Open the link. Enter the **invite code** (once per phone).
 2. Choose a **nickname** (2–20 characters). That's your whole profile — no name, phone or email.
@@ -17,9 +19,22 @@ When asked, **allow location**. If you said no by mistake:
 Android Chrome → 🔒 next to the address → *Permissions → Location → Allow*;
 iPhone → *Settings → Privacy → Location Services → Safari Websites → While Using*, then reload.
 
+## The start screen
+
+- **Siosia** — ask for help: a **Ride**, **Learning** (a lesson, homework) or **Childcare**
+  (someone with the kids). Each entry shows who offers it; *Nobody offers this yet* means nobody
+  turned it on so far.
+- **Planned** — your schedule in both roles, day by day: what you asked for, what you agreed to
+  do, rides you booked or took as a driver. The button names the next one (*Next: Childcare,
+  today 14:00*) and counts requests waiting for your answer.
+- **History** — what's over, newest first; drivers see today's and this month's earnings on top.
+
+During a ride, or while you're online as a driver, Siosia opens straight on that screen; leaving
+the driving screen while online asks to go offline first.
+
 ## Riding
 
-1. Tap **Ride**. Your pickup is set to where you are (move the green pin if needed).
+1. **Siosia → Ride**. Your pickup is set to where you are (move the green pin if needed).
 2. Set the **dropoff**: tap the *Dropoff* field and **search** an address (type ≥ 4 letters, tap
    *Search*), or **long-press the map**, or use 📌 then tap the map. Pins can be dragged.
 3. You see distance, time and the **fixed price**. It never changes after you request. ("estimate"
@@ -32,7 +47,7 @@ iPhone → *Settings → Privacy → Location Services → Safari Websites → W
    tap **Stop** any time (the driver then goes to your pickup pin).
 6. Get in, enjoy the ride. Sharing stops automatically when the trip starts.
 7. At the end: **pay the driver directly** (Siosia does not handle money), tap *Mark as paid*,
-   give 1–5 stars. Your rides are in ☰ → *Ride history*.
+   give 1–5 stars. Your rides are in **History**.
 
 Cancel any time before the trip starts (☰ isn't needed — *Cancel ride* on the screen). Cancelling
 after the driver has arrived counts as a late cancellation (no fee).
@@ -46,8 +61,9 @@ it on that phone.
 
 ## Driving
 
-1. Tap **Drive** and enter your car once: make, model, colour, plate, seats. Riders see it only
-   after you accept them.
+1. **Siosia → Drive with Siosia** and enter your car once: make, model, colour, plate, seats.
+   Riders see it only after you accept them. From then on the card reads **Ride — Go online**
+   with the number of rides to take.
 2. Tap **Go online**. Allow location. While you're online Siosia **keeps the screen on** (mount
    the phone) — keep it in front: phones pause location when the screen locks or another app opens. A green bar shows you are sharing your location.
 3. A request appears with a **chime**: rider, distance to pickup, trip and fare, and a **20-second
@@ -62,8 +78,10 @@ it on that phone.
 5. Tap **I've arrived** → when the rider is in, **Start trip** → at the destination
    **Complete trip**.
 6. Collect the fare **directly** from the rider, tap *Mark fare collected*, rate the rider.
-   Today's earnings are on the main screen; ☰ → *Earnings & history* shows today and this month.
-7. **Go offline** when you're done (you can't while a trip is running).
+   Today's earnings are on the main screen; *Earnings & history* there (or **History** on the start
+   screen) shows today and this month.
+7. **Go offline** when you're done (you can't while a trip is running) — Siosia returns to the
+   start screen.
 
 Need to cancel? *Cancel* → choose a reason; the rider is automatically offered to another driver.
 **Rider no-show** becomes available 5 minutes after *I've arrived*.
@@ -98,15 +116,66 @@ Display & Brightness → **Auto-Lock → Never** (Low Power Mode keeps Auto-Lock
 ## Booking a ride for later
 
 *Ride* → set pickup and destination → **Later** → pick the time (30 minutes to 30 days ahead) →
-**Book for …**. The price is fixed when you book. *My bookings* shows each one — with the driver,
+**Book for …**. The price is fixed when you book. **Planned** shows each one — with the driver,
 car and plate once a driver took it — and lets you **cancel**. A driver who took it starts 30
 minutes before (you get *Driver is on the way*); if nobody took it, it goes to drivers nearby 20
 minutes before.
 
-**Drivers:** the main screen shows *Booked rides: N to take* → **Browse** → *To take* lists the
-bookings with the distance from you → **Take this ride**. *Yours* shows when to leave; **Give
+**Drivers:** **Planned → Rides to take (N)** lists the bookings with the distance from you →
+**Take this ride** (while online: *Booked rides → Browse* on the driving screen). Your taken
+bookings are in Planned with when to leave; **Give
 back** if you can't (within an hour of the ride it counts as a cancellation). Siosia notifies you
 when it is **time to go** — keep the app open from then on.
+
+## Asking for a lesson or childcare
+
+1. **Siosia → Learning** or **Childcare**. Choose who you ask (picked for you when only one person
+   offers it).
+2. Pick the **day and start** (at least 30 minutes ahead, up to 30 days), **how long**, the
+   **place** — your *My place*, *Here*, or an address — and a short **note** (up to 200
+   characters) if useful.
+3. **Repeat**: once, every week or every 2 weeks — *Times* 2–12 or *Until* a date (up to about
+   3 months). One request covers all the dates.
+4. **Send request**. It waits in **Planned** as *Waiting for an answer from …*; if nobody answers
+   by its start, it lapses.
+5. Accepted → **Confirmed**. Need a ride there or back? Open it and tap **Add ride there** /
+   **Add ride back**: the places and the pickup time are filled in (there: in time for the start
+   — the route plus 10 minutes; back: 5 minutes after the end) and you can change them. It's then
+   booked like any ride for later and drivers take it in advance. Less than 30 minutes ahead?
+   Use *Siosia → Ride* at the time.
+
+Set **My place** once in ☰ → *My place*: requests start there and rides to your appointments
+pick you up there. Only you see it.
+
+## Offering help
+
+1. ☰ → **Services I offer** → turn on *Learning* and / or *Childcare*. You now appear under them
+   in Siosia. (Rides are offered by adding a car and going online, not here.)
+2. A request arrives as a notification and in **Planned → To answer**. **Accept** — and tick
+   *I need a ride there / back* if you go by car — or **Decline**.
+3. A repeating request is answered as a whole: Accept confirms every date that fits your schedule
+   and declines the clashing ones; both of you see which.
+
+## Reminders, changes and rating
+
+- Both sides get a reminder **a day** and **two hours** before, with the place, the other person
+  and every ride — *Ride there: Roman ✓* or *no driver yet*. Without notifications **Planned**
+  shows the same (*Tomorrow*, *In 2 h*, the status and the ride lines).
+- The rides of a repeating appointment are booked as each date comes within 30 days (*booked when
+  within 30 days*).
+- Either side can **Cancel** until the start; on a repeating one *This one* or *All remaining*.
+  The other side is told, the rides booked for it are cancelled, and nothing is counted against
+  anyone.
+- When it's done, both may give 1–5 stars within 24 hours (in **History**).
+
+## Add to calendar
+
+On a confirmed appointment, on a whole repeating series and on a booked ride: **Add to calendar**
+→ **Google Calendar** (opens Google Calendar with the event filled in — tap *Save*) or **Apple
+Calendar / .ics** (iPhone shows the event with *Add All*; Android opens it in the calendar app).
+The event has the place, the other person, the rides you may see and reminders (rides: 30 minutes
+before). A repeating series is one repeating event without the cancelled dates. The calendar entry
+is a copy: **it doesn't update by itself** — open the link again after a change.
 
 ## Privacy
 
@@ -114,7 +183,10 @@ when it is **time to go** — keep the app open from then on.
   driver, **only** with that other person, and never stored. The green bar is always visible while
   sharing, with a Stop button.
 - A ride keeps: pickup, dropoff, distance, duration, price, times, statuses, ratings.
-- Your nickname is the only personal information. ☰ → *Delete my profile* anonymises your rides.
+- An appointment keeps: the service, time, place, note, statuses and ratings — seen only by its two
+  people. A driver taking a ride to it sees just the ride. *My place* is seen only by you.
+- Your nickname is the only personal information. ☰ → *Delete my profile* cancels your upcoming
+  appointments (the other side is told) and anonymises your rides and appointments.
 
 ## Problems?
 
@@ -124,16 +196,20 @@ when it is **time to go** — keep the app open from then on.
 | Location off / inaccurate | Allow location (see above); outdoors GPS is better; you can always place pins by hand |
 | Driver: no requests | Be online, app open, screen on, within ~8 km of riders; tap *Show requests* |
 | Rider: car doesn't move | The driver's phone is locked or in another app (Maps) — the car stays greyed with "last seen … ago" and the ride is still on. After 15 min without contact (a booked ride: not before 15 min after its time) Siosia finds another driver; cancelling then isn't held against you |
+| *Nobody offers this yet* | Ask someone in the group to turn it on under ☰ → *Services I offer* |
+| *Too soon to book* on a ride to an appointment | Less than 30 minutes ahead — ask for a ride under *Siosia → Ride* at the time |
 | Two phones, one person | You can be a driver on one and a rider on another, but not both at once |
 
 ---
 
-# Siosia — przewodnik dla pasażerów i kierowców
+# Siosia — przewodnik
+
+Przejazdy, lekcje i pomoc przy dzieciach — wśród ludzi, którzy się znają.
 
 Potrzebujesz: **linku** i **kodu zaproszenia** od organizatora oraz telefonu z aktualnym Chrome
 (Android) lub Safari (iOS). Bez sklepu z aplikacjami, bez konta, bez danych płatniczych.
 
-## Pierwsze uruchomienie (pasażer i kierowca) — 1 minuta
+## Pierwsze uruchomienie — 1 minuta
 
 1. Otwórz link. Wpisz **kod zaproszenia** (raz na telefon).
 2. Wybierz **pseudonim** (2–20 znaków). To cały Twój profil — bez imienia, telefonu i e-maila.
@@ -146,9 +222,23 @@ Android Chrome → 🔒 obok adresu → *Uprawnienia → Lokalizacja → Zezwól
 iPhone → *Ustawienia → Prywatność → Usługi lokalizacji → Witryny Safari → Podczas używania*, potem
 odśwież stronę.
 
+## Ekran startowy
+
+- **Siosia** — poproś o pomoc: **Przejazd**, **Nauka** (lekcja, zadanie domowe) albo **Opieka nad
+  dziećmi**. Przy każdej usłudze widać, kto ją oferuje; *Nikt tego jeszcze nie oferuje* znaczy, że
+  nikt jej jeszcze nie włączył.
+- **Zaplanowane** — Twój plan w obu rolach, dzień po dniu: o co prosisz, na co się zgodziłeś/aś,
+  przejazdy zarezerwowane lub wzięte jako kierowca. Przycisk podaje najbliższą pozycję
+  (*Następne: Opieka nad dziećmi, dziś 14:00*) i liczbę próśb czekających na Twoją odpowiedź.
+- **Historia** — to, co się skończyło, od najnowszych; kierowcy widzą na górze zarobki z dziś i z
+  miesiąca.
+
+W trakcie kursu albo gdy jesteś kierowcą online, Siosia otwiera się od razu na tym ekranie;
+wyjście z ekranu kierowcy online najpierw pyta o przejście offline.
+
 ## Jadę (pasażer)
 
-1. Dotknij **Jadę**. Miejsce odbioru to Twoja pozycja (w razie potrzeby przesuń zieloną pinezkę).
+1. **Siosia → Przejazd**. Miejsce odbioru to Twoja pozycja (w razie potrzeby przesuń zieloną pinezkę).
 2. Ustaw **cel**: dotknij pola *Cel* i **wyszukaj** adres (min. 4 litery, *Szukaj*), albo
    **przytrzymaj mapę**, albo 📌 i dotknij mapy. Pinezki można przeciągać.
 3. Widzisz dystans, czas i **stałą cenę** — po zamówieniu się nie zmienia. („szacunek” oznacza, że
@@ -162,7 +252,7 @@ odśwież stronę.
    chwili możesz dotknąć **Zatrzymaj** (kierowca pojedzie wtedy do pinezki odbioru).
 6. Wsiadasz i jedziesz. Udostępnianie wyłącza się samo, gdy kurs się zaczyna.
 7. Na końcu **zapłać kierowcy bezpośrednio** (Siosia nie obsługuje pieniędzy), dotknij *Oznacz
-   jako zapłacone*, wystaw 1–5 gwiazdek. Historia: ☰ → *Historia kursów*.
+   jako zapłacone*, wystaw 1–5 gwiazdek. Kursy są w **Historii**.
 
 Anulować możesz do rozpoczęcia kursu (*Anuluj kurs*). Anulowanie po przyjeździe kierowcy liczy się
 jako późne (bez opłat).
@@ -176,8 +266,9 @@ potwierdzenie zastępuje go na tym telefonie.
 
 ## Wożę (kierowca)
 
-1. Dotknij **Wożę** i raz wpisz samochód: marka, model, kolor, numer rejestracyjny, miejsca.
-   Pasażer zobaczy go dopiero po przyjęciu kursu.
+1. **Siosia → Woź z Siosią** i raz wpisz samochód: marka, model, kolor, numer rejestracyjny,
+   miejsca. Pasażer zobaczy go dopiero po przyjęciu kursu. Od tej chwili karta to **Przejazd —
+   przejdź online** z liczbą przejazdów do wzięcia.
 2. Dotknij **Przejdź online**. Zezwól na lokalizację. Gdy jesteś online, Siosia **nie wygasza
    ekranu** (uchwyt na telefon) — trzymaj ją na wierzchu: telefon wstrzymuje lokalizację po
    zablokowaniu ekranu lub przejściu do innej aplikacji.
@@ -193,8 +284,9 @@ potwierdzenie zastępuje go na tym telefonie.
    pasażera, póki ją udostępnia.
 5. **Jestem na miejscu** → gdy pasażer wsiądzie, **Rozpocznij kurs** → u celu **Zakończ kurs**.
 6. Pobierz opłatę **bezpośrednio**, dotknij *Oznacz opłatę jako pobraną*, oceń pasażera. Dzisiejsze
-   zarobki są na ekranie głównym; ☰ → *Zarobki i historia* pokazuje dzień i miesiąc.
-7. Na koniec **Przejdź offline** (nie da się w trakcie kursu).
+   zarobki są na ekranie głównym; *Zarobki i historia* (albo **Historia** na ekranie startowym)
+   pokazuje dzień i miesiąc.
+7. Na koniec **Przejdź offline** (nie da się w trakcie kursu) — Siosia wraca do ekranu startowego.
 
 Musisz anulować? *Anuluj* → wybierz powód; kurs automatycznie trafia do innego kierowcy.
 **Pasażer się nie pojawił** jest dostępne 5 minut po *Jestem na miejscu*.
@@ -232,15 +324,66 @@ Autoblokadę na 30 sekundach).
 ## Rezerwacja kursu na później
 
 *Jadę* → ustaw odbiór i cel → **Później** → wybierz godzinę (od 30 minut do 30 dni naprzód) →
-**Zarezerwuj na …**. Cena jest ustalana przy rezerwacji. *Moje rezerwacje* pokazują każdą — z
+**Zarezerwuj na …**. Cena jest ustalana przy rezerwacji. **Zaplanowane** pokazują każdą — z
 kierowcą, samochodem i numerem, gdy kierowca ją weźmie — i pozwalają ją **anulować**. Kierowca,
 który ją wziął, rusza 30 minut wcześniej (dostaniesz *Kierowca jest w drodze*); jeśli nikt jej nie
 weźmie, trafi do kierowców w pobliżu 20 minut wcześniej.
 
-**Kierowcy:** ekran główny pokazuje *Rezerwacje: N do wzięcia* → **Przeglądaj** → *Do wzięcia*
-z odległością od Ciebie → **Biorę ten kurs**. *Twoje* pokazują, kiedy wyjechać; **Oddaj**, jeśli
+**Kierowcy:** **Zaplanowane → Przejazdy do wzięcia: N** z odległością od Ciebie → **Biorę ten
+kurs** (online: *Rezerwacje → Przeglądaj* na ekranie kierowcy). Wzięte rezerwacje są w
+Zaplanowanych z godziną wyjazdu; **Oddaj**, jeśli
 nie możesz (na mniej niż godzinę przed kursem liczy się to jako anulowanie). Siosia powiadomi Cię,
 gdy **czas jechać** — od tej chwili trzymaj aplikację otwartą.
+
+## Prośba o lekcję albo opiekę nad dziećmi
+
+1. **Siosia → Nauka** albo **Opieka nad dziećmi**. Wybierz, kogo prosisz (wybrane za Ciebie, gdy
+   oferuje to tylko jedna osoba).
+2. Wybierz **dzień i początek** (co najmniej 30 minut, najwyżej 30 dni naprzód), **jak długo**,
+   **miejsce** — *Moje miejsce*, *Tutaj* albo adres — i w razie potrzeby krótką **notatkę** (do
+   200 znaków).
+3. **Powtarzaj**: jednorazowo, co tydzień albo co 2 tygodnie — *Razy* 2–12 albo *Do dnia* (do
+   około 3 miesięcy). Jedna prośba obejmuje wszystkie terminy.
+4. **Wyślij prośbę**. Czeka w **Zaplanowanych** jako *Czeka na odpowiedź: …*; bez odpowiedzi do
+   początku — wygasa.
+5. Przyjęta → **Potwierdzone**. Potrzebujesz przejazdu? Otwórz termin i dotknij **Dodaj przejazd
+   tam** / **Dodaj przejazd powrotny**: miejsca i godzina odbioru są wpisane (tam: na czas — trasa
+   plus 10 minut; powrót: 5 minut po końcu) i możesz je zmienić. Potem to zwykła rezerwacja, którą
+   kierowcy biorą z wyprzedzeniem. Mniej niż 30 minut naprzód? Zamów w tym czasie *Siosia →
+   Przejazd*.
+
+Ustaw raz **Moje miejsce** w ☰ → *Moje miejsce*: stamtąd zaczynają się prośby i tam odbiera Cię
+przejazd na termin. Widzisz je tylko Ty.
+
+## Oferuję pomoc
+
+1. ☰ → **Co oferuję** → włącz *Naukę* i / lub *Opiekę nad dziećmi*. Od teraz jesteś przy nich w
+   Siosi. (Przejazdy oferuje się, dodając auto i przechodząc online, nie tutaj.)
+2. Prośba przychodzi jako powiadomienie i w **Zaplanowane → Do odpowiedzi**. **Przyjmij** — i
+   zaznacz *Potrzebuję przejazdu tam / z powrotem*, jeśli jedziesz autem — albo **Odrzuć**.
+3. Prośbę powtarzaną odpowiada się w całości: Przyjmij potwierdza każdy termin, który pasuje do
+   Twojego planu, a kolidujące odrzuca; oboje widzicie które.
+
+## Przypomnienia, zmiany i oceny
+
+- Obie strony dostają przypomnienie **dzień** i **dwie godziny** przed, z miejscem, drugą osobą i
+  każdym przejazdem — *Przejazd tam: Roman ✓* albo *jeszcze bez kierowcy*. Bez powiadomień to samo
+  pokazują **Zaplanowane** (*Jutro*, *Za 2 godz.*, status i przejazdy).
+- Przejazdy terminu powtarzanego rezerwujemy, gdy do terminu zostanie 30 dni (*zarezerwujemy, gdy
+  zostanie 30 dni*).
+- Każda strona może **Odwołać** do początku; przy powtarzanym *Tylko ten* albo *Wszystkie
+  pozostałe*. Druga strona dostaje wiadomość, zarezerwowane przejazdy są odwołane i nikomu nic się
+  nie liczy.
+- Po wszystkim obie strony mogą w ciągu 24 godzin wystawić 1–5 gwiazdek (w **Historii**).
+
+## Dodaj do kalendarza
+
+Przy potwierdzonym terminie, całej serii i zarezerwowanym przejeździe: **Dodaj do kalendarza** →
+**Kalendarz Google** (otwiera Kalendarz Google z wypełnionym wydarzeniem — dotknij *Zapisz*) albo
+**Kalendarz Apple / .ics** (iPhone pokazuje wydarzenie z *Dodaj wszystko*; Android otwiera je w
+aplikacji kalendarza). Wydarzenie ma miejsce, drugą osobę, przejazdy, które możesz widzieć, i
+przypomnienia (przejazd: 30 minut przed). Seria to jedno powtarzane wydarzenie bez odwołanych
+terminów. Wpis w kalendarzu to kopia: **sam się nie aktualizuje** — po zmianie otwórz link ponownie.
 
 ## Prywatność
 
@@ -248,7 +391,10 @@ gdy **czas jechać** — od tej chwili trzymaj aplikację otwartą.
   przydzielonym kierowcą, **tylko** tej drugiej osobie, i nigdy nie jest zapisywana. Zielony pasek z
   przyciskiem Zatrzymaj jest zawsze widoczny podczas udostępniania.
 - Kurs przechowuje: odbiór, cel, dystans, czas, cenę, godziny, statusy i oceny.
-- Pseudonim to jedyna informacja osobowa. ☰ → *Usuń mój profil* anonimizuje Twoje kursy.
+- Termin przechowuje: usługę, czas, miejsce, notatkę, statusy i oceny — widzą je tylko dwie osoby.
+  Kierowca, który wiezie na termin, widzi tylko przejazd. *Moje miejsce* widzisz tylko Ty.
+- Pseudonim to jedyna informacja osobowa. ☰ → *Usuń mój profil* odwołuje nadchodzące terminy
+  (druga strona dostaje wiadomość) i anonimizuje kursy i terminy.
 
 ## Problemy?
 
@@ -258,4 +404,6 @@ gdy **czas jechać** — od tej chwili trzymaj aplikację otwartą.
 | Lokalizacja wyłączona / niedokładna | Zezwól na lokalizację (wyżej); na zewnątrz GPS działa lepiej; pinezki zawsze można postawić ręcznie |
 | Kierowca: brak zamówień | Bądź online, aplikacja otwarta, ekran włączony, do ~8 km od pasażerów; dotknij *Pokaż zamówienia* |
 | Pasażer: auto stoi | Telefon kierowcy jest zablokowany lub w innej aplikacji (Mapy) — auto zostaje szare z „ostatnio widziany … temu”, a kurs jest aktualny. Po 15 min bez kontaktu (rezerwacja: nie wcześniej niż 15 min po jej godzinie) Siosia szuka innego kierowcy; anulowanie wtedy nie liczy się przeciwko Tobie |
+| *Nikt tego jeszcze nie oferuje* | Poproś kogoś z grupy, by włączył to w ☰ → *Co oferuję* |
+| *Za późno na rezerwację* przejazdu na termin | Mniej niż 30 minut naprzód — zamów w tym czasie *Siosia → Przejazd* |
 | Dwa telefony, jedna osoba | Możesz być kierowcą na jednym i pasażerem na drugim, ale nie jednocześnie |
