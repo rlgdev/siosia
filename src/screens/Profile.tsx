@@ -252,20 +252,30 @@ function ServicesIOffer() {
   const store = useStore();
   const [busy, run, error] = useBusy();
   const entries = (app.deployment?.services ?? []).filter((e) => e.kind === "time" && e.enabled);
-  const offers = app.profile?.offers ?? [];
+  const saved = app.profile?.offers ?? [];
+  // The tick follows the tap at once; a refused change goes back to what the server has.
+  const [offers, setOffers] = useState<string[]>(saved);
   if (!entries.length) return null;
-  const toggle = (id: string, on: boolean) =>
-    run(async () => {
-      await store.api.setOffers(on ? [...offers, id] : offers.filter((x) => x !== id));
+  const toggle = (id: string, on: boolean) => {
+    const next = on ? [...offers, id] : offers.filter((x) => x !== id);
+    setOffers(next);
+    void run(async () => {
+      try {
+        await store.api.setOffers(next);
+      } catch (e) {
+        setOffers(saved);
+        throw e;
+      }
       await store.reloadProfile();
     });
+  };
   return (
     <section className="card stack" data-testid="offers">
       <h3>{t("profile.offersTitle")}</h3>
       <p className="muted small">{t("profile.offersHint")}</p>
       {entries.map((e) => (
         <label key={e.id} className="switch-row">
-          <input type="checkbox" checked={offers.includes(e.id)} disabled={busy} onChange={(ev) => void toggle(e.id, ev.target.checked)} data-testid={`offer-${e.id}`} />
+          <input type="checkbox" checked={offers.includes(e.id)} disabled={busy} onChange={(ev) => toggle(e.id, ev.target.checked)} data-testid={`offer-${e.id}`} />
           <span>
             <EntryIcon icon={e.icon} /> {localText(e.name, lang)}
           </span>
