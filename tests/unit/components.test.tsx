@@ -13,7 +13,9 @@ import { I18nProvider } from "../../src/i18n";
 import { AfterRide } from "../../src/screens/AfterRide";
 import { Home } from "../../src/screens/Home";
 import { OfferCard } from "../../src/screens/driver/OfferCard";
+import { RiderActive } from "../../src/screens/rider/RiderActive";
 import { Searching } from "../../src/screens/rider/Searching";
+import type { RiderRuntime } from "../../src/state/runtime";
 import { sharing } from "../../src/state/sharing";
 import { AppStore, StoreContext } from "../../src/state/store";
 
@@ -117,6 +119,55 @@ describe("R2 Searching", () => {
     );
     expect(screen.getByText("Żaden kierowca nie przyjął zamówienia.")).toBeInTheDocument();
     expect(screen.getByTestId("try-again")).toHaveTextContent("Spróbuj ponownie");
+  });
+});
+
+describe("R3 Active ride: the driver's app goes quiet (§12)", () => {
+  const assigned = (status: "accepted" | "in_progress") =>
+    ride({ status, driver: { nickname: "Roman", rating: { mean: null, count: 0 }, icon: null, vehicle: { make: "Porsche", model: "Taycan", colour: "Zielony", plate: "W1LLRUN", seats: 4 } } } as Partial<RideView>);
+  const rt = (over: Partial<RiderRuntime>): RiderRuntime => ({
+    driverPos: { lat: 52.21, lng: 21.01, heading: null, t: Date.now() } as RiderRuntime["driverPos"],
+    driverSeenAt: Date.now(),
+    driverPresent: true,
+    sharingOn: true,
+    setSharingOn: () => {},
+    fix: null,
+    ...over
+  });
+  const route = { line: null, km: 2, min: 5, estimate: false };
+
+  it("keeps the ride and the last position, says it is paused, and drops the stale ETA", () => {
+    setup("pl", <RiderActive ride={assigned("accepted")} rt={rt({ driverPresent: false, driverSeenAt: Date.now() - 125_000 })} route={route} busy={false} error={null} onCancel={() => {}} />);
+    expect(screen.getByTestId("ride-status")).toHaveTextContent("Kierowca jest w drodze");
+    expect(screen.getByTestId("ride-status")).not.toHaveTextContent("min");
+    expect(screen.getByTestId("driver-paused")).toHaveTextContent("Twój kurs jest aktualny");
+    expect(screen.getByTestId("driver-last-seen")).toHaveTextContent("Ostatnio widziany 2 min temu");
+    expect(screen.getByTestId("driver-card")).toHaveTextContent("W1LLRUN");
+  });
+
+  it("shows nothing extra while positions arrive, and 'reconnecting' during the trip", () => {
+    const { unmount } = setup("en", <RiderActive ride={assigned("accepted")} rt={rt({})} route={route} busy={false} error={null} onCancel={() => {}} />);
+    expect(screen.queryByTestId("driver-paused")).toBeNull();
+    expect(screen.getByTestId("ride-status")).toHaveTextContent("ETA 5 min");
+    unmount();
+    setup("en", <RiderActive ride={assigned("in_progress")} rt={rt({ driverPresent: false, driverSeenAt: Date.now() - 20_000 })} route={route} busy={false} error={null} onCancel={() => {}} />);
+    expect(screen.getByText("Driver reconnecting…")).toBeInTheDocument();
+    expect(screen.queryByTestId("driver-paused")).toBeNull();
+    expect(screen.getByTestId("driver-last-seen")).toHaveTextContent("Last seen 20 s ago");
+  });
+
+  it("stays neutral when only this phone lags, and has its own wording when no car was ever shown", () => {
+    const { unmount } = setup("en", <RiderActive ride={assigned("accepted")} rt={rt({ driverSeenAt: Date.now() - 20_000 })} route={route} busy={false} error={null} onCancel={() => {}} />);
+    expect(screen.queryByTestId("driver-paused")).toBeNull(); // still in the channel: maybe our own connection
+    expect(screen.getByTestId("driver-last-seen")).toHaveTextContent("Last seen 20 s ago");
+    unmount();
+    setup("en", <RiderActive ride={assigned("accepted")} rt={rt({ driverPos: null, driverSeenAt: null, driverPresent: false })} route={route} busy={false} error={null} onCancel={() => {}} />);
+    expect(screen.getByTestId("driver-paused")).toHaveTextContent("the car appears on your map when it's back");
+  });
+
+  it("tells the rider why a ride is searching again after the driver's phone stopped answering", () => {
+    setup("en", <Searching ride={ride({ redispatchCount: 1, cancelReason: "driver_lost" })} expiresAt={EXP} expired={false} nearbyCount={1} busy={false} error={null} onCancel={() => {}} onTryAgain={() => {}} onBack={() => {}} />);
+    expect(screen.getByText("Your driver's phone stopped answering — we're finding you another one.")).toBeInTheDocument();
   });
 });
 

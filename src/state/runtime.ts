@@ -13,13 +13,14 @@ import { driverShares, riderMayShare } from "../core/lifecycle";
 import { PositionThrottle } from "../core/throttle";
 import type { DriverPos, LatLng, MyState, RideView, RiderPos } from "../core/types";
 import { ServerError } from "../core/types";
-import { chime, keepScreenOn, unlockAudio } from "../services/device";
+import { chime, unlockAudio } from "../services/device";
+import { screenWake, useScreenWake } from "../services/wakeLock";
 import { geo, useGeo, type GeoFix } from "../services/geolocation";
 import { getRoute, type RouteResult } from "../services/routing";
 import { sharing } from "./sharing";
 import { useApp, useStore } from "./store";
 
-/** The other party's live marker disappears this long after its last update (FR-034). */
+/** The rider's live marker (on the driver's map) disappears this long after its last update (FR-034). */
 const PEER_GONE_MS = 10_000;
 
 // ---------------------------------------------------------------------------------------------
@@ -144,7 +145,10 @@ export function useDriverRuntime(): DriverRuntime {
   const ride = app.my?.ride && app.my.ride.role === "driver" ? app.my.ride : null;
   const offerId = app.my?.offer?.id ?? null;
   const { status: geoStatus, fix } = useGeo(online || !!ride);
-  const [wakeOk, setWakeOk] = useState(true);
+  // The screen stays on while online (FR-020); warn when this phone can't or won't keep it on, or
+  // is still waiting for the tap iOS needs first.
+  const wake = useScreenWake();
+  const wakeOk = wake.supported && !wake.refused && !wake.waiting;
   const [riderPos, setRiderPos] = useState<RiderPos | null>(null);
   const [riderSeenAt, setRiderSeenAt] = useState<number | null>(null);
   const [riderStopped, setRiderStopped] = useState(false);
@@ -224,16 +228,24 @@ export function useDriverRuntime(): DriverRuntime {
 
   const goOnline = useCallback(async () => {
     unlockAudio();
-    let f: GeoFix;
+    // Ask for the screen lock now, inside the tap: iOS honours a tap for 5 s only, and the location
+    // fix plus the server round trips can take longer (the online effect below keeps it after that).
+    void screenWake.want("online", true);
     try {
-      f = await firstFix();
+      let f: GeoFix;
+      try {
+        f = await firstFix();
+      } catch (e) {
+        throw new ServerError("not_online", (e as Error).message);
+      }
+      await api.setOnline(true);
+      // Use the fresh position right away (the shared watch may not have delivered yet).
+      geo.seed(f);
+      await store.refresh();
     } catch (e) {
-      throw new ServerError("not_online", (e as Error).message);
+      if (!store.get().my?.driverOnline) void screenWake.want("online", false);
+      throw e;
     }
-    await api.setOnline(true);
-    // Use the fresh position right away (the shared watch may not have delivered yet).
-    geo.seed(f);
-    await store.refresh();
   }, [api, store]);
 
   const refreshOffers = useCallback(async (): Promise<MyState | null> => {
@@ -277,7 +289,7 @@ export function useDriverRuntime(): DriverRuntime {
   // offline (FR-028); the banner shows that refusal instead of failing silently.
   useEffect(() => {
     if (!online) return;
-    void keepScreenOn(true).then(setWakeOk);
+    void screenWake.want("online", true);
     sharing.set("driver", {
       role: "driver",
       stop: async () => {
@@ -290,7 +302,7 @@ export function useDriverRuntime(): DriverRuntime {
       }
     });
     return () => {
-      void keepScreenOn(false);
+      void screenWake.want("online", false);
       sharing.set("driver", null);
     };
   }, [online, goOffline, store]);
@@ -510,13 +522,10 @@ export function useRiderRuntime(ride: RideView | null): RiderRuntime {
     };
   }, [rideKey, api, clearDriver]);
 
-  // Driver gone (tab killed) → remove the live marker within 10 s (FR-034). A driver who is
-  // merely silent (screen locked) keeps a greyed "last seen" marker instead — see RiderActive.
-  useEffect(() => {
-    if (driverPresent !== false) return;
-    const id = setTimeout(clearDriver, PEER_GONE_MS - 2000);
-    return () => clearTimeout(id);
-  }, [driverPresent, clearDriver]);
+  // A driver who goes silent or leaves the channel keeps a greyed "last seen" marker (§12 "driver's
+  // screen locks"): on an iPhone a locked screen or Maps in front drops the connection exactly like
+  // a closed app, and the ride is still on. Only an explicit stop (onSharingStop) or the ride ending
+  // removes it.
 
   // Send own position while a driver is assigned and sharing is on; stops at in_progress (FR-040).
   const hasFix = !!fix;

@@ -728,7 +728,9 @@ export class Engine {
       return;
     }
     if (r.status === "requested" || r.status === "accepted" || r.status === "arrived") {
-      if (u) {
+      // Not held against the rider once Siosia gave up on their driver (silent for 15 min).
+      const driverLost = r.status === "requested" && r.cancelReason === "driver_lost";
+      if (u && !driverLost) {
         u.riderCancels++;
         if (r.status === "arrived") u.lateCancels++;
       }
@@ -959,7 +961,8 @@ export class Engine {
         // A booked ride gives its driver until 15 min after the booked time to show up.
         if (r.scheduledFor != null && this.now < r.scheduledFor + SERVER.bookingLateS * 1000) continue;
         const d = this.db.drivers[r.driverId];
-        if (!d || this.now - d.lastSeen > SERVER.driverLostS * 1000) {
+        // Silent for minutes is normal on an iPhone (screen locked, Maps in front): wait longer.
+        if (!d || this.now - d.lastSeen > SERVER.rideDriverLostS * 1000) {
           const lost = r.driverId;
           if (d) d.online = false;
           this.redispatch(r, "driver_lost");

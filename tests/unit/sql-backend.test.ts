@@ -262,18 +262,44 @@ describe("SQL backend (PGlite)", () => {
     expect(after).toMatchObject({ status: "expired", cancelledBy: "system", fareIsEstimate: true });
   });
 
-  it("re-dispatches when the assigned driver goes silent for 60 s (§12)", async () => {
+  it("re-dispatches when the assigned driver has been silent for 15 min (§12; iPhones pause the app)", async () => {
     const ride = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
     const s3 = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
     await call(U.d3, "siosia_decide_offer", [(s3.offer as Json).id, "accept"]);
-    await admin("update public.driver_status set last_seen = now() - interval '61 seconds' where user_id = $1", [U.d3]);
+    // Screen locked or Maps in front for 14 min: the ride stays with the driver.
+    await admin("update public.driver_status set last_seen = now() - interval '14 minutes' where user_id = $1", [U.d3]);
+    expect(await call<Json>(U.rider2, "siosia_get_ride", [ride.id])).toMatchObject({ status: "accepted", redispatchCount: 0 });
+    await admin("update public.driver_status set last_seen = now() - interval '901 seconds' where user_id = $1", [U.d3]);
     const r = await call<Json>(U.rider2, "siosia_get_ride", [ride.id]);
     expect(r).toMatchObject({ status: "requested", cancelReason: "driver_lost", redispatchCount: 1 });
     const d3 = await call<Json>(U.d3, "siosia_my_state");
     expect(d3.driverOnline).toBe(false);
     await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
     const p = await call<Json>(U.rider2, "siosia_get_profile");
-    expect(p.riderCancels).toBe(1);
+    expect(p.riderCancels).toBe(0); // Siosia gave up on the driver: not held against the rider
+  });
+
+  it("counts a rider's cancellation while the ride is the driver's, not once Siosia gave up on the driver", async () => {
+    const before = Number((await call<Json>(U.rider2, "siosia_get_profile")).riderCancels);
+    const ride = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    await call(U.d3, "siosia_set_online", [true]); // the sweep set d3 offline above
+    const s3 = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    await call(U.d3, "siosia_decide_offer", [(s3.offer as Json).id, "accept"]);
+    // d3's iPhone in a pocket for 10 min: still d3's ride, a cancel counts.
+    await admin("update public.driver_status set last_seen = now() - interval '10 minutes' where user_id = $1", [U.d3]);
+    await call(U.rider2, "siosia_cancel_ride", [ride.id, null]);
+    expect(Number((await call<Json>(U.rider2, "siosia_get_profile")).riderCancels)).toBe(before + 1);
+    // Silent for 15 min: Siosia looks for another driver, and giving up then is not held against the rider.
+    const again = await call<Json>(U.rider2, "siosia_request_ride", [PICKUP, DROPOFF, 2, 6, false]);
+    await call(U.d3, "siosia_set_online", [true]);
+    const s3b = await call<Json>(U.d3, "siosia_heartbeat", [NEAR(0.03).lat, NEAR(0.03).lng]);
+    await call(U.d3, "siosia_decide_offer", [(s3b.offer as Json).id, "accept"]);
+    await admin("update public.driver_status set last_seen = now() - interval '901 seconds' where user_id = $1", [U.d3]);
+    expect(await call<Json>(U.rider2, "siosia_get_ride", [again.id])).toMatchObject({ status: "requested", cancelReason: "driver_lost" });
+    await call(U.rider2, "siosia_cancel_ride", [again.id, null]);
+    expect(await call<Json>(U.rider2, "siosia_get_ride", [again.id])).toMatchObject({ status: "cancelled", cancelledBy: "rider" });
+    expect(Number((await call<Json>(U.rider2, "siosia_get_profile")).riderCancels)).toBe(before + 1);
+    await call(U.d3, "siosia_set_online", [false]);
   });
 
   it("offers a withdrawn card again when the driver is eligible again; a decline is final (§6 rule 4)", async () => {
@@ -520,7 +546,11 @@ describe("SQL backend (PGlite)", () => {
     // The driver's app may stay closed until 15 min after the booked time.
     await admin("update public.driver_status set last_seen = now() - interval '5 minutes' where user_id = $1", [BD]);
     expect((await call<Json>(B1, "siosia_get_ride", [taken.id])).status).toBe("accepted");
+    // 16 min past the booked time, silent for 5 min: an iPhone in a pocket — still the driver's.
     await admin("update public.rides set scheduled_for = now() - interval '16 minutes' where id = $1", [taken.id]);
+    expect((await call<Json>(B1, "siosia_get_ride", [taken.id])).status).toBe("accepted");
+    // Silent for over 15 min as well: someone else takes it.
+    await admin("update public.driver_status set last_seen = now() - interval '901 seconds' where user_id = $1", [BD]);
     expect(await call<Json>(B1, "siosia_get_ride", [taken.id])).toMatchObject({ status: "requested", driver: null });
     await call(B1, "siosia_cancel_ride", [taken.id, null]);
     // Untaken: normal dispatch from 20 min before, open until 15 min after the booked time.

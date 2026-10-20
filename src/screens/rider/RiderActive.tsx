@@ -33,17 +33,30 @@ export function RiderActive({ ride, rt, route, busy, error, onCancel }: Props) {
   const status = ride.status as "accepted" | "arrived" | "in_progress";
   const seenAgo = rt.driverSeenAt ? Math.round((now - rt.driverSeenAt) / 1000) : null;
   const stale = seenAgo !== null && seenAgo * 1000 > 10_000;
+  // §12: the driver's app left the ride channel (iPhone locked, Maps in front, app closed): the ride
+  // is still on and the car stays where it was last seen. Plain staleness stays neutral ("last
+  // seen"): it may be this phone's own connection.
+  const paused = rt.driverPresent === false;
   // §12: with sharing off the driver goes to the fixed pin, so tell a rider who walked away.
   const awayM = !rt.sharingOn && rt.fix && status !== "in_progress" ? Math.round(haversineM(rt.fix, ride.pickup)) : 0;
   return (
     <Sheet>
       <p className="status-line" role="status" aria-live="polite" data-testid="ride-status">
         {t(`active.${status}`)}
-        {status !== "arrived" && route.min !== null && rt.driverPos && <strong> · {t("active.eta", { min: fmtMin(route.min) })}</strong>}
+        {status !== "arrived" && route.min !== null && rt.driverPos && !stale && <strong> · {t("active.eta", { min: fmtMin(route.min) })}</strong>}
       </p>
       {rt.driverPresent === false && status === "in_progress" && <p className="hint">{t("active.reconnecting")}</p>}
+      {paused && status !== "in_progress" && (
+        <p className="hint" data-testid="driver-paused">
+          {t(rt.driverPos ? "active.paused" : "active.pausedNoCar")}
+        </p>
+      )}
       {!rt.driverPos && rt.driverPresent !== false && <p className="hint">{t("active.waitingFix")}</p>}
-      {stale && <p className="hint">{t("active.lastSeen", { s: seenAgo! })}</p>}
+      {stale && (
+        <p className="hint" data-testid="driver-last-seen">
+          {seenAgo! < 60 ? t("active.lastSeen", { s: seenAgo! }) : t("active.lastSeenMin", { m: Math.floor(seenAgo! / 60) })}
+        </p>
+      )}
       {awayM > 100 && <p className="hint">{t("active.awayFromPin", { m: awayM })}</p>}
       {ride.scheduledFor !== null && ride.status !== "in_progress" && <BookedFor at={ride.scheduledFor} />}
       {d && (

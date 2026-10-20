@@ -21,8 +21,14 @@ export const DEFAULT_CONFIG: DeploymentConfig = {
 export const SERVER = {
   /** A driver whose heartbeat is older than this gets no offers and loses open ones. */
   driverStaleS: 12,
-  /** An accepted/arrived ride whose driver is silent this long is re-dispatched (§12). */
+  /** An idle driver silent this long is set offline; on a ride, the driver counts as silent. */
   driverLostS: 60,
+  /**
+   * An accepted/arrived ride whose driver is silent this long is re-dispatched (§12 says 60 s).
+   * An iPhone pauses Siosia whenever its screen locks or another app (Maps) is in front, so a
+   * driver on the way to the pickup is often silent for minutes.
+   */
+  rideDriverLostS: 15 * 60,
   /** Receipt actions (paid, collected, rating) allowed this long after completion. */
   afterRideWindowS: 24 * 3600,
   /** pendingReceipt shows completed rides that ended within this window. */

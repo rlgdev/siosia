@@ -7,6 +7,7 @@ import { disablePush, enablePush, pushState, type PushState } from "../services/
 import { useI18n } from "../i18n";
 import { isIOS, isStandalone, readPref, writePref } from "../services/device";
 import { useApp, useStore } from "../state/store";
+import { ScreenOnSection } from "./ScreenOn";
 import { Notice, useBusy } from "./ui";
 
 /** Profile panel section: install steps, the move code and (inside the app) its status. */
@@ -66,6 +67,7 @@ export function AppSection() {
         </p>
       )}
       <Notifications />
+      <ScreenOnSection />
       <MoveHere />
     </section>
   );

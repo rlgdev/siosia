@@ -350,6 +350,50 @@ test("the menu offers notifications next to the app install steps", async ({ con
   await expect(page.getByTestId("push-state")).not.toBeEmpty();
 });
 
+test("the rider keeps the driver's car, greyed with 'last seen', when the driver's app goes quiet (§12, iPhone)", async ({ context }) => {
+  await isolate(context);
+  const driver = await context.newPage();
+  await goOnlineAsDriver(driver, "Roman", "W1LLRUN");
+  const rider = await context.newPage();
+  await onboard(rider, "Toria");
+  await rider.getByTestId("mode-ride").click();
+  await longPressMap(rider, 100, 60);
+  await rider.getByTestId("request-ride").click();
+  await driver.getByTestId("accept-offer").click();
+  await expect(rider.getByTestId("driver-card")).toContainText("Roman");
+  await driver.bringToFront(); // Chromium feeds GPS only to the focused page
+  await context.setGeolocation({ latitude: 52.2307, longitude: 21.0132, accuracy: 8 });
+  await expect(rider.locator(".leaflet-marker-icon.car")).toBeVisible({ timeout: 10_000 });
+
+  // The driver's app disappears (on an iPhone: screen locked, or Apple Maps in front).
+  await driver.close();
+  await expect(rider.getByTestId("driver-paused")).toContainText("Your ride is still on", { timeout: 15_000 });
+  await rider.waitForTimeout(10_000); // the marker used to vanish 8 s after the driver left
+  await expect(rider.locator(".leaflet-marker-icon.car.is-stale")).toBeVisible();
+  await expect(rider.getByTestId("driver-last-seen")).toContainText("Last seen");
+  await expect(rider.getByTestId("ride-status")).toContainText("Your driver is on the way");
+});
+
+test("Keep the screen on: a top-bar checkbox, on by itself while a driver is online, remembered on this phone", async ({ context }) => {
+  await isolate(context);
+  const driver = await context.newPage();
+  await goOnlineAsDriver(driver, "Kuba", "WE 4321");
+  const box = driver.getByTestId("screen-on");
+  await expect(box).toBeChecked(); // online: the screen stays on anyway (FR-020)
+  await expect(box).toBeDisabled();
+  await driver.getByTestId("toggle-online").click();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await driver.reload();
+  await expect(driver.getByTestId("driver-state")).toHaveText("Offline");
+  await expect(driver.getByTestId("screen-on")).toBeChecked();
+  // The same choice in the menu, with what it does.
+  await driver.getByRole("button", { name: "Menu" }).click();
+  await expect(driver.getByTestId("screen-on-section")).toContainText("pressing the side button still pauses Siosia");
+  await expect(driver.getByTestId("screen-on-section").getByRole("checkbox")).toBeChecked();
+});
+
 test("a driver whose app went quiet stays on standby and is back online with the request when the app opens", async ({ context }) => {
   await isolate(context);
   const driver = await context.newPage();

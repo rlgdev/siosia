@@ -15,7 +15,7 @@ commit it (Definition of Done).
 
 | # | Step | Expected | ✓ |
 | --- | --- | --- | --- |
-| 1 | Driver: open link → invite code → nickname → **Drive** → vehicle → **Go online** | S4 green bar visible; no "keep the screen on" warning (wake lock on) | |
+| 1 | Driver: open link → invite code → nickname → **Drive** → vehicle → **Go online** | S4 green bar visible; no "keep the screen on" warning (wake lock on); top-bar *Keep the screen on* checked and locked. iPhone Home Screen app: leave the phone untouched > 2 min — the screen stays on; side button → unlock → still stays on without a tap | |
 | 2 | Rider: open link → invite code → nickname → **Ride**; pickup from GPS; dropoff 2–3 km away by **address search** | Fare, distance and ETA shown; accuracy circle if GPS > 50 m | |
 | 3 | Rider: **Request ride** | Driver: offer card ≤ 1 s with chime/vibration, distance to pickup, 20 s countdown → **Accept** | |
 | 4 | Driver walks/drives 200 m | Rider: driver card, car, **plate**; car marker moves & rotates; ETA refreshes ≥ every 5 s | |
@@ -23,7 +23,7 @@ commit it (Definition of Done).
 | 5b | Driver: **Start trip** | Rider pin disappears on driver; route to dropoff on both; rider's S4 bar disappears | |
 | 6 | Driver: **Complete trip** | Receipt (rider) and summary (driver); both S4 bars gone; other phone's live marker gone ≤ 10 s | |
 | 7 | Both rate each other; rider marks paid, driver collected | History shows the ride; driver's today earnings include the fare | |
-| 8 | Repeat 3–4, then **kill the driver's browser tab** | Rider sees "Finding another driver…" within ~60 s (§12) and the car disappears ≤ 10 s | |
+| 8 | Repeat 3–4, then **lock the driver's phone** (or open Maps with *Navigate*) for 2–3 min, then unlock | Rider keeps the car greyed with "Last seen … ago" and "Your driver's Siosia is paused … Your ride is still on"; the ride stays with the driver; after unlocking the car moves again. (Silent for 15 min — e.g. the driver's tab killed — the rider sees "Your driver's phone stopped answering — we're finding you another one.") | |
 | 9 | Operator: Supabase → Table Editor → `rides` | Row has endpoints, totals, timestamps, fare — no positions | |
 
 ## Teardown paths (US4)

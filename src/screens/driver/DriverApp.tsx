@@ -7,7 +7,7 @@ import { Money, Notice, Sheet, TopBar, useBusy } from "../../components/ui";
 import type { DriverCancelReason, Earnings, LatLng, RideView } from "../../core/types";
 import { ServerError } from "../../core/types";
 import { useI18n } from "../../i18n";
-import { readPref, wakeLockSupported, writePref } from "../../services/device";
+import { isIOS, readPref, writePref } from "../../services/device";
 import { clearTripKm, useDriverRuntime, useLiveRoute } from "../../state/runtime";
 import { useApp, useStore } from "../../state/store";
 import { AfterRide } from "../AfterRide";
@@ -15,6 +15,7 @@ import { DriverTrip } from "./DriverTrip";
 import { OfferCard } from "./OfferCard";
 import { MasterChip } from "../../components/ProfileIcon";
 import { VehicleSetup } from "./VehicleForm";
+import { ScreenOnToggle } from "../../components/ScreenOn";
 
 export function DriverApp() {
   const app = useApp();
@@ -218,9 +219,10 @@ function DriverMain() {
         {(rt.geoStatus === "denied" || (error && !rt.online && error === t("err.not_online"))) && <Notice kind="warn">{t("geo.driverNeeds")}</Notice>}
         {error && error !== t("err.not_online") && <p className="form-error" role="alert">{error}</p>}
         {rt.online && !rt.fix && <p className="hint">{t("geo.waiting")}</p>}
-        {rt.online && (!rt.wakeOk || !wakeLockSupported()) && (
+        {rt.online && !rt.wakeOk && (
           <Notice kind="warn">
             <strong>{t("wake.title")}</strong> {t("wake.body")}
+            {isIOS() && ` ${t("wake.autoLock")}`}
           </Notice>
         )}
         {rt.online && rt.wakeOk && <p className="muted small">{t("driver.keepOpen")}</p>}
@@ -273,7 +275,7 @@ function DriverMain() {
 
   return (
     <div className="screen">
-      <TopBar title={t("home.drive")} />
+      <TopBar title={t("home.drive")} right={<ScreenOnToggle />} />
       <MapView
         endpoints={cfg.map}
         center={me ?? cfg.fallbackCenter}

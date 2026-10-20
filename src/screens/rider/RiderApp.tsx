@@ -20,6 +20,7 @@ import { RiderActive } from "./RiderActive";
 import { RiderHome, type Field } from "./RiderHome";
 import { Searching } from "./Searching";
 import { useEstimate } from "./useEstimate";
+import { ScreenOnToggle } from "../../components/ScreenOn";
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
 const r1 = (x: number) => Math.round(x * 10) / 10;
@@ -316,7 +317,7 @@ export function RiderApp() {
 
   return (
     <div className="screen">
-      <TopBar title={t("home.ride")} />
+      <TopBar title={t("home.ride")} right={<ScreenOnToggle />} />
       <MapView
         endpoints={cfg.map}
         center={center}

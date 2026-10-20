@@ -3,7 +3,7 @@
 Every functional requirement of the spec (§7) mapped to an automated test or a field-test step
 ([FIELD-TEST.md](FIELD-TEST.md)). Test files: `core` = `tests/unit/core.test.ts`, `engine` =
 `tests/unit/engine.test.ts`, `sql` = `tests/unit/sql-backend.test.ts` (real migration in PGlite),
-`services`, `components`, `e2e` = `tests/e2e/ride-loop.spec.ts`.
+`services`, `components`, `wakeLock` = `tests/unit/wakeLock.test.tsx`, `e2e` = `tests/e2e/ride-loop.spec.ts`.
 
 | FR | Requirement (short) | Verified by |
 | --- | --- | --- |
@@ -23,13 +23,14 @@ Every functional requirement of the spec (§7) mapped to an automated test or a 
 | 016 | Rider cancel with confirmation | e2e cancel; engine late-cancel; sql illegal cancel in progress |
 | 017 | R4 receipt, paid, 1–5 stars + comment | components "R4"; e2e |
 | 018 | Nearby anonymous cars | e2e "demo robots" (`Cars nearby`); presence carries no nickname/plate |
-| 020 | Online switch, location, wake lock, S4 | e2e (S4 "online as a driver"); field step 1 |
+| 020 | Online switch, location, wake lock, S4 | e2e (S4 "online as a driver", "Keep the screen on"); wakeLock "either a driver is online or the box is ticked"; field step 1 |
 | 021 | 3 s / 25 m and 30 s / 200 m cadences | core "position throttling" |
 | 022 | Offer card, chime, 20 s countdown | components "D2" (countdown, timeout once); e2e accept |
 | 007+ | Master-profile link: shared identity (nickname, icon), no invite, one role — rider (fixed fare, default places) or driver (preset car) | engine + sql "master profile", "one role"; e2e "Toria link", "Roman link", "wrong master-profile link", "asks before replacing" |
 | app+ | iOS Home Screen app: one-time move code (profile, history, vehicle, master link) | engine + sql "moving a profile"; e2e "one-time code moves a profile" |
 | book+ | Book for later; drivers take ahead; start / open / give up timings; cancel; give back | engine "rides booked in advance"; sql "books rides in advance", "starts a taken booking"; e2e "books a ride for later" |
 | push+ | Notifications: who hears what, queue only for subscribers, EN/PL texts, sender retries/drops | engine "notifications"; sql "queues notifications"; push.test.ts; e2e booking banners |
+| wake+ | "Keep the screen on" checkbox (top bar + ☰ → app): remembered per phone, re-taken on return and on the next tap (iOS), hint while a tap is needed, iOS Home Screen < 18.4 unsupported | wakeLock (all); e2e "Keep the screen on"; field step 1 |
 | 022+ | Going online / *Show requests* re-offer every pending request nearby (incl. declined), with a count | engine + sql "review declined and missed requests again"; e2e "goes online later … Show requests" |
 | 023 | Route to pickup then dropoff, rider pin | e2e; field steps 4–5b |
 | 024 | Arrived → Start → Complete, Navigate, Cancel reasons | e2e; engine/sql re-dispatch on cancel |
@@ -41,7 +42,8 @@ Every functional requirement of the spec (§7) mapped to an automated test or a 
 | 031 | Road routing, re-route > 100 m | services "parses an OSRM route"; core polyline deviation; `useLiveRoute` |
 | 032 | Fallback × 1.3 at 30 km/h within 2 s | services (hang → fallback < 1.5 s, HTTP error); core; e2e "estimate" label |
 | 033 | Attribution, provider policies | `MapView` attribution control; core `RateGate`; geocoding only on Search/pin |
-| 034 | Marker ≥ every 5 s, gone ≤ 10 s | e2e (car marker appears for a parked driver via keep-alive); field step 4/6 |
+| 034 | Marker ≥ every 5 s, gone ≤ 10 s | e2e (car marker appears for a parked driver via keep-alive); field step 4/6. A driver who goes quiet keeps a greyed "last seen" car (§12): e2e "the rider keeps the driver's car"; components "R3 Active ride: the driver's app goes quiet" |
+| §12 | Silent driver on a ride: re-dispatch after 15 min (deviation, iPhones), rider cancel then not counted | engine "their ride waits 15 min before it is re-dispatched"; sql "re-dispatches when the assigned driver has been silent for 15 min"; engine + sql "rider's cancellation … once Siosia gave up on the driver"; sql "starts a taken booking"; field step 8 |
 | 035 | Actual distance/duration, totals only | engine (actualKm/actualMin); sql (`actual_km`) |
 | 040 | Sharing only while allowed; stops at in_progress | core `riderMayShare`; e2e (rider S4 gone at start) |
 | 041 | S4 on every screen with one-tap stop | components "S4"; e2e |

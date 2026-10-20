@@ -54,7 +54,7 @@ export function Searching({ ride, expiresAt, expired, nearbyCount, busy, error, 
           </p>
         </div>
       </div>
-      {ride.redispatchCount > 0 && ride.cancelReason !== "driver_lost" && <p className="hint">{t("search.driverCancelled")}</p>}
+      {ride.redispatchCount > 0 && <p className="hint">{t(ride.cancelReason === "driver_lost" ? "search.driverLost" : "search.driverCancelled")}</p>}
       <p className="muted small" data-testid="search-until">
         {t("search.until", { time: until })}
       </p>

@@ -423,6 +423,68 @@ select {
   background: var(--surface);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
+/* "Keep the screen on": a pill on the right of the top bar, 44 px tall (FR-072). */
+.topbar-wake {
+  position: relative;
+  margin-left: auto;
+  min-width: 0;
+  display: flex;
+}
+.topbar-check {
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px 4px 12px;
+  border-radius: 22px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+}
+.topbar-check input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+/* One line where it fits; two short lines on narrow phones rather than a cut-off label. */
+.topbar-check span {
+  line-height: 1.15;
+}
+.topbar-check:has(input:disabled) {
+  cursor: default;
+}
+.topbar-check-warn {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+/* iOS grants the first lock of a launch only from a tap: ask for one, right under the checkbox. */
+.wake-hint {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 20px));
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: left;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+}
 body:has(.sharing-banner) .topbar {
   top: calc(var(--banner-h, 60px) + 8px);
 }
@@ -432,6 +494,13 @@ body:has(.sharing-banner) .topbar {
 }
 body:has(.sharing-banner) .leaflet-top {
   top: calc(var(--banner-h, 60px) + 64px);
+}
+/* The "tap once" hint sits under the top bar, where the zoom buttons are: move them down meanwhile. */
+body:has(.wake-hint) .leaflet-top {
+  top: calc(116px + var(--safe-top));
+}
+body:has(.sharing-banner):has(.wake-hint) .leaflet-top {
+  top: calc(var(--banner-h, 60px) + 116px);
 }
 /* FR-072: 44 px targets for the map's zoom buttons too. */
 .leaflet-bar a,

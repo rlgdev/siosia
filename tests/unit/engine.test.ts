@@ -186,7 +186,7 @@ describe("cancellation, re-dispatch, expiry (§5, §12)", () => {
     expect(at((e) => e.getRide("rider", ride.id))).toMatchObject({ status: "cancelled", cancelledBy: "driver", cancelReason: "no_show" });
   });
 
-  it("withdraws a silent driver's cards after 12 s and re-dispatches their ride after 60 s", () => {
+  it("withdraws a silent driver's cards after 12 s; their ride waits 15 min before it is re-dispatched", () => {
     const ride = request("rider");
     const o = online("d1", near(1)).offer!;
     now += 13_000;
@@ -195,11 +195,34 @@ describe("cancellation, re-dispatch, expiry (§5, §12)", () => {
     const o2 = online("d2", near(1)).offer!;
     expect(o2.rideId).toBe(ride.id);
     at((e) => e.decideOffer("d2", o2.id, "accept"));
+    // An iPhone pauses Siosia while the screen is locked or Maps is in front: the ride stays.
+    now += 14 * 60_000;
+    at((e) => e.sweep());
+    expect(at((e) => e.getRide("rider", ride.id))).toMatchObject({ status: "accepted", redispatchCount: 0 });
+    expect(db.drivers.d2.online).toBe(true);
     now += 61_000;
     at((e) => e.sweep());
     const v = at((e) => e.getRide("rider", ride.id));
     expect(v).toMatchObject({ status: "requested", cancelReason: "driver_lost", redispatchCount: 1 });
     expect(db.drivers.d2.online).toBe(false);
+  });
+
+  it("counts a rider's cancellation while the ride is the driver's, not once Siosia gave up on the driver", () => {
+    const ride = request();
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    now += 10 * 60_000; // d1's iPhone in a pocket for 10 min: still d1's ride, a cancel counts
+    at((e) => e.cancelRide("rider", ride.id));
+    expect(at((e) => e.getProfile("rider"))).toMatchObject({ riderCancels: 1, lateCancels: 0 });
+
+    const again = request("rider2");
+    const o2 = online("d2", near(1)).offer!;
+    at((e) => e.decideOffer("d2", o2.id, "accept"));
+    now += 15 * 60_000 + 1000; // silent for 15 min: Siosia looks for another driver…
+    expect(at((e) => e.getRide("rider2", again.id))).toMatchObject({ status: "requested", cancelReason: "driver_lost" });
+    at((e) => e.cancelRide("rider2", again.id)); // …and giving up then is not held against the rider
+    expect(at((e) => e.getProfile("rider2"))).toMatchObject({ riderCancels: 0, lateCancels: 0 });
+    expect(db.rides[again.id]).toMatchObject({ status: "cancelled", cancelledBy: "rider" });
   });
 });
 
@@ -536,11 +559,25 @@ describe("rides booked in advance", () => {
     expect(at((e) => e.myState("d1")).ride).toMatchObject({ id: b.id, status: "accepted" });
     expect(db.drivers.d1.online).toBe(true);
     expect(at((e) => e.myState("rider")).ride).toMatchObject({ id: b.id, status: "accepted", driver: { nickname: "D1" } });
-    // The driver may stay silent until 15 min after the booked time, then it goes to someone else.
+    // The driver's app may stay closed until 15 min after the booked time (silent since the start,
+    // 45 min by then), then it goes to someone else.
     now = b.scheduledFor! + 14 * MIN;
     expect(at((e) => e.getRide("rider", b.id)).status).toBe("accepted");
     now = b.scheduledFor! + 16 * MIN;
     expect(at((e) => e.getRide("rider", b.id))).toMatchObject({ status: "requested", driver: null });
+  });
+
+  it("keeps a started booking with a driver seen recently, even past 15 min after its time", () => {
+    const b = book();
+    at((e) => e.claimBooking("d1", b.id));
+    now = b.scheduledFor! - 30 * MIN;
+    at((e) => e.heartbeat("d1", near(1))); // started
+    now = b.scheduledFor! + 10 * MIN;
+    at((e) => e.heartbeat("d1", near(0.2))); // then the iPhone locks
+    now = b.scheduledFor! + 24 * MIN; // silent for 14 min
+    expect(at((e) => e.getRide("rider", b.id)).status).toBe("accepted");
+    now = b.scheduledFor! + 26 * MIN; // silent for 16 min
+    expect(at((e) => e.getRide("rider", b.id))).toMatchObject({ status: "requested", cancelReason: "driver_lost" });
   });
 
   it("counts the no-show wait from the booked time when the driver comes early", () => {

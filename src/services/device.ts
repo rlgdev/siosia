@@ -1,41 +1,6 @@
-// Small device helpers: wake lock, offer chime, maps hand-off, device id, platform checks.
+// Small device helpers: offer chime, maps hand-off, device id, platform checks. (Wake lock: wakeLock.ts.)
 
 import type { LatLng } from "../core/types";
-
-// ---------- wake lock (FR-020) ----------
-
-let sentinel: WakeLockSentinel | null = null;
-let wanted = false;
-
-async function acquireWakeLock(): Promise<boolean> {
-  try {
-    if (!("wakeLock" in navigator)) return false;
-    sentinel = await navigator.wakeLock.request("screen");
-    sentinel.addEventListener("release", () => {
-      sentinel = null;
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-if (typeof document !== "undefined") {
-  document.addEventListener("visibilitychange", () => {
-    if (wanted && document.visibilityState === "visible" && !sentinel) void acquireWakeLock();
-  });
-}
-
-/** Returns false when the browser cannot keep the screen on (S3 explainer is then shown). */
-export async function keepScreenOn(on: boolean): Promise<boolean> {
-  wanted = on;
-  if (on) return sentinel ? true : acquireWakeLock();
-  await sentinel?.release().catch(() => {});
-  sentinel = null;
-  return true;
-}
-
-export const wakeLockSupported = () => typeof navigator !== "undefined" && "wakeLock" in navigator;
 
 // ---------- chime + vibration (FR-022) ----------
 

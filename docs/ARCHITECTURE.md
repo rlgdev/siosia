@@ -37,7 +37,7 @@ open requests (§6 rule 4) and liveness is known:
 | --- | --- |
 | > 12 s | the driver's cards are withdrawn; a request from the same user is no longer refused (FR-005 applies to live sessions only) |
 | > 60 s, idle | the driver is set offline (a short screen lock is tolerated) |
-| > 60 s, accepted/arrived | the ride is re-dispatched without them (§12); an `in_progress` ride waits |
+| > 15 min, accepted/arrived (booked: also not before 15 min after the booked time) | the ride is re-dispatched without them (§12 says 60 s; iPhones pause the app — see the deviations); an `in_progress` ride waits |
 
 A card withdrawn for a driver-side reason (went offline, went silent, won another ride) is offered
 again once the driver is eligible; a lapsed countdown comes back after `offer_retry_s`
@@ -110,6 +110,16 @@ dropped on the client: a ping that arrives while a heartbeat is in flight trigge
   (`account_transfers`, SHA-256, 30 min, rate-limited like invite codes) moves the profile, history,
   ratings, vehicle and master link to the app's account (`siosia_redeem_transfer`). Web apps get no
   background execution on iOS; drivers keep the app open while on duty.
+- **A driver's app going quiet on a ride** (fix of 2026-10-20, after a rider lost a booked ride's
+  driver twice): an iPhone pauses Siosia whenever its screen locks or another app (Apple Maps from
+  *Navigate*) is in front, and that drops the realtime connection exactly like a closed app. So (1)
+  an *accepted* / *arrived* ride is re-dispatched only after **15 min** without contact (spec §12:
+  60 s; `SERVER.rideDriverLostS`, a booked ride also not before 15 min after its time); (2) the
+  rider keeps the driver's car greyed at its last position with *last seen … ago* and a note that
+  the ride is still on (spec §12 "driver's screen locks") — it disappears only on an explicit stop
+  or when the ride ends; (3) a rider's cancellation is not counted once Siosia has given up on the
+  driver (the ride searches again with `cancel_reason = 'driver_lost'`); before that it counts as
+  usual.
 - **Rides booked in advance** (operator request of 2026-10-11): status `scheduled` with
   `scheduled_for`; drivers take bookings (`driver_id` while still scheduled, no overlaps); the sweep
   starts a taken booking (`accepted`, driver on duty) `booking_lead_min` before, opens an untaken one

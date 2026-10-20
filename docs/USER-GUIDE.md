@@ -48,8 +48,8 @@ it on that phone.
 
 1. Tap **Drive** and enter your car once: make, model, colour, plate, seats. Riders see it only
    after you accept them.
-2. Tap **Go online**. Allow location. **Keep Siosia open with the screen on** (mount the phone) —
-   browsers pause location when the screen locks. A green bar shows you are sharing your location.
+2. Tap **Go online**. Allow location. While you're online Siosia **keeps the screen on** (mount
+   the phone) — keep it in front: phones pause location when the screen locks or another app opens. A green bar shows you are sharing your location.
 3. A request appears with a **chime**: rider, distance to pickup, trip and fare, and a **20-second
    countdown**. **Accept** or **Decline**. If another driver was faster you'll see *Taken by another
    driver*. Missed it? While the rider is still waiting it comes back after about 2 minutes;
@@ -86,6 +86,15 @@ can lock the phone or close Siosia and still gets a notification for each **new 
 4 hours; *Go offline* stops it) — tap it and Siosia is back online with the request. During a
 trip keep Siosia open with the screen on (your live position needs it).
 
+**Keep the screen on** — the checkbox at the top of the Ride and Drive screens (also ☰ → *Siosia
+as an app*). While Siosia is on the screen the phone doesn't dim or lock, so Siosia keeps working:
+live position, new requests, countdowns. Each phone remembers its choice; while you're online as a
+driver it is on anyway. It uses more battery — plug in for long drives. iPhone allows it only after
+a tap each time Siosia starts, so *Tap once to keep the screen on* may appear under the checkbox.
+It can't stop the iPhone pausing Siosia when you switch to another app (Maps included) or press
+the side button. The Home Screen app needs iOS 18.4 or later for this; on older iOS set Settings →
+Display & Brightness → **Auto-Lock → Never** (Low Power Mode keeps Auto-Lock at 30 seconds).
+
 ## Booking a ride for later
 
 *Ride* → set pickup and destination → **Later** → pick the time (30 minutes to 30 days ahead) →
@@ -114,7 +123,7 @@ when it is **time to go** — keep the app open from then on.
 | "Service unavailable" | Tap *Retry*; if it stays, contact the organiser shown on that screen |
 | Location off / inaccurate | Allow location (see above); outdoors GPS is better; you can always place pins by hand |
 | Driver: no requests | Be online, app open, screen on, within ~8 km of riders; tap *Show requests* |
-| Rider: car doesn't move | The driver's screen may be locked — "last seen … s ago" is shown |
+| Rider: car doesn't move | The driver's phone is locked or in another app (Maps) — the car stays greyed with "last seen … ago" and the ride is still on. After 15 min without contact (a booked ride: not before 15 min after its time) Siosia finds another driver; cancelling then isn't held against you |
 | Two phones, one person | You can be a driver on one and a rider on another, but not both at once |
 
 ---
@@ -169,8 +178,9 @@ potwierdzenie zastępuje go na tym telefonie.
 
 1. Dotknij **Wożę** i raz wpisz samochód: marka, model, kolor, numer rejestracyjny, miejsca.
    Pasażer zobaczy go dopiero po przyjęciu kursu.
-2. Dotknij **Przejdź online**. Zezwól na lokalizację. **Trzymaj Siosię otwartą z włączonym
-   ekranem** (uchwyt na telefon) — przeglądarka wstrzymuje lokalizację po zablokowaniu ekranu.
+2. Dotknij **Przejdź online**. Zezwól na lokalizację. Gdy jesteś online, Siosia **nie wygasza
+   ekranu** (uchwyt na telefon) — trzymaj ją na wierzchu: telefon wstrzymuje lokalizację po
+   zablokowaniu ekranu lub przejściu do innej aplikacji.
    Zielony pasek oznacza udostępnianie lokalizacji.
 3. Zamówienie pojawia się z **dźwiękiem**: pasażer, odległość do odbioru, kurs i cena oraz
    **20 sekund** na decyzję. **Przyjmij** lub **Odrzuć**. Jeśli ktoś był szybszy, zobaczysz
@@ -208,6 +218,17 @@ zamówieniu** (przez 4 godziny; *Przejdź offline* to wyłącza) — dotknij, a 
 zamówieniem. Podczas kursu trzymaj Siosię otwartą z włączonym ekranem (wymaga tego Twoja pozycja
 na żywo).
 
+**Nie wygaszaj ekranu** — pole wyboru u góry ekranów *Jadę* i *Wożę* (także ☰ → *Siosia jako
+aplikacja*). Gdy Siosia jest na ekranie, telefon nie przygasa i się nie blokuje, więc Siosia działa
+dalej: pozycja na żywo, nowe zamówienia, odliczanie. Każdy telefon pamięta swój wybór; gdy jesteś
+online jako kierowca, jest włączone i tak. Zużywa więcej baterii — przy dłuższej jeździe podłącz
+ładowarkę. iPhone pozwala na to dopiero po dotknięciu przy każdym uruchomieniu Siosi, więc pod
+polem może pojawić się *Dotknij raz, aby ekran nie gasł*. Nie zapobiega wstrzymaniu Siosi przez
+iPhone'a po przejściu do innej aplikacji (także Map) ani po naciśnięciu przycisku bocznego.
+Aplikacja z ekranu początkowego potrzebuje do tego iOS 18.4 lub nowszego; na starszym ustaw
+Ustawienia → Ekran i jasność → **Autoblokada → Nigdy** (tryb niskiego zużycia energii trzyma
+Autoblokadę na 30 sekundach).
+
 ## Rezerwacja kursu na później
 
 *Jadę* → ustaw odbiór i cel → **Później** → wybierz godzinę (od 30 minut do 30 dni naprzód) →
@@ -236,5 +257,5 @@ gdy **czas jechać** — od tej chwili trzymaj aplikację otwartą.
 | „Usługa niedostępna” | *Spróbuj ponownie*; jeśli nie pomaga, skontaktuj się z organizatorem podanym na ekranie |
 | Lokalizacja wyłączona / niedokładna | Zezwól na lokalizację (wyżej); na zewnątrz GPS działa lepiej; pinezki zawsze można postawić ręcznie |
 | Kierowca: brak zamówień | Bądź online, aplikacja otwarta, ekran włączony, do ~8 km od pasażerów; dotknij *Pokaż zamówienia* |
-| Pasażer: auto stoi | Ekran kierowcy mógł się zablokować — widać „ostatnio widziany … s temu” |
+| Pasażer: auto stoi | Telefon kierowcy jest zablokowany lub w innej aplikacji (Mapy) — auto zostaje szare z „ostatnio widziany … temu”, a kurs jest aktualny. Po 15 min bez kontaktu (rezerwacja: nie wcześniej niż 15 min po jej godzinie) Siosia szuka innego kierowcy; anulowanie wtedy nie liczy się przeciwko Tobie |
 | Dwa telefony, jedna osoba | Możesz być kierowcą na jednym i pasażerem na drugim, ale nie jednocześnie |

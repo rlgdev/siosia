@@ -782,10 +782,12 @@ begin
            for update skip locked loop
     perform siosia_end_ride(r.id, 'expired', 'system', null, array['requested']);
   end loop;
-  -- 5. accepted/arrived rides whose driver vanished for 60 s are re-dispatched (§12)
+  -- 5. accepted/arrived rides whose driver has been silent for 15 min are re-dispatched (§12 says
+  --    60 s, but an iPhone pauses Siosia whenever its screen locks or Maps is in front, so a driver
+  --    on the way is often silent for minutes)
   for r in select x.id, x.driver_id from rides x left join driver_status d on d.user_id = x.driver_id
            where x.status in ('accepted','arrived')
-             and (d.user_id is null or d.last_seen < now() - interval '60 seconds')
+             and (d.user_id is null or d.last_seen < now() - interval '15 minutes')
              -- a booked ride gives its driver until 15 min after the booked time to show up
              and (x.scheduled_for is null or x.scheduled_for + interval '15 minutes' <= now())
            for update of x skip locked loop
@@ -1571,9 +1573,12 @@ begin
     return siosia_release_booking(r.id);
   elsif r.rider_id = v_uid then
     if r.status not in ('requested','accepted','arrived') then return siosia_err('illegal_transition'); end if;
-    update profiles set rider_cancels = rider_cancels + 1,
-                        late_cancels = late_cancels + case when r.status = 'arrived' then 1 else 0 end
-     where user_id = v_uid;
+    -- Not held against the rider once Siosia gave up on their driver (silent for 15 min).
+    if not (r.status = 'requested' and r.cancel_reason is not distinct from 'driver_lost') then
+      update profiles set rider_cancels = rider_cancels + 1,
+                          late_cancels = late_cancels + case when r.status = 'arrived' then 1 else 0 end
+       where user_id = v_uid;
+    end if;
     perform siosia_end_ride(r.id, 'cancelled', 'rider', case when r.status = 'arrived' then 'late_cancel' end);
     return siosia_ok('true'::jsonb);
   elsif r.driver_id = v_uid then
