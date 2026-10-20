@@ -5,7 +5,8 @@ import { I18nProvider, useI18n } from "./i18n";
 import { InviteScreen, Loading, NicknameScreen, Unavailable, Unsupported } from "./screens/Boot";
 import { DriverApp } from "./screens/driver/DriverApp";
 import { VehiclePanel } from "./screens/driver/VehicleForm";
-import { BookingsPanel } from "./screens/Bookings";
+import { AppointmentPanel } from "./screens/Appointment";
+import { DriverBookingsPanel } from "./screens/Bookings";
 import { HistoryPanel } from "./screens/History";
 import { Home } from "./screens/Home";
 import { Catalog } from "./screens/Catalog";
@@ -162,7 +163,8 @@ function Screens() {
       {app.phase === "ready" && app.panel === "history" && <HistoryPanel earnings={false} />}
       {app.phase === "ready" && app.panel === "earnings" && <HistoryPanel earnings />}
       {app.phase === "ready" && app.panel === "vehicle" && <VehiclePanel />}
-      {app.phase === "ready" && app.panel === "bookings" && <BookingsPanel />}
+      {app.phase === "ready" && app.panel === "appointment" && <AppointmentPanel />}
+      {app.phase === "ready" && app.panel === "bookings" && <DriverBookingsPanel />}
       {app.phase === "ready" && app.panel === "request" && <RequestPanel />}
     </>
   );

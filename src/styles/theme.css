@@ -1371,3 +1371,66 @@ body:has(.sharing-banner) .panel-head {
     max-height: calc(100vh - 100px);
   }
 }
+
+/* ---------- 2.0: Planned (P1) and Appointment (C3) ---------- */
+.chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.chip-ok {
+  background: var(--ok-bg);
+  color: var(--ok-ink);
+  border-color: transparent;
+}
+.chip-warn {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border-color: transparent;
+}
+.chip-info {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.planned-item {
+  padding: 0;
+  overflow: hidden;
+}
+.planned-item > .row,
+.planned-item > .form-error {
+  padding: 0 16px 16px;
+}
+.planned-open {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.planned-open:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.ride-line {
+  display: block;
+}
+.appt-title {
+  font-size: 1.1rem;
+}
+.note {
+  font-style: italic;
+  overflow-wrap: anywhere;
+}

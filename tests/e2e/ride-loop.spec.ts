@@ -337,7 +337,8 @@ test("a rider books a ride for later; a driver takes it in advance; the rider se
   await expect(rider.getByTestId("book-ride")).toContainText("Book for");
   await rider.getByTestId("book-ride").click();
   await expect(rider.getByTestId("booked-notice")).toContainText("Booked for");
-  await rider.getByTestId("my-bookings-link").click();
+  await rider.getByTestId("my-bookings-link").click(); // 2.0: bookings live in Planned
+  await expect(rider.getByTestId("planned")).toBeVisible();
   await expect(rider.getByTestId("booking")).toContainText("Waiting for a driver");
 
   await expect(driver.getByTestId("push-toast")).toContainText("New booking"); // the demo shows notifications in the app
@@ -353,8 +354,8 @@ test("a rider books a ride for later; a driver takes it in advance; the rider se
   await expect(rider.getByTestId("booking-driver")).toContainText("WX 4242");
   await rider.getByTestId("cancel-booking").click();
   await rider.getByRole("button", { name: "Yes" }).click();
-  await expect(rider.getByText("No upcoming bookings.")).toBeVisible();
-  await expect(driver.getByText("No upcoming bookings.")).toBeVisible({ timeout: 35_000 });
+  await expect(rider.getByTestId("planned-empty")).toBeVisible();
+  await expect(driver.getByTestId("my-booking")).toHaveCount(0, { timeout: 35_000 });
 });
 
 test("the menu offers notifications next to the app install steps", async ({ context }) => {

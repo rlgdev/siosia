@@ -310,7 +310,7 @@ export function RiderApp() {
         onDismissBooked={() => setBooked(null)}
         bookingsCount={my?.bookings ?? 0}
         minLeadMin={bookingCfg.minLeadMin}
-        onOpenBookings={() => store.openPanel("bookings")}
+        onOpenBookings={() => store.go("planned")}
         onRequest={() => void request()}
         busy={busy}
         error={error}
