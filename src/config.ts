@@ -73,6 +73,10 @@ export function buildConfig(file: RuntimeFile | null, search: string): AppConfig
       ...dep,
       tariff: { ...DEFAULT_CONFIG.tariff, ...(dep.tariff ?? {}) },
       timers: { ...DEFAULT_CONFIG.timers, ...(dep.timers ?? {}) },
+      booking: { ...DEFAULT_CONFIG.booking, ...(dep.booking ?? {}) },
+      appointment: { ...DEFAULT_CONFIG.appointment, ...(dep.appointment ?? {}) },
+      services: dep.services ?? DEFAULT_CONFIG.services,
+      calendarUrl: dep.calendarUrl ?? null,
       operatorContact: str(file?.operatorContact) || str(env.VITE_OPERATOR_CONTACT)
     }
   };

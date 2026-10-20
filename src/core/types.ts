@@ -70,6 +70,188 @@ export interface BookingSettings {
   leadMin: number;
   /** An unclaimed booking opens to normal dispatch this many minutes before its time. */
   openMin: number;
+  /** Open bookings per rider (2.0: 12, room for a series' rides). */
+  maxOpen: number;
+}
+
+// ---------------------------------------------------------------------------------------------
+// 2.0: the service catalog and appointments (siosia-spec-v2.0.md §4–§12)
+// ---------------------------------------------------------------------------------------------
+
+export interface LocalText {
+  en: string;
+  pl: string;
+}
+
+/** One catalog entry (deployment configuration). Exactly one has kind "ride" (id "ride"). */
+export interface CatalogEntry {
+  id: string;
+  kind: "ride" | "time";
+  name: LocalText;
+  description: LocalText;
+  /** An emoji or a profile-icon id. */
+  icon: string;
+  /** Minutes; "time" entries only. */
+  duration: { default: number; min: number; max: number; step: number } | null;
+  /** Shown and frozen on the appointment; never charged. */
+  price: null | { perHour: number } | { fixed: number };
+  needsPlace: boolean;
+  enabled: boolean;
+}
+
+/** A person as other users see them in 2.0 lists: never the auth user id (FR-143). */
+export interface PublicProvider extends PublicParty {
+  publicId: string | null;
+}
+
+export interface CatalogItem extends CatalogEntry {
+  /** Who offers it (not the viewer); empty for the ride entry. */
+  providers: PublicProvider[];
+}
+
+export interface AppointmentSettings {
+  /** Reminder slots, minutes before the start (default 1440 and 120). */
+  reminderMin: number[];
+  seriesMaxDays: number;
+  seriesMaxCount: number;
+}
+
+export type AppointmentStatus = "requested" | "accepted" | "declined" | "cancelled" | "expired" | "done";
+export type Leg = "there" | "back";
+export type PartyRole = "client" | "provider";
+/** An attached ride as the appointment sees it (§7 rule 7). */
+export type AttachedStatus = "pending" | "confirmed" | "done" | "failed";
+
+export interface CalendarLinks {
+  /** Google Calendar event template (built in the client). */
+  google: string | null;
+  /** The viewer's .ics link (null without the calendar function; the demo builds the file itself). */
+  ics: string | null;
+}
+
+export interface AttachedRide {
+  rideId: string;
+  leg: Leg;
+  passenger: PartyRole;
+  /** The viewer is the passenger (pickup, dropoff and fare are shown only then — FR-114). */
+  mine: boolean;
+  scheduledFor: number | null;
+  status: AttachedStatus;
+  driver: { nickname: string; icon?: string | null } | null;
+  pickup?: Place;
+  dropoff?: Place;
+  fare?: number;
+  currency?: string;
+}
+
+export interface RideTemplate {
+  passenger: PartyRole;
+  leg: Leg;
+  /** From the start ("there", negative) or from the end ("back"). */
+  offsetMin: number;
+  mine: boolean;
+  pickup?: Place;
+  dropoff?: Place;
+  estKm?: number;
+  estMin?: number;
+  fareIsEstimate?: boolean;
+}
+
+export interface SeriesView {
+  id: string;
+  rule: "weekly" | "biweekly";
+  /** This occurrence's number (1…count). */
+  seq: number;
+  count: number;
+  /** Start of the last occurrence. */
+  until: number;
+  status: "requested" | "answered" | "cancelled" | "expired";
+  /** Future occurrences still requested or accepted. */
+  remaining: number;
+  /** Starts of the occurrences declined on answer (clashes). */
+  declined: number[];
+  /** Starts of declined or cancelled occurrences (calendar exclusions). */
+  gaps: number[];
+  /** Every occurrence's start, in order. */
+  starts: number[];
+  rideTemplates: RideTemplate[];
+  ics: string | null;
+}
+
+export interface AppointmentView {
+  id: string;
+  status: AppointmentStatus;
+  /** The viewer's side. */
+  role: PartyRole;
+  serviceId: string;
+  /** The entry's name and icon (also for disabled entries). */
+  service: { name: LocalText; icon: string } | null;
+  /** Wall-clock start as picked (ms). */
+  startsAt: number;
+  durationMin: number;
+  endsAt: number;
+  place: Place | null;
+  note: string;
+  price: number | null;
+  currency: string;
+  client: PublicProvider;
+  provider: PublicProvider;
+  requestedAt: number;
+  answeredAt: number | null;
+  endedAt: number | null;
+  cancelledBy: "client" | "provider" | "system" | null;
+  cancelReason: string | null;
+  rides: AttachedRide[];
+  /** Reminder slots already sent. */
+  reminders: number[];
+  myRating: number | null;
+  series: SeriesView | null;
+  calendar: CalendarLinks;
+}
+
+export interface RepeatInput {
+  /** Every week (1) or every 2 weeks (2). */
+  every: 1 | 2;
+  count?: number;
+  /** Last date (ms; occurrences on or before that local date). */
+  until?: number;
+}
+
+export interface ServiceRequestInput {
+  serviceId: string;
+  /** The provider's public id. */
+  providerId: string;
+  startsAt: number;
+  durationMin: number;
+  place: Place | null;
+  note: string;
+  repeat?: RepeatInput;
+}
+
+export interface RideTemplateInput {
+  leg: Leg;
+  pickup: Place;
+  dropoff: Place;
+  offsetMin: number;
+  estKm: number;
+  estMin: number;
+  fareIsEstimate: boolean;
+}
+
+/** Everything upcoming in both roles (P1). */
+export interface Planned {
+  appointments: AppointmentView[];
+  rides: RideView[];
+}
+
+export type HistoryItem = { kind: "appointment"; at: number; appointment: AppointmentView } | { kind: "ride"; at: number; ride: RideView };
+
+export interface NextPlanned {
+  kind: "appointment" | "ride";
+  at: number;
+  /** The service's name in the user's language. */
+  title: string;
+  serviceId: string;
 }
 
 export interface DeploymentConfig {
@@ -89,6 +271,11 @@ export interface DeploymentConfig {
   operatorContact: string;
   /** Web Push public key made by the server's push sender (null until it first ran). */
   vapidPublicKey?: string | null;
+  /** 2.0: the enabled catalog entries. */
+  services: CatalogEntry[];
+  appointment: AppointmentSettings;
+  /** The calendar Edge Function (null = Google Calendar only; the demo builds .ics itself). */
+  calendarUrl: string | null;
 }
 
 export interface RatingSummary {
@@ -127,6 +314,14 @@ export interface Profile {
   icon: string | null;
   /** Every ride of a master profile costs exactly this (deployment currency); null = tariff. */
   fixedFare: number | null;
+  /** 2.0: what others see instead of the user id. */
+  publicId: string | null;
+  /** Catalog entries (kind "time") this person offers. */
+  offers: string[];
+  /** A master profile presets the offers (the toggles are hidden). */
+  offersPreset: boolean;
+  /** My place: the default appointment place and ride pickup. */
+  home: Place | null;
 }
 
 export interface PublicParty {
@@ -178,6 +373,10 @@ export interface RideView {
   driver: PublicDriver | null;
   /** Stars the viewer gave in this ride, if any. */
   myRating: number | null;
+  /** 2.0: the appointment this ride belongs to — only for its rider (a driver sees a plain booking). */
+  appointmentId?: string | null;
+  leg?: Leg | null;
+  calendar?: CalendarLinks;
 }
 
 export interface OfferView {
@@ -222,12 +421,20 @@ export interface MyState {
   standby: boolean;
   /** Bookings without a driver that this user could take (0 for rider-only profiles). */
   openBookings: number;
+  /** 2.0: requests waiting for my answer (a series counts once). */
+  toAnswer: number;
+  /** Upcoming items in both roles. */
+  planned: number;
+  nextPlanned: NextPlanned | null;
 }
 
 /** A ride booked for later. */
 export interface BookingInput extends RideRequestInput {
   /** Pickup time (wall-clock ms, as picked). */
   scheduledFor: number;
+  /** 2.0: as part of an appointment (the caller is the passenger). */
+  appointmentId?: string | null;
+  leg?: Leg | null;
 }
 
 /** A booking a driver can take, with the distance from where the driver is now (if known). */
@@ -314,7 +521,15 @@ export type ServerErrorCode =
   | "overlap"
   | "rider_only"
   | "driver_only"
-  | "unavailable";
+  | "unavailable"
+  | "bad_service"
+  | "not_offered"
+  | "no_provider"
+  | "bad_duration"
+  | "not_accepted"
+  | "bad_leg"
+  | "ride_exists"
+  | "bad_repeat";
 
 export class ServerError extends Error {
   readonly code: ServerErrorCode;

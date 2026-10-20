@@ -1,4 +1,41 @@
-import type { DeploymentConfig } from "./types";
+import type { CatalogEntry, DeploymentConfig } from "./types";
+
+/** The catalog seeded on first run (spec §4); the SQL twin seeds the same in app_config.services. */
+export const DEFAULT_SERVICES: CatalogEntry[] = [
+  {
+    id: "ride",
+    kind: "ride",
+    name: { en: "Ride", pl: "Przejazd" },
+    description: { en: "A car now or booked for later", pl: "Samochód teraz albo na później" },
+    icon: "🚗",
+    duration: null,
+    price: null,
+    needsPlace: true,
+    enabled: true
+  },
+  {
+    id: "learning",
+    kind: "time",
+    name: { en: "Learning", pl: "Nauka" },
+    description: { en: "Lessons and help with homework", pl: "Lekcje i pomoc w nauce" },
+    icon: "📚",
+    duration: { default: 60, min: 30, max: 240, step: 30 },
+    price: null,
+    needsPlace: true,
+    enabled: true
+  },
+  {
+    id: "childcare",
+    kind: "time",
+    name: { en: "Childcare", pl: "Opieka nad dziećmi" },
+    description: { en: "Someone with the kids", pl: "Ktoś zostanie z dziećmi" },
+    icon: "🧸",
+    duration: { default: 180, min: 60, max: 720, step: 30 },
+    price: null,
+    needsPlace: true,
+    enabled: true
+  }
+];
 
 /**
  * Defaults (FR-050 tariff, §5 timers, §6 dispatch radius, Q3 max trip, Q6 tariff). The request
@@ -8,13 +45,16 @@ import type { DeploymentConfig } from "./types";
 export const DEFAULT_CONFIG: DeploymentConfig = {
   tariff: { base: 5, perKm: 2.5, perMin: 0.5, minimum: 10, currency: "PLN" },
   timers: { offerS: 20, expiryS: 1200, noShowS: 300, retryS: 120 },
-  booking: { minLeadMin: 30, maxDays: 30, leadMin: 30, openMin: 20 },
+  booking: { minLeadMin: 30, maxDays: 30, leadMin: 30, openMin: 20, maxOpen: 12 },
   serviceArea: null,
   dispatchRadiusKm: 8,
   maxTripKm: 50,
   timezone: "Europe/Warsaw",
   standbyHours: 4,
-  operatorContact: ""
+  operatorContact: "",
+  services: DEFAULT_SERVICES,
+  appointment: { reminderMin: [1440, 120], seriesMaxDays: 91, seriesMaxCount: 12 },
+  calendarUrl: null
 };
 
 /** Internal server constants (not deployment config). Mirrored in supabase/migrations. */
@@ -40,12 +80,16 @@ export const SERVER = {
   bookingLateS: 15 * 60,
   /** A driver who heartbeated this recently has the app in front (no standby notification). */
   activeAppS: 6,
-  /** Open bookings per rider. */
-  maxBookings: 5,
   /** New bookings per rider per day (each one notifies drivers). */
   maxBookingsPerDay: 10,
   /** Cancelling / releasing a booking closer than this to its time counts as a cancellation. */
   lateBookingChangeS: 60 * 60,
+  /** 2.0: open single appointments / open series per client, new requests a day (a series = 1). */
+  maxOpenAppointments: 10,
+  maxOpenSeries: 3,
+  maxRequestsPerDay: 20,
+  /** A done appointment can be rated this long after its end. */
+  apptRatingWindowS: 24 * 3600,
   ratingWindow: 20,
   ratingMinCount: 3
 } as const;

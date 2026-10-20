@@ -531,8 +531,9 @@ describe("rides booked in advance", () => {
     expect(at((e) => e.myState("rider"))).toMatchObject({ ride: null, bookings: 1 });
     expect(at((e) => e.history("rider"))).toEqual([]);
     expect(request().status).toBe("requested"); // a ride right now is still possible
-    for (let i = 0; i < 4; i++) book("rider", 180 + i * 60);
-    expect(code(() => book("rider", 600))).toBe("too_many");
+    // 2.0 (FR-117): up to booking.maxOpen (12) open; the 10-new-a-day limit comes first here.
+    for (let i = 0; i < 9; i++) book("rider", 180 + i * 60);
+    expect(code(() => book("rider", 900))).toBe("too_many");
     at((e) => e.cancelRide("rider", b.id));
     expect(db.rides[b.id]).toMatchObject({ status: "cancelled", cancelledBy: "rider" });
     expect(db.users.rider.riderCancels).toBe(0); // more than an hour ahead: no mark

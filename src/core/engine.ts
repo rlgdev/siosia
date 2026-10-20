@@ -16,8 +16,22 @@ import { computeFare } from "./fare";
 import { haversineKm, isValidLatLng } from "./geo";
 import { isActive } from "./lifecycle";
 import { summarizeRatings } from "./rating";
+import { addWeeksWallClock, localDate } from "./time";
 import {
   ServerError,
+  type AppointmentStatus,
+  type AppointmentView,
+  type AttachedRide,
+  type AttachedStatus,
+  type CatalogEntry,
+  type CatalogItem,
+  type HistoryItem,
+  type Leg,
+  type PartyRole,
+  type Planned,
+  type PublicProvider,
+  type RideTemplateInput,
+  type ServiceRequestInput,
   type BookingInput,
   type DeploymentConfig,
   type DriverCancelReason,
@@ -49,6 +63,10 @@ export interface UserRow {
   deleted: boolean;
   /** Shared master profile this user joined through its link (rider only). */
   masterId?: string | null;
+  /** 2.0: random id others see (never the user id), offered entries, My place. */
+  publicId?: string;
+  offers?: string[];
+  home?: Place | null;
 }
 
 /**
@@ -70,6 +88,8 @@ export interface MasterProfile {
   pickup?: Place | null;
   dropoff?: Place | null;
   vehicle?: (Omit<Vehicle, "plate"> & { plate?: string }) | null;
+  /** 2.0: catalog entries every phone on this profile offers (null = none besides rides). */
+  offers?: string[] | null;
 }
 
 /** Master profiles of the in-browser demo (links: …?backend=mock#master=demo-master / demo-roman). */
@@ -133,6 +153,68 @@ export interface RideRow {
   excluded: string[];
   /** Booked pickup time for a ride booked in advance (status "scheduled" until it starts). */
   scheduledFor?: number | null;
+  /** 2.0: part of an appointment (leg there / back); made by a series template; last summary. */
+  appointmentId?: string | null;
+  leg?: Leg | null;
+  autoBooked?: boolean;
+  apptSummary?: AttachedStatus | null;
+}
+
+/** 2.0: an appointment (one occurrence of a series, or a single one). */
+export interface ApptRow {
+  id: string;
+  clientId: string;
+  providerId: string;
+  serviceId: string;
+  status: AppointmentStatus;
+  startsAt: number;
+  durationMin: number;
+  place: Place | null;
+  note: string;
+  price: number | null;
+  currency: string;
+  requestedAt: number;
+  answeredAt: number | null;
+  endedAt: number | null;
+  cancelledBy: "client" | "provider" | "system" | null;
+  cancelReason: string | null;
+  /** Reminder slots already sent. */
+  reminded: number[];
+  seriesId: string | null;
+  seq: number | null;
+}
+
+export interface StoredTemplate {
+  passenger: PartyRole;
+  leg: Leg;
+  pickup: Place;
+  dropoff: Place;
+  offsetMin: number;
+  estKm: number;
+  estMin: number;
+  fareIsEstimate: boolean;
+}
+
+/** 2.0: a repeating request; its occurrences are ApptRows with seriesId and seq. */
+export interface SeriesRow {
+  id: string;
+  clientId: string;
+  providerId: string;
+  serviceId: string;
+  rule: "weekly" | "biweekly";
+  firstStart: number;
+  durationMin: number;
+  count: number;
+  until: number;
+  place: Place | null;
+  note: string;
+  price: number | null;
+  currency: string;
+  status: "requested" | "answered" | "cancelled" | "expired";
+  rideTemplates: StoredTemplate[];
+  templatesAt: number | null;
+  requestedAt: number;
+  answeredAt: number | null;
 }
 
 export interface OfferRow {
@@ -148,7 +230,9 @@ export interface OfferRow {
 }
 
 export interface RatingRow {
-  rideId: string;
+  /** Exactly one of rideId / appointmentId. */
+  rideId?: string;
+  appointmentId?: string;
   fromUser: string;
   toUser: string;
   stars: number;
@@ -172,6 +256,9 @@ export interface DbState {
   inviteFails: Record<string, number[]>;
   /** "Move to the app" codes (normalised, no dash) → owner and expiry. Supabase keeps a hash. */
   transfers?: Record<string, { userId: string; expiresAt: number }>;
+  /** 2.0 */
+  appointments?: Record<string, ApptRow>;
+  series?: Record<string, SeriesRow>;
 }
 
 /** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
@@ -179,7 +266,7 @@ export const TRANSFER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const normalizeTransfer = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 export function emptyDb(): DbState {
-  return { version: 1, seq: 0, users: {}, vehicles: {}, drivers: {}, members: {}, rides: {}, offers: {}, ratings: [], inviteFails: {} };
+  return { version: 1, seq: 0, users: {}, vehicles: {}, drivers: {}, members: {}, rides: {}, offers: {}, ratings: [], inviteFails: {}, appointments: {}, series: {} };
 }
 
 export interface EngineConfig extends DeploymentConfig {
@@ -193,7 +280,9 @@ export interface EngineConfig extends DeploymentConfig {
 export interface PushEvent {
   userId: string;
   kind: PushKind;
-  rideId: string;
+  rideId: string | null;
+  /** 2.0: appointment notifications are tagged with the appointment. */
+  appointmentId?: string | null;
   params: PushParams;
 }
 
@@ -273,7 +362,7 @@ export class Engine {
     }
     this.db.users[uid] = existing
       ? { ...existing, nickname: m.nickname, masterId: m.id, deleted: false }
-      : { id: uid, nickname: m.nickname, language: language === "pl" ? "pl" : "en", createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, masterId: m.id };
+      : { id: uid, nickname: m.nickname, language: language === "pl" ? "pl" : "en", createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, masterId: m.id, publicId: randomPublicId() };
     // A driver profile with a complete vehicle (plate included) puts it on this account.
     const v = m.role === "driver" ? m.vehicle : null;
     if (v?.plate) this.db.vehicles[uid] = { ...v, plate: v.plate.toUpperCase() };
@@ -330,11 +419,15 @@ export class Engine {
       if (r.driverId === old) r.driverId = uid;
       r.excluded = r.excluded.map((x) => (x === old ? uid : x));
     }
+    for (const a of [...Object.values(this.db.appointments ?? {}), ...Object.values(this.db.series ?? {})]) {
+      if (a.clientId === old) a.clientId = uid;
+      if (a.providerId === old) a.providerId = uid;
+    }
     // Both accounts may hold a card for the same ride, or have rated the same ride: keep the new one.
     for (const [k, o] of Object.entries(this.db.offers))
       if (o.driverId === old && Object.values(this.db.offers).some((n) => n.driverId === uid && n.rideId === o.rideId && n.round === o.round))
         delete this.db.offers[k];
-    this.db.ratings = this.db.ratings.filter((g) => !(g.fromUser === old && this.db.ratings.some((n) => n.fromUser === uid && n.rideId === g.rideId)));
+    this.db.ratings = this.db.ratings.filter((g) => !(g.fromUser === old && this.db.ratings.some((n) => n.fromUser === uid && ratingKey(n) === ratingKey(g))));
     for (const o of Object.values(this.db.offers)) if (o.driverId === old) o.driverId = uid;
     for (const g of this.db.ratings) {
       if (g.fromUser === old) g.fromUser = uid;
@@ -416,7 +509,11 @@ export class Engine {
       fixedFare: this.riderMaster(uid)?.fixedFare ?? null,
       defaultPickup: this.riderMaster(uid)?.pickup ?? null,
       defaultDropoff: this.riderMaster(uid)?.dropoff ?? null,
-      masterVehicle: (this.masterOf(uid)?.role === "driver" && this.masterOf(uid)?.vehicle) || null
+      masterVehicle: (this.masterOf(uid)?.role === "driver" && this.masterOf(uid)?.vehicle) || null,
+      publicId: this.publicIdOf(uid),
+      offers: this.offersOf(uid),
+      offersPreset: !!this.linkedMaster(uid),
+      home: u.home ?? this.riderMaster(uid)?.pickup ?? null
     };
   }
 
@@ -430,7 +527,7 @@ export class Engine {
     const existing = this.db.users[uid];
     this.db.users[uid] = existing
       ? { ...existing, nickname: nick, language: lang, deleted: false }
-      : { id: uid, nickname: nick, language: lang, createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false };
+      : { id: uid, nickname: nick, language: lang, createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, publicId: randomPublicId() };
     return this.getProfile(uid)!;
   }
 
@@ -463,6 +560,31 @@ export class Engine {
   deleteProfile(uid: string): void {
     const u = this.requireUser(uid);
     if (this.activeRideOf(uid)) throw new ServerError("active_ride");
+    // 2.0 (FR-142): upcoming appointments in either role end (user_gone), their rides follow, and
+    // the other party is told once per appointment or series.
+    const upcoming = Object.values(this.db.appointments ?? {})
+      .filter((a) => (a.clientId === uid || a.providerId === uid) && (a.status === "requested" || a.status === "accepted"))
+      .sort((x, y) => x.startsAt - y.startsAt);
+    for (const a of upcoming) {
+      a.status = "cancelled";
+      a.endedAt = this.now;
+      a.cancelledBy = "system";
+      a.cancelReason = "user_gone";
+      this.notifyAppt(a);
+    }
+    this.cascadeRides(upcoming.map((a) => a.id));
+    const told = new Set<string>();
+    for (const a of upcoming) {
+      const key = a.seriesId ?? a.id;
+      if (told.has(key)) continue;
+      told.add(key);
+      this.pushAppt(a.clientId === uid ? a.providerId : a.clientId, "appt_cancelled", a, {
+        who: u.nickname,
+        ...(a.seriesId ? { from: a.startsAt, left: upcoming.filter((x) => x.seriesId === a.seriesId).length } : {})
+      });
+    }
+    for (const s of Object.values(this.db.series ?? {}))
+      if ((s.clientId === uid || s.providerId === uid) && (s.status === "requested" || s.status === "answered")) s.status = "cancelled";
     for (const r of Object.values(this.db.rides)) {
       if (r.status !== "scheduled") continue;
       if (r.riderId === uid) {
@@ -478,7 +600,7 @@ export class Engine {
     delete this.db.vehicles[uid];
     delete this.db.members[uid];
     if (this.db.linkMembers) delete this.db.linkMembers[uid];
-    this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null };
+    this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null, offers: [], home: null };
   }
 
   // ---------- reads ----------
@@ -504,7 +626,32 @@ export class Engine {
       hasProfile: !!this.db.users[uid] && !this.db.users[uid].deleted,
       standby: !!driver?.standbyUntil && driver.standbyUntil > this.now,
       openBookings:
-        this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length
+        this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length,
+      ...this.plannedSummary(uid)
+    };
+  }
+
+  /** 2.0 (V22): requests waiting for my answer (a series once), upcoming items, the next one. */
+  private plannedSummary(uid: string): Pick<MyState, "toAnswer" | "planned" | "nextPlanned"> {
+    const appts = Object.values(this.db.appointments ?? {}).filter(
+      (a) => (a.clientId === uid || a.providerId === uid) && (a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now
+    );
+    const rides = Object.values(this.db.rides).filter(
+      (r) => (r.riderId === uid || r.driverId === uid) && (r.status === "scheduled" || isActive(r.status)) && !(r.appointmentId && r.riderId === uid)
+    );
+    const lang = this.db.users[uid]?.language ?? "en";
+    const next = [
+      ...appts.map((a) => ({ kind: "appointment" as const, at: a.startsAt, serviceId: a.serviceId })),
+      ...rides.filter((r) => r.status === "scheduled").map((r) => ({ kind: "ride" as const, at: r.scheduledFor ?? r.requestedAt, serviceId: "ride" }))
+    ].sort((x, y) => x.at - y.at)[0];
+    return {
+      toAnswer: new Set(
+        Object.values(this.db.appointments ?? {})
+          .filter((a) => a.providerId === uid && a.status === "requested" && a.startsAt > this.now)
+          .map((a) => a.seriesId ?? a.id)
+      ).size,
+      planned: appts.length + rides.length,
+      nextPlanned: next ? { ...next, title: this.serviceName(next.serviceId, lang) } : null
     };
   }
 
@@ -624,26 +771,57 @@ export class Engine {
     this.requireUser(uid);
     if (this.linkedRole(uid) === "driver") throw new ServerError("driver_only");
     this.sweep();
+    return this.bookFor(uid, input, input.appointmentId ?? null, input.leg ?? null, false);
+  }
+
+  /**
+   * A booked ride, optionally as part of an appointment (V9): the passenger is a party, the
+   * appointment accepted, the leg free, "there" before the start and "back" at or after it. A
+   * series template's bookings do not count against the daily limit. (SQL: siosia_book_for.)
+   */
+  private bookFor(uid: string, input: BookingInput, appointmentId: string | null, leg: Leg | null, template: boolean): RideView {
+    if (this.linkedRole(uid) === "driver") throw new ServerError("driver_only");
     const ride = this.newRide(uid, input);
-    const { minLeadMin, maxDays } = this.cfg.booking;
+    const { minLeadMin, maxDays, maxOpen } = this.cfg.booking;
     const t = input.scheduledFor;
     if (!Number.isFinite(t) || t < this.now + minLeadMin * 60_000 || t > this.now + maxDays * 86_400_000) throw new ServerError("bad_time");
+    let a: ApptRow | null = null;
+    if (appointmentId) {
+      a = this.db.appointments?.[appointmentId] ?? null;
+      if (!a || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+      if (a.status !== "accepted") throw new ServerError("not_accepted");
+      if (leg !== "there" && leg !== "back") throw new ServerError("bad_leg");
+      if ((leg === "there" && t >= a.startsAt) || (leg === "back" && t < a.startsAt)) throw new ServerError("bad_time");
+      const appt = a;
+      if (Object.values(this.db.rides).some((r) => r.appointmentId === appt.id && r.riderId === uid && r.leg === leg && r.status !== "cancelled" && r.status !== "expired"))
+        throw new ServerError("ride_exists");
+    } else if (leg) throw new ServerError("bad_leg");
     const mine = Object.values(this.db.rides).filter((r) => r.riderId === uid);
-    // At most 5 open, and 10 new bookings a day (each one notifies drivers).
+    // At most booking.maxOpen open, and 10 new bookings a day (each one notifies drivers).
     if (
-      mine.filter((r) => r.status === "scheduled").length >= SERVER.maxBookings ||
-      mine.filter((r) => r.scheduledFor != null && r.requestedAt > this.now - 86_400_000).length >= SERVER.maxBookingsPerDay
+      mine.filter((r) => r.status === "scheduled").length >= (maxOpen ?? 12) ||
+      (!template && mine.filter((r) => r.scheduledFor != null && !r.autoBooked && r.requestedAt > this.now - 86_400_000).length >= SERVER.maxBookingsPerDay)
     )
       throw new ServerError("too_many");
     ride.status = "scheduled";
     ride.scheduledFor = t;
     ride.dispatchStartedAt = t;
+    ride.appointmentId = a?.id ?? null;
+    ride.leg = a ? leg : null;
+    ride.autoBooked = template;
+    ride.apptSummary = a ? "pending" : null;
     this.db.rides[ride.id] = ride;
     this.effects.notify.add(uid);
     // Everyone who can take it hears about it (Supabase: only those with notifications on).
     for (const d of Object.keys(this.db.vehicles))
       if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider" && this.isMember(d))
         this.pushTo(d, "booking_new", ride, { pickup: ride.pickup.label, dropoff: ride.dropoff.label });
+    if (a) {
+      this.notifyAppt(a);
+      // The other party hears that a ride was added (a series template tells once, when it is set).
+      if (!template)
+        this.pushAppt(a.clientId === uid ? a.providerId : a.clientId, "appt_ride_added", a, { leg: leg ?? undefined, time: t, who: this.db.users[uid]?.nickname ?? "" });
+    }
     return this.rideView(ride, uid);
   }
 
@@ -707,6 +885,7 @@ export class Engine {
     this.effects.notify.add(uid);
     this.effects.notify.add(r.riderId);
     this.pushTo(r.riderId, "booking_released", r, {});
+    this.attachedChanged(r);
   }
 
   cancelRide(uid: string, rideId: string, reason?: string): void {
@@ -936,6 +1115,7 @@ export class Engine {
   /** Timeouts, expiry, lost drivers. Runs on every call ("expiry check on read") and on a timer. */
   sweep(): void {
     const { offerS } = this.cfg.timers;
+    this.sweepAppointments();
     this.sweepBookings();
     for (const o of Object.values(this.db.offers)) {
       if (o.status === "offered" && o.offeredAt !== null && this.now >= o.offeredAt + offerS * 1000) this.closeOffer(o, "timed_out");
@@ -1055,6 +1235,612 @@ export class Engine {
   private expiresAt(r: RideRow): number {
     const base = r.dispatchStartedAt + this.cfg.timers.expiryS * 1000;
     return r.scheduledFor != null ? Math.max(base, r.scheduledFor + SERVER.bookingLateS * 1000) : base;
+  }
+
+  // ---------- 2.0: catalog, offers, My place ----------
+
+  /** The enabled catalog with who offers each "time" entry (public ids only), without the viewer. */
+  catalog(uid: string): CatalogItem[] {
+    this.requireMember(uid);
+    return this.cfg.services
+      .filter((e) => e.enabled)
+      .map((e) => ({
+        ...e,
+        providers:
+          e.kind !== "time"
+            ? []
+            : Object.values(this.db.users)
+                .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.offersOf(u.id).includes(e.id))
+                .sort((a, b) => a.nickname.localeCompare(b.nickname))
+                .map((u) => this.publicParty(u.id))
+      }));
+  }
+
+  /** Services I offer (FR-093): enabled "time" entries; a master profile's preset cannot change. */
+  setOffers(uid: string, ids: string[]): Profile {
+    const u = this.requireUser(uid);
+    if (this.linkedMaster(uid)) throw new ServerError("forbidden");
+    for (const id of ids) {
+      const e = this.service(id);
+      if (!e || e.kind !== "time" || !e.enabled) throw new ServerError("bad_service");
+    }
+    u.offers = [...new Set(ids)];
+    this.effects.notify.add(uid);
+    return this.getProfile(uid)!;
+  }
+
+  /** My place (FR-140); null clears it. */
+  saveHome(uid: string, place: Place | null): Profile {
+    const u = this.requireUser(uid);
+    if (place !== null && (!isValidLatLng(place) || !String(place.label ?? "").trim())) throw new ServerError("bad_input");
+    u.home = place === null ? null : cleanPlace(place);
+    return this.getProfile(uid)!;
+  }
+
+  // ---------- 2.0: appointments ----------
+
+  /** Send request (V3, V4, V23): optionally a weekly / every-2-weeks series. */
+  requestService(uid: string, input: ServiceRequestInput): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const e = this.service(input.serviceId);
+    if (!e || e.kind !== "time" || !e.enabled || !e.duration) throw new ServerError("bad_service");
+    const provider = Object.values(this.db.users).find((u) => !u.deleted && u.publicId === input.providerId);
+    if (!provider || provider.id === uid || !this.isMember(provider.id)) throw new ServerError("no_provider");
+    if (!this.offersOf(provider.id).includes(e.id)) throw new ServerError("not_offered");
+    const { minLeadMin, maxDays } = this.cfg.booking;
+    const t0 = input.startsAt;
+    if (!Number.isFinite(t0) || t0 < this.now + minLeadMin * 60_000 || t0 > this.now + maxDays * 86_400_000) throw new ServerError("bad_time");
+    const d = Math.round(input.durationMin);
+    if (!Number.isFinite(input.durationMin) || d < e.duration.min || d > e.duration.max || (d - e.duration.min) % e.duration.step !== 0)
+      throw new ServerError("bad_duration");
+    const note = String(input.note ?? "").trim();
+    const place = input.place ?? null;
+    if ((place === null && e.needsPlace) || (place !== null && (!isValidLatLng(place) || !String(place.label ?? "").trim())) || note.length > 200)
+      throw new ServerError("bad_input");
+    const price = e.price && "perHour" in e.price ? Math.round(((e.price.perHour * d) / 60) * 100) / 100 : e.price && "fixed" in e.price ? e.price.fixed : null;
+    // The occurrences: one, or a series at the same wall-clock time every 1 or 2 weeks.
+    const tz = this.cfg.timezone;
+    const { seriesMaxCount, seriesMaxDays } = this.cfg.appointment;
+    let starts = [t0];
+    const rep = input.repeat;
+    if (rep) {
+      if (rep.every !== 1 && rep.every !== 2) throw new ServerError("bad_repeat");
+      starts = [];
+      if (typeof rep.count === "number") {
+        if (rep.count < 2 || rep.count > seriesMaxCount) throw new ServerError("bad_repeat");
+        for (let k = 0; k < rep.count; k++) starts.push(addWeeksWallClock(t0, k * rep.every, tz));
+      } else if (typeof rep.until === "number") {
+        const last = localDate(rep.until, tz);
+        for (let k = 0; k <= seriesMaxCount; k++) {
+          const t = addWeeksWallClock(t0, k * rep.every, tz);
+          if (localDate(t, tz) > last) break;
+          starts.push(t);
+        }
+        if (starts.length < 2 || starts.length > seriesMaxCount) throw new ServerError("bad_repeat");
+      } else throw new ServerError("bad_repeat");
+      if (starts[starts.length - 1] > this.now + seriesMaxDays * 86_400_000) throw new ServerError("bad_repeat");
+    }
+    // Limits: ≤ 10 open single appointments, ≤ 3 open series, ≤ 20 new a day (a series counts once).
+    const appts = Object.values(this.db.appointments ?? {});
+    if (starts.length === 1) {
+      if (appts.filter((a) => a.clientId === uid && !a.seriesId && (a.status === "requested" || a.status === "accepted") && a.startsAt > this.now).length >= SERVER.maxOpenAppointments)
+        throw new ServerError("too_many");
+    } else if (
+      Object.values(this.db.series ?? {}).filter(
+        (s) =>
+          s.clientId === uid &&
+          (s.status === "requested" || s.status === "answered") &&
+          appts.some((a) => a.seriesId === s.id && (a.status === "requested" || a.status === "accepted") && a.startsAt > this.now)
+      ).length >= SERVER.maxOpenSeries
+    )
+      throw new ServerError("too_many");
+    const dayAgo = this.now - 86_400_000;
+    if (
+      appts.filter((a) => a.clientId === uid && !a.seriesId && a.requestedAt > dayAgo).length +
+        Object.values(this.db.series ?? {}).filter((s) => s.clientId === uid && s.requestedAt > dayAgo).length >=
+      SERVER.maxRequestsPerDay
+    )
+      throw new ServerError("too_many");
+    const base = {
+      clientId: uid,
+      providerId: provider.id,
+      serviceId: e.id,
+      durationMin: d,
+      place: place ? cleanPlace(place) : null,
+      note,
+      price,
+      currency: this.cfg.tariff.currency
+    };
+    let series: SeriesRow | null = null;
+    if (starts.length > 1) {
+      series = {
+        ...base,
+        id: this.nextId("s"),
+        rule: rep!.every === 1 ? "weekly" : "biweekly",
+        firstStart: starts[0],
+        count: starts.length,
+        until: starts[starts.length - 1],
+        status: "requested",
+        rideTemplates: [],
+        templatesAt: null,
+        requestedAt: this.now,
+        answeredAt: null
+      };
+      (this.db.series ??= {})[series.id] = series;
+    }
+    let first: ApptRow | null = null;
+    starts.forEach((t, i) => {
+      const a: ApptRow = {
+        ...base,
+        id: this.nextId("a"),
+        status: "requested",
+        startsAt: t,
+        requestedAt: this.now,
+        answeredAt: null,
+        endedAt: null,
+        cancelledBy: null,
+        cancelReason: null,
+        reminded: [],
+        seriesId: series?.id ?? null,
+        seq: series ? i + 1 : null
+      };
+      (this.db.appointments ??= {})[a.id] = a;
+      first ??= a;
+    });
+    this.notifyAppt(first!);
+    this.pushAppt(provider.id, "appt_new", first!, this.seriesParams(series));
+    return this.apptView(first!, uid);
+  }
+
+  /** Accept / Decline (V5, V24): a series is answered as a whole; Accept declines the clashes. */
+  answerAppointment(uid: string, id: string, decision: "accept" | "decline"): AppointmentView {
+    this.requireUser(uid);
+    if (decision !== "accept" && decision !== "decline") throw new ServerError("bad_input");
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || a.providerId !== uid) throw new ServerError("not_found");
+    if (a.status !== "requested") throw new ServerError("illegal_transition");
+    if (!a.seriesId) {
+      if (decision === "accept") {
+        if (this.providerBusy(uid, a.startsAt, a.durationMin, a.id)) throw new ServerError("overlap");
+        a.status = "accepted";
+        a.answeredAt = this.now;
+        this.pushAppt(a.clientId, "appt_accepted", a, {});
+      } else {
+        a.status = "declined";
+        a.answeredAt = this.now;
+        a.endedAt = this.now;
+        this.pushAppt(a.clientId, "appt_declined", a, {});
+      }
+    } else {
+      const s = this.db.series![a.seriesId];
+      const declined: number[] = [];
+      let accepted = 0;
+      for (const o of this.occurrences(a.seriesId).filter((x) => x.status === "requested")) {
+        o.answeredAt = this.now;
+        if (decision === "accept" && !this.providerBusy(uid, o.startsAt, o.durationMin, o.id)) {
+          o.status = "accepted";
+          accepted++;
+        } else {
+          o.status = "declined";
+          o.endedAt = this.now;
+          if (decision === "accept") declined.push(o.startsAt);
+        }
+      }
+      s.status = "answered";
+      s.answeredAt = this.now;
+      this.pushAppt(a.clientId, accepted > 0 ? "appt_accepted" : "appt_declined", a, { ...this.seriesParams(s), accepted, declined });
+    }
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
+  /** Cancel (FR-102, V25): this one or all remaining; rides follow; the other party is told once. */
+  cancelAppointment(uid: string, id: string, reason?: string | null, scope: "one" | "series" = "one"): void {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    const who = a.clientId === uid ? "client" : "provider";
+    const allowed = (x: ApptRow) => x.status === "accepted" || (x.status === "requested" && who === "client");
+    const series = scope === "series" && !!a.seriesId;
+    let targets: ApptRow[];
+    if (series) {
+      targets = this.occurrences(a.seriesId!).filter((x) => x.startsAt > this.now && allowed(x));
+      if (!targets.length) throw new ServerError("illegal_transition");
+    } else {
+      if (this.now >= a.startsAt || !allowed(a)) throw new ServerError("illegal_transition");
+      targets = [a];
+    }
+    const why = String(reason ?? "").trim().slice(0, 60) || null;
+    for (const x of targets) {
+      x.status = "cancelled";
+      x.endedAt = this.now;
+      x.cancelledBy = who;
+      x.cancelReason = why;
+      this.notifyAppt(x);
+    }
+    this.cascadeRides(targets.map((x) => x.id));
+    if (a.seriesId && !this.occurrences(a.seriesId).some((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now)) {
+      const s = this.db.series![a.seriesId];
+      if (s.status === "requested" || s.status === "answered") s.status = "cancelled";
+    }
+    this.pushAppt(who === "client" ? a.providerId : a.clientId, "appt_cancelled", a, {
+      who: this.db.users[uid]?.nickname ?? "",
+      ...(series ? { from: targets[0].startsAt, left: targets.length } : {})
+    });
+  }
+
+  getAppointment(uid: string, id: string): AppointmentView {
+    this.requireMember(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    return this.apptView(a, uid);
+  }
+
+  /** A series ride template (V26): the caller is the passenger; bookings within the horizon at once. */
+  setRideTemplate(uid: string, seriesId: string, t: RideTemplateInput): AppointmentView {
+    this.requireUser(uid);
+    if (this.linkedRole(uid) === "driver") throw new ServerError("driver_only");
+    this.sweep();
+    const s = this.db.series?.[seriesId];
+    if (!s || (s.clientId !== uid && s.providerId !== uid)) throw new ServerError("not_found");
+    if (s.status !== "answered" || !this.occurrences(s.id).some((x) => x.status === "accepted")) throw new ServerError("not_accepted");
+    if (t.leg !== "there" && t.leg !== "back") throw new ServerError("bad_leg");
+    if (
+      !Number.isFinite(t.offsetMin) ||
+      !Number.isFinite(t.estKm) ||
+      !Number.isFinite(t.estMin) ||
+      t.estKm <= 0 ||
+      t.estMin < 0 ||
+      !t.pickup ||
+      !t.dropoff ||
+      !isValidLatLng(t.pickup) ||
+      !isValidLatLng(t.dropoff) ||
+      !String(t.pickup.label ?? "").trim() ||
+      !String(t.dropoff.label ?? "").trim()
+    )
+      throw new ServerError("bad_input");
+    const off = Math.trunc(t.offsetMin);
+    if ((t.leg === "there" && (off < -1440 || off > -1)) || (t.leg === "back" && (off < -s.durationMin || off > 1440))) throw new ServerError("bad_time");
+    const role: PartyRole = s.clientId === uid ? "client" : "provider";
+    s.rideTemplates = [
+      ...s.rideTemplates.filter((x) => !(x.passenger === role && x.leg === t.leg)),
+      { passenger: role, leg: t.leg, pickup: cleanPlace(t.pickup), dropoff: cleanPlace(t.dropoff), offsetMin: off, estKm: t.estKm, estMin: t.estMin, fareIsEstimate: !!t.fareIsEstimate }
+    ];
+    this.materialize(s.id);
+    const occ = this.occurrences(s.id);
+    const a = occ.find((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now) ?? occ[occ.length - 1];
+    this.pushAppt(role === "client" ? s.providerId : s.clientId, "appt_ride_added", a, {
+      ...this.seriesParams(s),
+      leg: t.leg,
+      who: this.db.users[uid]?.nickname ?? "",
+      repeat: true
+    });
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
+  /** No more rides for this series (the caller's template for a leg); existing bookings stay. */
+  dropRideTemplate(uid: string, seriesId: string, leg: Leg): void {
+    this.requireUser(uid);
+    const s = this.db.series?.[seriesId];
+    if (!s || (s.clientId !== uid && s.providerId !== uid)) throw new ServerError("not_found");
+    const role: PartyRole = s.clientId === uid ? "client" : "provider";
+    s.rideTemplates = s.rideTemplates.filter((x) => !(x.passenger === role && x.leg === leg));
+    this.effects.notify.add(s.clientId);
+    this.effects.notify.add(s.providerId);
+  }
+
+  /** Planned (V17): upcoming appointments and rides of both roles. */
+  planned(uid: string): Planned {
+    this.requireMember(uid);
+    this.sweep();
+    return {
+      appointments: Object.values(this.db.appointments ?? {})
+        .filter((a) => (a.clientId === uid || a.providerId === uid) && (a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now)
+        .sort((x, y) => x.startsAt - y.startsAt)
+        .map((a) => this.apptView(a, uid)),
+      rides: Object.values(this.db.rides)
+        .filter((r) => (r.riderId === uid || r.driverId === uid) && (r.status === "scheduled" || isActive(r.status)))
+        .sort((x, y) => (x.scheduledFor ?? x.requestedAt) - (y.scheduledFor ?? y.requestedAt))
+        .map((r) => this.rideView(r, uid))
+    };
+  }
+
+  /** History (FR-133): finished appointments and rides, the last 50 of each, newest first. */
+  timeline(uid: string): HistoryItem[] {
+    this.requireMember(uid);
+    const appts: HistoryItem[] = Object.values(this.db.appointments ?? {})
+      .filter((a) => (a.clientId === uid || a.providerId === uid) && ["done", "declined", "cancelled", "expired"].includes(a.status))
+      .sort((x, y) => y.startsAt - x.startsAt)
+      .slice(0, SERVER.historyLimit)
+      .map((a) => ({ kind: "appointment", at: a.startsAt, appointment: this.apptView(a, uid) }));
+    const rides: HistoryItem[] = Object.values(this.db.rides)
+      .filter((r) => (r.riderId === uid || r.driverId === uid) && (r.status === "completed" || r.status === "cancelled" || r.status === "expired"))
+      .sort((x, y) => (y.scheduledFor ?? y.requestedAt) - (x.scheduledFor ?? x.requestedAt))
+      .slice(0, SERVER.historyLimit)
+      .map((r) => ({ kind: "ride", at: r.scheduledFor ?? r.requestedAt, ride: this.rideView(r, uid) }));
+    return [...appts, ...rides].sort((x, y) => y.at - x.at);
+  }
+
+  /** Rate a done appointment once within 24 h (FR-106). */
+  rateAppointment(uid: string, id: string, stars: number, comment: string): void {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    if (a.status !== "done") throw new ServerError("illegal_transition");
+    if (this.now > (a.endedAt ?? this.endOf(a)) + SERVER.apptRatingWindowS * 1000) throw new ServerError("window_closed");
+    const s = Math.round(stars);
+    if (!Number.isFinite(stars) || s < 1 || s > 5) throw new ServerError("bad_input");
+    if (this.db.ratings.some((x) => x.appointmentId === id && x.fromUser === uid)) throw new ServerError("already_rated");
+    this.db.ratings.push({ appointmentId: id, fromUser: uid, toUser: a.clientId === uid ? a.providerId : a.clientId, stars: s, comment: String(comment ?? "").trim().slice(0, 140), createdAt: this.now });
+    this.notifyAppt(a);
+  }
+
+  // ---------- 2.0: internals ----------
+
+  private service(id: string): CatalogEntry | null {
+    return this.cfg.services.find((e) => e.id === id) ?? null;
+  }
+
+  private serviceName(id: string, lang: Lang): string {
+    const e = this.service(id);
+    return e ? e.name[lang] || e.name.en : id;
+  }
+
+  /** What a person offers: a master profile's preset, otherwise their own toggles. */
+  private offersOf(uid: string): string[] {
+    const linked = this.linkedMaster(uid);
+    if (linked) return this.masterDef(linked)?.offers ?? [];
+    return this.db.users[uid]?.offers ?? [];
+  }
+
+  /** The random public id (made once, on first use). */
+  private publicIdOf(uid: string): string | null {
+    const u = this.db.users[uid];
+    if (!u || u.deleted) return null;
+    if (!u.publicId) u.publicId = randomPublicId();
+    return u.publicId;
+  }
+
+  private publicParty(uid: string): PublicProvider {
+    return { ...this.party(uid), publicId: this.publicIdOf(uid) };
+  }
+
+  private occurrences(seriesId: string): ApptRow[] {
+    return Object.values(this.db.appointments ?? {})
+      .filter((a) => a.seriesId === seriesId)
+      .sort((x, y) => (x.seq ?? 0) - (y.seq ?? 0));
+  }
+
+  private endOf(a: { startsAt: number; durationMin: number }): number {
+    return a.startsAt + a.durationMin * 60_000;
+  }
+
+  /** The provider is busy then: an accepted appointment or a booked ride taken as driver overlaps. */
+  private providerBusy(uid: string, start: number, min: number, except: string): boolean {
+    const end = start + min * 60_000;
+    return (
+      Object.values(this.db.appointments ?? {}).some((x) => x.providerId === uid && x.status === "accepted" && x.id !== except && x.startsAt < end && start < this.endOf(x)) ||
+      Object.values(this.db.rides).some(
+        (r) =>
+          r.driverId === uid &&
+          r.scheduledFor != null &&
+          (r.status === "scheduled" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress") &&
+          r.scheduledFor < end &&
+          start < r.scheduledFor + Math.max(r.estMin, 1) * 60_000
+      )
+    );
+  }
+
+  /** Cancelled appointments cancel their rides not under way yet; drivers who took one are told. */
+  private cascadeRides(ids: string[]): void {
+    for (const r of Object.values(this.db.rides)) {
+      if (!r.appointmentId || !ids.includes(r.appointmentId)) continue;
+      if (!(r.status === "scheduled" || r.status === "requested" || r.status === "accepted" || r.status === "arrived")) continue;
+      if (r.driverId) this.pushTo(r.driverId, "booking_cancelled", r, { pickup: r.pickup.label });
+      this.endRide(r, "cancelled", "system", "appointment_cancelled");
+    }
+  }
+
+  /** Bookings from a series' ride templates for occurrences within the booking horizon (V26). */
+  private materialize(seriesId: string): void {
+    const s = this.db.series?.[seriesId];
+    if (!s) return;
+    const { minLeadMin, maxDays } = this.cfg.booking;
+    for (const t of s.rideTemplates) {
+      const user = t.passenger === "client" ? s.clientId : s.providerId;
+      for (const a of this.occurrences(s.id).filter((x) => x.status === "accepted" && x.startsAt > this.now)) {
+        const at = (t.leg === "there" ? a.startsAt : this.endOf(a)) + t.offsetMin * 60_000;
+        if (at < this.now + minLeadMin * 60_000 || at > this.now + maxDays * 86_400_000) continue;
+        if (Object.values(this.db.rides).some((r) => r.appointmentId === a.id && r.riderId === user && r.leg === t.leg)) continue;
+        try {
+          this.bookFor(user, { pickup: t.pickup, dropoff: t.dropoff, estKm: t.estKm, estMin: t.estMin, fareIsEstimate: t.fareIsEstimate, scheduledFor: at }, a.id, t.leg, true);
+        } catch {
+          /* no room (open bookings) or no longer allowed: the next run tries again */
+        }
+      }
+    }
+    s.templatesAt = this.now;
+  }
+
+  /** Appointments of the sweep: expiry, done, reminders, template rides (V6, V7, V24, V26). */
+  private sweepAppointments(): void {
+    const all = this.db.appointments;
+    if (!all) return;
+    // An unanswered series expires as a whole when its first occurrence starts (one notification).
+    for (const s of Object.values(this.db.series ?? {})) {
+      if (s.status !== "requested" || s.firstStart > this.now) continue;
+      const occ = this.occurrences(s.id);
+      for (const a of occ)
+        if (a.status === "requested") {
+          a.status = "expired";
+          a.endedAt = this.now;
+          this.notifyAppt(a);
+        }
+      s.status = "expired";
+      if (occ[0]) this.pushAppt(s.clientId, "appt_expired", occ[0], this.seriesParams(s));
+    }
+    for (const a of Object.values(all)) {
+      if (a.status === "requested" && !a.seriesId && a.startsAt <= this.now) {
+        a.status = "expired";
+        a.endedAt = this.now;
+        this.notifyAppt(a);
+        this.pushAppt(a.clientId, "appt_expired", a, {});
+      } else if (a.status === "accepted" && this.endOf(a) <= this.now) {
+        a.status = "done";
+        a.endedAt = this.endOf(a);
+        this.notifyAppt(a);
+      }
+    }
+    // Reminders: once per slot for both parties; none for a moment that had passed at the request.
+    for (const a of Object.values(all)) {
+      if ((a.status !== "requested" && a.status !== "accepted") || a.startsAt <= this.now) continue;
+      for (const slot of this.cfg.appointment.reminderMin) {
+        const moment = a.startsAt - slot * 60_000;
+        if (this.now < moment || a.requestedAt > moment || a.reminded.includes(slot)) continue;
+        a.reminded.push(slot);
+        this.pushAppt(a.clientId, "appt_reminder", a, this.reminderParams(a, slot, "client"));
+        this.pushAppt(a.providerId, "appt_reminder", a, this.reminderParams(a, slot, "provider"));
+      }
+    }
+    // Series rides: occurrences that came within the booking horizon (once a day per series).
+    for (const s of Object.values(this.db.series ?? {}))
+      if (s.status === "answered" && s.rideTemplates.length && (s.templatesAt === null || s.templatesAt < this.now - 86_400_000)) this.materialize(s.id);
+  }
+
+  private reminderParams(a: ApptRow, slot: number, role: PartyRole): Partial<PushParams> {
+    return {
+      lead: slot,
+      role,
+      other: this.db.users[role === "client" ? a.providerId : a.clientId]?.nickname ?? "",
+      status: a.status === "accepted" ? "confirmed" : role === "client" ? "waiting" : "answer",
+      rides: this.attached(a, null).map((x) => ({ leg: x.leg, status: x.status, driver: x.driver?.nickname ?? null }))
+    };
+  }
+
+  private seriesParams(s: SeriesRow | null): Partial<PushParams> {
+    return s ? { rule: s.rule, count: s.count, first: s.firstStart, last: s.until } : {};
+  }
+
+  /** An appointment notification in the recipient's language (service name included). */
+  private pushAppt(userId: string, kind: PushKind, a: ApptRow, extra: Partial<PushParams>): void {
+    if (!this.isMember(userId)) return;
+    const lang = this.db.users[userId]?.language ?? "en";
+    this.effects.push.push({
+      userId,
+      kind,
+      rideId: null,
+      appointmentId: a.id,
+      params: {
+        serviceId: a.serviceId,
+        service: this.serviceName(a.serviceId, lang),
+        at: a.startsAt,
+        end: this.endOf(a),
+        client: this.db.users[a.clientId]?.nickname ?? "",
+        provider: this.db.users[a.providerId]?.nickname ?? "",
+        place: a.place?.label ?? "",
+        ...extra
+      }
+    });
+  }
+
+  private notifyAppt(a: ApptRow): void {
+    this.effects.notify.add(a.clientId);
+    this.effects.notify.add(a.providerId);
+  }
+
+  /** A ride that is part of an appointment changed: both parties refetch; news reaches the other party (V12). */
+  private attachedChanged(r: RideRow): void {
+    if (!r.appointmentId) return;
+    const a = this.db.appointments?.[r.appointmentId];
+    if (!a) return;
+    this.notifyAppt(a);
+    const before = r.apptSummary ?? null;
+    const now = rideSummary(r);
+    r.apptSummary = now;
+    if (!(before === "pending" || before === "confirmed") || now === before || !(now === "pending" || now === "confirmed" || now === "failed")) return;
+    const kind: PushKind = now === "confirmed" ? "appt_ride_taken" : now === "pending" ? "appt_ride_lost" : "appt_ride_failed";
+    const params = { leg: r.leg ?? undefined, time: r.scheduledFor ?? null, driver: r.driverId ? this.db.users[r.driverId]?.nickname ?? "" : "" };
+    this.pushAppt(r.riderId === a.clientId ? a.providerId : a.clientId, kind, a, params);
+    if (now === "failed") this.pushAppt(r.riderId, kind, a, params);
+  }
+
+  /** The rides of an appointment as the viewer may see them (FR-114): latest per passenger and leg. */
+  private attached(a: ApptRow, viewer: string | null): AttachedRide[] {
+    const latest = new Map<string, RideRow>();
+    for (const r of Object.values(this.db.rides)) {
+      if (r.appointmentId !== a.id || !r.leg || rideSummary(r) === null) continue;
+      const key = `${r.riderId}:${r.leg}`;
+      const cur = latest.get(key);
+      if (!cur || cur.requestedAt <= r.requestedAt) latest.set(key, r);
+    }
+    return [...latest.values()]
+      .sort((x, y) => (x.scheduledFor ?? 0) - (y.scheduledFor ?? 0))
+      .map((r) => ({
+        rideId: r.id,
+        leg: r.leg!,
+        passenger: r.riderId === a.clientId ? "client" : "provider",
+        mine: r.riderId === viewer,
+        scheduledFor: r.scheduledFor ?? null,
+        status: rideSummary(r)!,
+        driver: r.driverId ? { nickname: this.db.users[r.driverId]?.nickname ?? "Deleted user", icon: this.masterOf(r.driverId)?.icon ?? null } : null,
+        ...(r.riderId === viewer ? { pickup: { ...r.pickup }, dropoff: { ...r.dropoff }, fare: r.fare, currency: r.currency } : {})
+      }));
+  }
+
+  private apptView(a: ApptRow, viewer: string): AppointmentView {
+    const e = this.service(a.serviceId);
+    const s = a.seriesId ? this.db.series?.[a.seriesId] ?? null : null;
+    const role: PartyRole = a.clientId === viewer ? "client" : "provider";
+    const occ = s ? this.occurrences(s.id) : [];
+    return {
+      id: a.id,
+      status: a.status,
+      role,
+      serviceId: a.serviceId,
+      service: e ? { name: { ...e.name }, icon: e.icon } : null,
+      startsAt: a.startsAt,
+      durationMin: a.durationMin,
+      endsAt: this.endOf(a),
+      place: a.place ? { ...a.place } : null,
+      note: a.note,
+      price: a.price,
+      currency: a.currency,
+      client: this.publicParty(a.clientId),
+      provider: this.publicParty(a.providerId),
+      requestedAt: a.requestedAt,
+      answeredAt: a.answeredAt,
+      endedAt: a.endedAt,
+      cancelledBy: a.cancelledBy,
+      cancelReason: a.cancelReason,
+      rides: this.attached(a, viewer),
+      reminders: [...a.reminded],
+      myRating: this.db.ratings.find((x) => x.appointmentId === a.id && x.fromUser === viewer)?.stars ?? null,
+      series: s
+        ? {
+            id: s.id,
+            rule: s.rule,
+            seq: a.seq ?? 1,
+            count: s.count,
+            until: s.until,
+            status: s.status,
+            remaining: occ.filter((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now).length,
+            declined: occ.filter((x) => x.status === "declined").map((x) => x.startsAt).sort((x, y) => x - y),
+            gaps: occ.filter((x) => x.status === "declined" || x.status === "cancelled").map((x) => x.startsAt).sort((x, y) => x - y),
+            starts: occ.map((x) => x.startsAt),
+            rideTemplates: s.rideTemplates.map((t) =>
+              t.passenger === role ? { ...t, pickup: { ...t.pickup }, dropoff: { ...t.dropoff }, mine: true } : { passenger: t.passenger, leg: t.leg, offsetMin: t.offsetMin, mine: false }
+            ),
+            ics: null
+          }
+        : null,
+      calendar: { google: null, ics: null }
+    };
   }
 
   // ---------- internals ----------
@@ -1214,11 +2000,13 @@ export class Engine {
     r.cancelReason = reason;
     this.effects.pingDrivers = true;
     this.pushStandby(r);
+    this.attachedChanged(r);
   }
 
   private notifyRide(r: RideRow): void {
     this.effects.notify.add(r.riderId);
     if (r.driverId) this.effects.notify.add(r.driverId);
+    this.attachedChanged(r);
   }
 
   private pendingReceipt(uid: string): RideView | null {
@@ -1283,7 +2071,11 @@ export class Engine {
       scheduledFor: r.scheduledFor ?? null,
       rider: this.party(r.riderId),
       driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.db.vehicles[r.driverId] ?? null } : null,
-      myRating: mine ? mine.stars : null
+      myRating: mine ? mine.stars : null,
+      // The appointment and leg are the rider's business only (FR-114).
+      appointmentId: role === "rider" ? r.appointmentId ?? null : null,
+      leg: role === "rider" ? r.leg ?? null : null,
+      calendar: { google: null, ics: null }
     };
   }
 
@@ -1314,6 +2106,26 @@ export class Engine {
 }
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
+
+/** How an attached ride stands for its appointment (§7 rule 7); null = not shown (twin of siosia_ride_summary). */
+export function rideSummary(r: Pick<RideRow, "status" | "driverId" | "cancelledBy" | "cancelReason">): AttachedStatus | null {
+  if (r.status === "cancelled" && (r.cancelledBy === "rider" || r.cancelReason === "appointment_cancelled")) return null;
+  if ((r.status === "scheduled" && !r.driverId) || r.status === "requested") return "pending";
+  if (r.status === "scheduled" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress") return "confirmed";
+  if (r.status === "completed") return "done";
+  return "failed";
+}
+
+const ratingKey = (g: RatingRow) => (g.rideId ? `r:${g.rideId}` : `a:${g.appointmentId}`);
+
+/** 12 URL-safe random characters (twin of the SQL default for profiles.public_id). */
+function randomPublicId(): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const bytes = new Uint8Array(12);
+  if (typeof crypto !== "undefined" && "getRandomValues" in crypto) crypto.getRandomValues(bytes);
+  else for (let i = 0; i < 12; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => alphabet[b & 63]).join("");
+}
 
 function cleanPlace(p: Place): Place {
   return { lat: p.lat, lng: p.lng, label: String(p.label ?? "").slice(0, 120) };
