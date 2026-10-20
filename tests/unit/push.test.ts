@@ -4,8 +4,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { disablePush, enablePush, pushState } from "../../src/services/push";
-import { pushText } from "../../supabase/functions/_shared/push-text";
-import { dispatch, MAX_ATTEMPTS, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
+import { apptStatusText, leadText, pushText, rideLineText } from "../../supabase/functions/_shared/push-text";
+import { dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
 
 const AT = Date.UTC(2026, 9, 12, 12, 30); // 14:30 in Warsaw (CEST)
 
@@ -19,6 +19,59 @@ describe("notification texts", () => {
     expect(pushText("booking_taken", { at: new Date(AT).toISOString(), driver: "Roman" }, "pl", "Europe/Warsaw").title).toBe("Roman Cię zawiezie");
     expect(pushText("booking_taken", { at: AT, driver: "Roman" }, "pl", "Europe/Warsaw").body).toMatch(/^Twój kurs .*14:30 ma kierowcę\.$/);
     expect(pushText("driver_arrived", { driver: "Roman" }, "xx", "Nowhere/Bad_Zone").title).toBe("Roman is here");
+  });
+});
+
+describe("2.0 appointment texts (§8, V8)", () => {
+  const TZ = "Europe/Warsaw";
+  const H = 3600_000;
+  const base = { service: "Childcare", at: AT, end: AT + 3 * H, client: "Toria", provider: "Siosia", place: "Husarska 16" };
+
+  it("asks the provider, with the time range in the deployment's time zone", () => {
+    expect(pushText("appt_new", base, "en", TZ, "a1")).toEqual({
+      title: "New request: Childcare Mon 12 Oct, 14:30",
+      body: "Toria asks for Childcare, Mon 12 Oct, 14:30–17:30. Answer in Siosia → Planned.",
+      tag: "appt_new:a1"
+    });
+    const pl = pushText("appt_new", { ...base, service: "Opieka nad dziećmi" }, "pl", TZ, "a1");
+    expect(pl.title).toMatch(/^Nowa prośba: Opieka nad dziećmi .*12 paź.*14:30$/);
+    expect(pl.body).toMatch(/^Toria prosi o: Opieka nad dziećmi, .*14:30–17:30\. Odpowiedz w Siosi → Zaplanowane\.$/);
+  });
+
+  it("names a series' rule, span and count, and the dates declined on answer", () => {
+    const series = { ...base, service: "Learning", end: AT + H, rule: "weekly" as const, count: 8, first: AT, last: AT + 49 * 24 * H };
+    expect(pushText("appt_new", series, "en", TZ).body).toBe("Toria asks for Learning, every Mon 14:30–15:30, 12 Oct – 30 Nov (8×). Answer in Siosia → Planned.");
+    expect(pushText("appt_new", { ...series, service: "Nauka" }, "pl", TZ).body).toBe("Toria prosi o: Nauka, co poniedziałek 14:30–15:30, 12 paź – 30 lis (8×). Odpowiedz w Siosi → Zaplanowane.");
+    expect(pushText("appt_new", { ...series, rule: "biweekly", first: AT + 2 * 24 * H }, "pl", TZ).body).toMatch(/co drugą środę/);
+    const ok = pushText("appt_accepted", { ...series, accepted: 7, declined: [AT + 7 * 24 * H] }, "en", TZ);
+    expect(ok).toMatchObject({ title: "Siosia accepted", body: "Learning every Mon 14:30–15:30, 12 Oct – 30 Nov (8×) is confirmed. 7 of 8 confirmed; declined: 19 Oct" });
+    expect(pushText("appt_cancelled", { ...base, who: "Toria", from: AT, left: 4 }, "en", TZ).body).toBe(
+      "Cancelled by Toria: Childcare Mon 12 Oct, 14:30–17:30. From 12 Oct, 4 left."
+    );
+  });
+
+  it("reminds with the status and the ride lines — the same words Planned shows", () => {
+    const r = { ...base, lead: 1440, other: "Siosia", status: "confirmed", rides: [{ leg: "there", status: "confirmed", driver: "Roman" }] };
+    expect(pushText("appt_reminder", r, "en", TZ, "a1")).toEqual({
+      title: "Tomorrow: Childcare Mon 12 Oct, 14:30–17:30",
+      body: "With Siosia · Husarska 16. Confirmed. Ride there: Roman ✓",
+      tag: "appt_reminder:a1"
+    });
+    expect(pushText("appt_reminder", { ...r, service: "Opieka", lead: 120, rides: [{ leg: "back", status: "pending", driver: null }] }, "pl", TZ).body).toBe(
+      "Z Siosia · Husarska 16. Potwierdzone. Przejazd powrotny: jeszcze bez kierowcy"
+    );
+    expect(pushText("appt_reminder", { ...r, status: "waiting", rides: [] }, "en", TZ).body).toBe("With Siosia · Husarska 16. Waiting for an answer from Siosia.");
+    expect(apptStatusText("answer", "Siosia", "pl")).toBe("Odpowiedz, proszę");
+    expect(rideLineText({ leg: "there", status: "failed" }, "en")).toBe("Ride there: no driver found");
+    expect([leadText(1440, "en"), leadText(120, "pl"), leadText(30, "en"), leadText(180, "pl")]).toEqual(["Tomorrow", "Za 2 godziny", "In 30 min", "Za 3 godz."]);
+  });
+
+  it("tells the other party about the attached ride", () => {
+    expect(pushText("appt_ride_taken", { ...base, leg: "there", driver: "Roman" }, "en", TZ)).toMatchObject({
+      title: "Ride confirmed: Roman",
+      body: "Childcare Mon 12 Oct, 14:30: the ride there has a driver."
+    });
+    expect(pushText("appt_ride_added", { ...base, leg: "back", who: "Siosia", time: AT + 3 * H + 5 * 60_000 }, "pl", TZ).body).toMatch(/przejazd powrotny o 17:35, szukamy kierowcy\.$/);
   });
 });
 
@@ -51,6 +104,13 @@ describe("push-dispatch", () => {
     };
     return { deps, log };
   }
+
+  it("tags appointment notifications with the appointment and opens Planned", async () => {
+    const { deps, log } = fake([{ ...row(9, "rider", 1), kind: "appt_accepted", ride_id: null, appointment_id: "a9", params: { provider: "Siosia", service: "Childcare", at: AT } }], { rider: [sub("https://push/a")] }, {});
+    await dispatch(deps);
+    expect(JSON.parse(log.payloads[0])).toMatchObject({ title: "Siosia accepted", tag: "appt_accepted:a9", url: "./?open=planned" });
+    expect(openUrl("driver_coming")).toBe("./");
+  });
 
   it("sends to every device of the user, drops gone subscriptions, retries transient failures", async () => {
     const { deps, log } = fake(

@@ -8,13 +8,84 @@ function toMs(at) {
   const ms = typeof at === "number" ? at : Date.parse(at);
   return Number.isFinite(ms) ? ms : null;
 }
-function fmt(ms, lang, tz, withDay) {
+var loc = (l) => l === "pl" ? "pl-PL" : "en-GB";
+function format(ms, l, tz, opts) {
   if (ms === null) return "";
-  const opts = withDay ? { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: tz } : { hour: "2-digit", minute: "2-digit", timeZone: tz };
   try {
-    return new Intl.DateTimeFormat(lang === "pl" ? "pl-PL" : "en-GB", opts).format(ms);
+    return new Intl.DateTimeFormat(loc(l), { ...opts, timeZone: tz }).format(ms);
   } catch {
-    return new Intl.DateTimeFormat(lang === "pl" ? "pl-PL" : "en-GB", { ...opts, timeZone: "UTC" }).format(ms);
+    return new Intl.DateTimeFormat(loc(l), { ...opts, timeZone: "UTC" }).format(ms);
+  }
+}
+function fmt(ms, lang, tz, withDay) {
+  return format(
+    ms,
+    lang,
+    tz,
+    withDay ? { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" }
+  );
+}
+var dayMonth = (ms, l, tz) => format(ms, l, tz, { day: "numeric", month: "short" });
+function rangeText(at, end, lang, tz) {
+  const l = lang === "pl" ? "pl" : "en";
+  const a = toMs(at);
+  const e = toMs(end);
+  if (a === null) return "";
+  return `${fmt(a, l, tz, true)}${e === null ? "" : `\u2013${fmt(e, l, tz, false)}`}`;
+}
+var PL_EVERY = ["niedziel\u0119", "poniedzia\u0142ek", "wtorek", "\u015Brod\u0119", "czwartek", "pi\u0105tek", "sobot\u0119"];
+var PL_FEMININE = [true, false, false, true, false, false, true];
+function weekdayIndex(ms, tz) {
+  const d = format(ms, "en", tz, { weekday: "short" });
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(d);
+}
+function seriesText(p, lang, tz) {
+  const l = lang === "pl" ? "pl" : "en";
+  const first = toMs(p.first ?? p.at);
+  const last = toMs(p.last);
+  const at = toMs(p.at);
+  const end = toMs(p.end);
+  if (first === null) return "";
+  const minutes = at !== null && end !== null ? end - at : 0;
+  const time = `${fmt(first, l, tz, false)}\u2013${fmt(first + minutes, l, tz, false)}`;
+  const wd = weekdayIndex(first, tz);
+  const biweekly = p.rule === "biweekly";
+  const every = l === "pl" ? `co ${biweekly ? PL_FEMININE[wd] ? "drug\u0105 " : "drugi " : ""}${PL_EVERY[wd] ?? ""}` : `every ${biweekly ? "other " : ""}${format(first, "en", tz, { weekday: "short" })}`;
+  const span = last !== null ? `, ${dayMonth(first, l, tz)} \u2013 ${dayMonth(last, l, tz)}` : "";
+  return `${every} ${time}${span}${p.count ? ` (${p.count}\xD7)` : ""}`;
+}
+var LEG = {
+  en: { there: "there", back: "back" },
+  pl: { there: "tam", back: "powrotny" }
+};
+function leadText(slot, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  if (slot === 1440) return l === "pl" ? "Jutro" : "Tomorrow";
+  if (slot === 120) return l === "pl" ? "Za 2 godziny" : "In 2 hours";
+  if (slot !== void 0 && slot < 60) return l === "pl" ? `Za ${slot} min` : `In ${slot} min`;
+  const h = Math.round((slot ?? 0) / 60 * 10) / 10;
+  return l === "pl" ? `Za ${h} godz.` : `In ${h} h`;
+}
+function apptStatusText(status, provider, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  if (status === "confirmed") return l === "pl" ? "Potwierdzone" : "Confirmed";
+  if (status === "waiting") return l === "pl" ? `Czeka na odpowied\u017A: ${provider}` : `Waiting for an answer from ${provider}`;
+  if (status === "answer") return l === "pl" ? "Odpowiedz, prosz\u0119" : "Please answer";
+  return "";
+}
+function rideLineText(r, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  const leg = LEG[l][r.leg ?? "there"] ?? r.leg ?? "";
+  const head = l === "pl" ? `Przejazd ${leg}` : `Ride ${leg}`;
+  switch (r.status) {
+    case "confirmed":
+      return `${head}: ${r.driver ?? ""} \u2713`;
+    case "pending":
+      return `${head}: ${l === "pl" ? "jeszcze bez kierowcy" : "no driver yet"}`;
+    case "done":
+      return `${head}: ${l === "pl" ? "odby\u0142 si\u0119" : "done"}`;
+    default:
+      return `${head}: ${l === "pl" ? "nie znaleziono kierowcy" : "no driver found"}`;
   }
 }
 var TEXTS = {
@@ -27,7 +98,17 @@ var TEXTS = {
     driver_coming: ["{driver} is on the way", "Your driver is heading to the pickup."],
     driver_arrived: ["{driver} is here", "Your driver has arrived at the pickup."],
     booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
-    request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."]
+    request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
+    appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}. Answer in Siosia \u2192 Planned."],
+    appt_accepted: ["{provider} accepted", "{service} {range} is confirmed.{clashes}"],
+    appt_declined: ["{provider} can't make it", "{service} {range} was declined."],
+    appt_cancelled: ["{service} {when} cancelled", "Cancelled by {who}: {service} {range}.{remaining}"],
+    appt_expired: ["No answer from {provider}", "{service} {range} got no answer and expired."],
+    appt_reminder: ["{lead}: {service} {range}", "With {other}{atplace}. {status}.{rides}"],
+    appt_ride_added: ["{who} added a ride", "{service} {when}: ride {leg}{attime}, looking for a driver."],
+    appt_ride_taken: ["Ride confirmed: {driver}", "{service} {when}: the ride {leg} has a driver."],
+    appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
+    appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -38,32 +119,60 @@ var TEXTS = {
     driver_coming: ["{driver} jest w drodze", "Kierowca jedzie do miejsca odbioru."],
     driver_arrived: ["{driver} czeka", "Kierowca jest na miejscu odbioru."],
     booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafi\u0142a do kierowc\xF3w w pobli\u017Cu."],
-    request_new: ["Nowe zam\xF3wienie", "Odbi\xF3r: {pickup}. Otw\xF3rz Siosi\u0119, aby je przyj\u0105\u0107."]
+    request_new: ["Nowe zam\xF3wienie", "Odbi\xF3r: {pickup}. Otw\xF3rz Siosi\u0119, aby je przyj\u0105\u0107."],
+    appt_new: ["Nowa pro\u015Bba: {service} {when}", "{client} prosi o: {service}, {range}. Odpowiedz w Siosi \u2192 Zaplanowane."],
+    appt_accepted: ["{provider} potwierdza", "{service} {range} \u2014 potwierdzone.{clashes}"],
+    appt_declined: ["{provider} nie mo\u017Ce", "{service} {range} \u2014 odrzucone."],
+    appt_cancelled: ["{service} {when} odwo\u0142ane", "Odwo\u0142ane przez: {who}. {service} {range}.{remaining}"],
+    appt_expired: ["Brak odpowiedzi od {provider}", "{service} {range} \u2014 bez odpowiedzi, pro\u015Bba wygas\u0142a."],
+    appt_reminder: ["{lead}: {service} {range}", "Z {other}{atplace}. {status}.{rides}"],
+    appt_ride_added: ["{who} dodaje przejazd", "{service} {when}: przejazd {leg}{attime}, szukamy kierowcy."],
+    appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowc\u0119."],
+    appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} zn\xF3w bez kierowcy."],
+    appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."]
   }
 };
-function pushText(kind, params, lang, tz, rideId) {
+function pushText(kind, params, lang, tz, id) {
   const l = lang === "pl" ? "pl" : "en";
   const [title, body] = TEXTS[l][kind] ?? TEXTS[l].booking_open;
   const ms = toMs(params.at);
+  const series = !!params.rule && (kind === "appt_new" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
+  const declined = (params.declined ?? []).map((d) => dayMonth(toMs(d), l, tz)).filter(Boolean);
+  const total = (params.accepted ?? 0) + declined.length;
   const vars = {
     when: fmt(ms, l, tz, true),
-    time: fmt(ms, l, tz, false),
+    time: fmt(toMs(params.time) ?? ms, l, tz, false),
     pickup: params.pickup ?? "",
     dropoff: params.dropoff ?? "",
     driver: params.driver ?? "",
-    rider: params.rider ?? ""
+    rider: params.rider ?? "",
+    service: params.service ?? "",
+    client: params.client ?? "",
+    provider: params.provider ?? "",
+    who: params.who ?? "",
+    other: params.other ?? "",
+    leg: LEG[l][params.leg ?? ""] ?? params.leg ?? "",
+    lead: leadText(params.lead, l),
+    range: series ? seriesText(params, l, tz) : rangeText(params.at, params.end, l, tz),
+    atplace: params.place ? ` \xB7 ${params.place}` : "",
+    attime: params.time ? l === "pl" ? ` o ${fmt(toMs(params.time), l, tz, false)}` : ` at ${fmt(toMs(params.time), l, tz, false)}` : params.repeat ? l === "pl" ? " w ka\u017Cdym terminie" : " for every date" : "",
+    status: apptStatusText(params.status, params.provider ?? "", l),
+    rides: (params.rides ?? []).length ? ` ${(params.rides ?? []).map((r) => rideLineText(r, l)).join(" \xB7 ")}` : "",
+    clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
+    remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const fill = (s) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim();
-  return { title: fill(title), body: fill(body), tag: `${kind}:${rideId ?? ""}` };
+  const fill = (s) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim();
+  return { title: fill(title), body: fill(body), tag: `${kind}:${id ?? ""}` };
 }
 
 // supabase/functions/push-dispatch/dispatch.ts
+var openUrl = (kind) => kind.startsWith("appt_") ? "./?open=planned" : "./";
 var MAX_ATTEMPTS = 5;
 async function dispatch(deps, limit = 100) {
   const result = { sent: 0, failed: 0, dropped: 0 };
   for (const row of await deps.pending(limit)) {
-    const text = pushText(row.kind, row.params ?? {}, row.lang, row.tz, row.ride_id);
-    const payload = JSON.stringify({ ...text, url: "./" });
+    const text = pushText(row.kind, row.params ?? {}, row.lang, row.tz, row.appointment_id ?? row.ride_id);
+    const payload = JSON.stringify({ ...text, url: openUrl(row.kind) });
     const subs = await deps.subscriptions(row.user_id);
     let delivered = 0;
     let retry = false;

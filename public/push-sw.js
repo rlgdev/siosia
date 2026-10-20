@@ -28,7 +28,12 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      for (const w of windows) if (w.url.startsWith(self.registration.scope) && "focus" in w) return w.focus();
+      for (const w of windows)
+        if (w.url.startsWith(self.registration.scope) && "focus" in w) {
+          // The app is open: bring it to the front and show the screen the notification is about.
+          w.postMessage({ type: "siosia-open", url });
+          return w.focus();
+        }
       return self.clients.openWindow(url);
     })()
   );

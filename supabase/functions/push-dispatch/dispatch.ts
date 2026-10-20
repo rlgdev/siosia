@@ -9,6 +9,8 @@ export interface OutboxRow {
   user_id: string;
   kind: PushKind;
   ride_id: string | null;
+  /** 2.0: appointment notifications carry their appointment (tag) and open Planned. */
+  appointment_id?: string | null;
   params: PushParams;
   lang: string;
   tz: string;
@@ -39,14 +41,17 @@ export interface DispatchResult {
   dropped: number;
 }
 
+/** Appointment notifications open Planned (FR-125); ride ones open the app (the active ride shows). */
+export const openUrl = (kind: PushKind): string => (kind.startsWith("appt_") ? "./?open=planned" : "./");
+
 /** A message is claimed at most this many times (= runs); then it is given up. */
 export const MAX_ATTEMPTS = 5;
 
 export async function dispatch(deps: Deps, limit = 100): Promise<DispatchResult> {
   const result: DispatchResult = { sent: 0, failed: 0, dropped: 0 };
   for (const row of await deps.pending(limit)) {
-    const text = pushText(row.kind, row.params ?? {}, row.lang, row.tz, row.ride_id);
-    const payload = JSON.stringify({ ...text, url: "./" });
+    const text = pushText(row.kind, row.params ?? {}, row.lang, row.tz, row.appointment_id ?? row.ride_id);
+    const payload = JSON.stringify({ ...text, url: openUrl(row.kind) });
     const subs = await deps.subscriptions(row.user_id);
     let delivered = 0;
     let retry = false;
