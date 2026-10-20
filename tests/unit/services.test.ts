@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from "../../src/core/defaults";
 import { destination } from "../../src/core/geo";
 import { MockBackend } from "../../src/backend/mock/index";
 import { MockBus } from "../../src/backend/mock/bus";
+import { RobotSiosia } from "../../src/backend/mock/siosiaRobot";
 import { resetMockDb } from "../../src/backend/mock/store";
 import { en } from "../../src/i18n/en";
 import { pl } from "../../src/i18n/pl";
@@ -145,6 +146,60 @@ describe("mock backend (FR-070)", () => {
     siosia.dispose();
   });
 
+  it("demo: the robot Siosia offers learning and childcare, accepts within 5 s and books a ride there (FR-151)", async () => {
+    resetMockDb();
+    resetRoutingState();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("offline"); // the straight-line route fallback
+      })
+    );
+    try {
+      const cfg = { ...DEFAULT_CONFIG, inviteCode: null };
+      const robot = new RobotSiosia(cfg, { ...destination(A, 210, 1.2), label: "Siosia" });
+      await robot.init();
+      const client = new MockBackend("c1", cfg, { sweep: false });
+      await client.saveProfile("Toria", "en");
+      const cat = await client.catalog();
+      expect(cat.find((e) => e.id === "learning")!.providers.map((p) => p.nickname)).toEqual(["Siosia"]);
+      const providerId = cat.find((e) => e.id === "childcare")!.providers[0].publicId!;
+      const q = (ms: number) => Math.ceil(ms / 900_000) * 900_000;
+      const ask = (startsAt: number, repeat?: { every: 1; count: number }) =>
+        client.requestService({ serviceId: "childcare", providerId, startsAt, durationMin: 120, place: { ...A, label: "Dom" }, note: "", repeat });
+
+      const a = await ask(q(Date.now() + 3 * 3600_000));
+      const t0 = Date.now();
+      await robot.tick(t0); // she reads it first
+      expect((await client.getAppointment(a.id)).status).toBe("requested");
+      await robot.tick(t0 + 2000);
+      const accepted = await client.getAppointment(a.id);
+      expect(accepted.status).toBe("accepted");
+      expect(accepted.rides).toEqual([expect.objectContaining({ leg: "there", passenger: "provider", mine: false, status: "pending" })]);
+      expect(accepted.rides[0].scheduledFor!).toBeLessThan(accepted.startsAt);
+
+      // Under an hour ahead: accepted, no ride.
+      const soon = await ask(q(Date.now() + 35 * 60_000)); // 35–50 min ahead
+      await robot.tick(Date.now());
+      await robot.tick(Date.now() + 2000);
+      const s = await client.getAppointment(soon.id);
+      expect(s.status).toBe("accepted");
+      expect(s.rides).toEqual([]);
+
+      // A weekly series: one ride template for every date.
+      const first = await ask(q(Date.now() + 2 * 86_400_000), { every: 1, count: 3 });
+      await robot.tick(Date.now());
+      await robot.tick(Date.now() + 2000);
+      const series = await client.getAppointment(first.id);
+      expect(series.status).toBe("accepted");
+      expect(series.series!.rideTemplates).toEqual([expect.objectContaining({ leg: "there", passenger: "provider", mine: false })]);
+      robot.stop();
+      client.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("publishes driver presence under a random key, never the user id", () => {
     const bus = new MockBus("test-bus-" + Math.random());
     const driver = new MockBackend("driver-uid", { ...DEFAULT_CONFIG, inviteCode: null }, { bus, sweep: false });
@@ -194,5 +249,19 @@ describe("i18n", () => {
   it("interpolates variables", () => {
     expect(translator("en")("search.notified", { n: 3 })).toBe("Drivers notified: 3");
     expect(translator("pl")("search.notified", { n: 3 })).toBe("Powiadomieni kierowcy: 3");
+  });
+});
+
+describe("config.example.json (FR-150)", () => {
+  it("carries the 2.0 deployment settings exactly as the defaults: catalog, bookings, appointments", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { buildConfig } = await import("../../src/config");
+    const { DEFAULT_SERVICES } = await import("../../src/core/defaults");
+    const file = JSON.parse(readFileSync("config.example.json", "utf-8"));
+    const cfg = buildConfig(file, "");
+    expect(cfg.deployment.services).toEqual(DEFAULT_SERVICES);
+    expect(cfg.deployment.booking).toEqual(DEFAULT_CONFIG.booking);
+    expect(cfg.deployment.appointment).toEqual(DEFAULT_CONFIG.appointment);
+    expect(cfg.deployment.calendarUrl).toBeNull();
   });
 });

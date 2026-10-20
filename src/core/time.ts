@@ -32,3 +32,10 @@ export function addWeeksWallClock(ms: number, weeks: number, tz: string): number
 export function localDate(ms: number, tz: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(ms);
 }
+
+const floor5 = (ms: number) => Math.floor(ms / 300_000) * 300_000;
+
+/** Pickup of a ride to an appointment (§7 rule 3): there = start − route − 10 min, floored to 5 min; back = end + 5 min. */
+export function derivedPickup(a: { startsAt: number; endsAt: number }, leg: "there" | "back", routeMin: number): number {
+  return leg === "there" ? floor5(a.startsAt - (Math.ceil(routeMin) + 10) * 60_000) : a.endsAt + 5 * 60_000;
+}

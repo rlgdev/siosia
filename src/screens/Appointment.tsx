@@ -11,6 +11,7 @@ import { ProfileIcon } from "../components/ProfileIcon";
 import { rangeTimes, timeText, whenText } from "../components/when";
 import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui";
 import { computeFare } from "../core/fare";
+import { derivedPickup } from "../core/time";
 import type { AppointmentView, Leg, Place, RideTemplateInput } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
@@ -213,12 +214,7 @@ export interface RideDraft {
   timeEdited: boolean;
 }
 
-const floor5 = (ms: number) => Math.floor(ms / 300_000) * 300_000;
-
-/** §7 rule 3: there = start − route − 10 min (floored to 5 min); back = end + 5 min. */
-export function derivedPickup(a: Pick<AppointmentView, "startsAt" | "endsAt">, leg: Leg, routeMin: number): number {
-  return leg === "there" ? floor5(a.startsAt - (Math.ceil(routeMin) + 10) * 60_000) : a.endsAt + 5 * 60_000;
-}
+export { derivedPickup };
 
 export function initialDraft(a: AppointmentView, leg: Leg, home: Place | null): RideDraft {
   const place = a.place;

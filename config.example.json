@@ -13,12 +13,35 @@
     "geocodeUrl": "https://nominatim.openstreetmap.org"
   },
   "deployment": {
-    "_comment": "Used by the demo (mock) backend only. The real backend reads tariff, timers and service area from the app_config table.",
+    "_comment": "Used by the demo (mock) backend only. The real backend reads tariff, timers, service area, bookings, appointments and the catalog (services) from the app_config table. A price is { \"perHour\": 80 } or { \"fixed\": 50 }; enabled: false hides an entry.",
     "tariff": { "base": 5, "perKm": 2.5, "perMin": 0.5, "minimum": 10, "currency": "PLN" },
     "timers": { "offerS": 20, "expiryS": 1200, "noShowS": 300, "retryS": 120 },
     "serviceArea": null,
     "dispatchRadiusKm": 8,
     "maxTripKm": 50,
-    "timezone": "Europe/Warsaw"
+    "timezone": "Europe/Warsaw",
+    "booking": { "minLeadMin": 30, "maxDays": 30, "leadMin": 30, "openMin": 20, "maxOpen": 12 },
+    "appointment": { "reminderMin": [1440, 120], "seriesMaxDays": 91, "seriesMaxCount": 12 },
+    "calendarUrl": null,
+    "services": [
+      {
+        "id": "ride", "kind": "ride", "icon": "🚗",
+        "name": { "en": "Ride", "pl": "Przejazd" },
+        "description": { "en": "A car now or booked for later", "pl": "Samochód teraz albo na później" },
+        "duration": null, "price": null, "needsPlace": true, "enabled": true
+      },
+      {
+        "id": "learning", "kind": "time", "icon": "📚",
+        "name": { "en": "Learning", "pl": "Nauka" },
+        "description": { "en": "Lessons and help with homework", "pl": "Lekcje i pomoc w nauce" },
+        "duration": { "default": 60, "min": 30, "max": 240, "step": 30 }, "price": null, "needsPlace": true, "enabled": true
+      },
+      {
+        "id": "childcare", "kind": "time", "icon": "🧸",
+        "name": { "en": "Childcare", "pl": "Opieka nad dziećmi" },
+        "description": { "en": "Someone with the kids", "pl": "Ktoś zostanie z dziećmi" },
+        "duration": { "default": 180, "min": 60, "max": 720, "step": 30 }, "price": null, "needsPlace": true, "enabled": true
+      }
+    ]
   }
 }

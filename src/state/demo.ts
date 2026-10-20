@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import type { RobotFleet } from "../backend/mock/robots";
+import type { RobotSiosia } from "../backend/mock/siosiaRobot";
+import { destination } from "../core/geo";
 import type { LatLng } from "../core/types";
 import { readPref } from "../services/device";
 import { useApp } from "./store";
@@ -47,6 +49,45 @@ export async function stopRobots(): Promise<void> {
   const f = fleet ?? (starting ? await starting : null);
   fleet = null;
   await f?.stop();
+  siosia?.stop();
+  siosia = null;
+  siosiaLock?.abort();
+}
+
+let siosia: RobotSiosia | null = null;
+let siosiaLock: AbortController | null = null;
+
+/**
+ * The robot Siosia (FR-151) of the demo: runs in exactly one tab of this browser while the app is
+ * ready on the mock backend (robots on, and not turned off with ?siosia=0). Another tab waits and
+ * takes over when that tab closes.
+ */
+export function useRobotSiosia(): void {
+  const app = useApp();
+  const cfg = app.cfg;
+  const active = app.phase === "ready" && cfg?.backend === "mock" && robotsEnabled() && new URLSearchParams(location.search).get("siosia") !== "0";
+  useEffect(() => {
+    if (!active || !cfg || siosiaLock) return;
+    const abort = typeof AbortController !== "undefined" ? new AbortController() : null;
+    siosiaLock = abort;
+    const run = async () => {
+      const { RobotSiosia } = await import("../backend/mock/siosiaRobot");
+      const home = { ...destination(cfg.fallbackCenter, 210, 1.2), label: "Siosia" };
+      siosia = new RobotSiosia({ ...cfg.deployment, inviteCode: cfg.mockInviteCode }, home);
+      await siosia.start();
+    };
+    const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+    if (!locks?.request) void run();
+    else
+      void locks
+        .request("siosia-robot-siosia", { signal: abort?.signal }, async () => {
+          await run();
+          await new Promise<void>((release) => abort?.signal.addEventListener("abort", () => release()));
+        })
+        .catch(() => {
+          /* aborted */
+        });
+  }, [active, cfg]);
 }
 
 export async function resetDemo(): Promise<void> {

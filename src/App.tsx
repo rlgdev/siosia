@@ -15,6 +15,7 @@ import { RequestPanel } from "./screens/RequestForm";
 import { ProfilePanel } from "./screens/Profile";
 import { RiderApp } from "./screens/rider/RiderApp";
 import { Confirm } from "./components/ui";
+import { useRobotSiosia } from "./state/demo";
 import { AppStore, StoreContext, useApp, useStore } from "./state/store";
 
 /** A move code on an app that already has a profile: merge only after a clear yes. */
@@ -115,6 +116,7 @@ function LinkToast() {
 
 function Screens() {
   const app = useApp();
+  useRobotSiosia();
   let main;
   switch (app.phase) {
     case "loading":
