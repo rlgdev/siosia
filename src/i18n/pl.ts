@@ -498,5 +498,10 @@ export const pl: Record<MessageKey, string> = {
   "profile.offersTitle": "Co oferuję",
   "profile.offersHint": "Włącz to, co możesz robić: pojawisz się w Siosi przy tej usłudze, a prośby trafią do Ciebie.",
   "profile.offersRide": "Przejazdy: dodaj auto, potem Siosia → Przejazd — przejdź online.",
-  "err.has_profile": "Ten telefon ma już profil. Potwierdź, aby go zastąpić."
+  "err.has_profile": "Ten telefon ma już profil. Potwierdź, aby go zastąpić.",
+  "cal.add": "Dodaj do kalendarza",
+  "cal.addSeries": "Dodaj wszystkie terminy do kalendarza",
+  "cal.google": "Kalendarz Google",
+  "cal.apple": "Kalendarz Apple / .ics",
+  "cal.note": "Dodane wydarzenia nie aktualizują się same — po zmianie otwórz link ponownie."
 };

@@ -3,6 +3,7 @@
 // soonest first, an appointment in progress on top. Refreshes on state changes and every 30 s.
 
 import { useCallback, useEffect, useState } from "react";
+import { AddToCalendar } from "../components/AddToCalendar";
 import { otherOf, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ProfileIcon } from "../components/ProfileIcon";
 import { dayText, rangeTimes, sameDay, timeText } from "../components/when";
@@ -184,6 +185,11 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
         <p className="form-error" role="alert">
           {error}
         </p>
+      )}
+      {a.status === "accepted" && !answer && (
+        <div className="row">
+          <AddToCalendar appointment={a} />
+        </div>
       )}
       {answer && (
         <div className="row">

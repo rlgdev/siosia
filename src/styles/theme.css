@@ -1437,3 +1437,9 @@ body:has(.sharing-banner) .panel-head {
 .history-item .planned-open {
   padding: 0;
 }
+.cal {
+  align-items: flex-start;
+}
+.cal-choices {
+  width: 100%;
+}

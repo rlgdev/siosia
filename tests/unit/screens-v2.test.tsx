@@ -468,3 +468,36 @@ describe("S2 My place and Services I offer (FR-140, FR-093, FR-123, FR-142)", ()
     expect(en["profile.deleteConfirm"]).toContain("appointments are cancelled");
   });
 });
+
+describe("Add to calendar (FR-135, V28)", () => {
+  it("offers Google and, on the demo, the .ics download; says once that events don't update", async () => {
+    const a = appt({ series: series() });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("cal-open"));
+    const google = new URL(screen.getByTestId("cal-google").getAttribute("href")!);
+    expect(google.hostname).toBe("calendar.google.com");
+    expect(google.searchParams.get("text")).toBe("Childcare with Siosia");
+    expect(google.searchParams.get("ctz")).toBe("Europe/Warsaw");
+    expect(google.searchParams.get("recur")).toBeNull();
+    expect(screen.getByTestId("cal-ics")).toHaveTextContent("Apple Calendar / .ics");
+    expect(screen.getByTestId("cal-note")).toHaveTextContent("don't update by themselves");
+    // The whole series: one repeating event.
+    await userEvent.click(screen.getByTestId("cal-open-series"));
+    const links = screen.getAllByTestId("cal-google").map((l) => new URL(l.getAttribute("href")!).searchParams.get("recur"));
+    expect(links).toContain("RRULE:FREQ=WEEKLY;INTERVAL=1;COUNT=8");
+  });
+
+  it("shows the .ics link only when the deployment has the calendar function, in Polish", async () => {
+    const without = appt();
+    const { unmount } = setup("pl", <AppointmentPanel />, { getAppointment: async () => without }, { panel: "appointment", panelArg: "a1", cfg: { backend: "supabase" } });
+    await userEvent.click(await screen.findByTestId("cal-open"));
+    expect(screen.getByTestId("cal-google")).toHaveTextContent("Kalendarz Google");
+    expect(screen.queryByTestId("cal-ics")).toBeNull();
+    unmount();
+    const withLink = appt({ calendar: { google: null, ics: "https://x.supabase.co/functions/v1/calendar?a=a1&u=pub-toria&t=0123" } });
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => withLink }, { panel: "appointment", panelArg: "a1", cfg: { backend: "supabase" } });
+    await userEvent.click(await screen.findByTestId("cal-open"));
+    expect(screen.getByTestId("cal-ics")).toHaveAttribute("href", withLink.calendar.ics);
+    expect(screen.getByTestId("cal-note")).toHaveTextContent("nie aktualizują się same");
+  });
+});

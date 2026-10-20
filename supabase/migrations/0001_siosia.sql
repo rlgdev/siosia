@@ -2891,6 +2891,39 @@ begin
   return siosia_ok(siosia_appointment_json(a, v_uid));
 end $$;
 
+-- The calendar function's read (FR-136, NFR-20): one appointment ('a'), series ('s', as its first
+-- occurrence with the series dates) or booked ride ('r') as one of its two parties sees it — only
+-- with that viewer's valid token, otherwise null (the function answers 404). Service role only.
+create or replace function public.siosia_calendar_view(p_kind text, p_id uuid, p_public text, p_token text)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions as $$
+declare
+  v_viewer uuid; v_lang text; v_view jsonb; a appointments; r rides; s appointment_series; c app_config;
+begin
+  if p_kind is null or p_kind not in ('a', 's', 'r') or p_id is null
+     or coalesce(p_public, '') = '' or coalesce(p_token, '') = '' then return null; end if;
+  if siosia_ics_token(p_id, p_public) is distinct from p_token then return null; end if;
+  select user_id, language into v_viewer, v_lang from profiles where public_id = p_public and not deleted;
+  if v_viewer is null then return null; end if;
+  if p_kind = 'a' then
+    select * into a from appointments where id = p_id and v_viewer in (client_id, provider_id);
+    if a.id is null then return null; end if;
+    v_view := siosia_appointment_json(a, v_viewer);
+  elsif p_kind = 's' then
+    select * into s from appointment_series where id = p_id and v_viewer in (client_id, provider_id);
+    if s.id is null then return null; end if;
+    select * into a from appointments where series_id = s.id order by seq limit 1;
+    if a.id is null then return null; end if;
+    v_view := siosia_appointment_json(a, v_viewer);
+  else
+    select * into r from rides where id = p_id and v_viewer in (rider_id, driver_id) and scheduled_for is not null;
+    if r.id is null then return null; end if;
+    v_view := siosia_ride_json(r, v_viewer);
+  end if;
+  select * into c from app_config where id = 1;
+  return jsonb_build_object('kind', p_kind, 'lang', coalesce(v_lang, 'en'), 'timezone', c.timezone,
+                            'reminderMin', to_jsonb(c.appt_reminder_min), 'siteUrl', c.site_url, 'view', v_view);
+end $$;
+
 -- 12-month retention (§9) + housekeeping. Scheduled daily when pg_cron is available.
 create or replace function public.siosia_retention()
 returns void language plpgsql security definer set search_path = public as $$
@@ -2959,6 +2992,7 @@ do $$
 begin
   if exists (select 1 from pg_roles where rolname = 'service_role') then
     grant execute on function public.siosia_claim_push(int) to service_role;
+    grant execute on function public.siosia_calendar_view(text, uuid, text, text) to service_role;
   end if;
 end $$;
 grant execute on function public.siosia_set_online(boolean) to authenticated;

@@ -4,6 +4,7 @@
 // Remove ride, Cancel (this one / all remaining), Add to calendar, Rate.
 
 import { useCallback, useEffect, useState } from "react";
+import { AddToCalendar } from "../components/AddToCalendar";
 import { otherOf, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { fromInput, toLocalInput } from "../components/datetime";
 import { PlaceInput } from "../components/PlaceInput";
@@ -189,6 +190,8 @@ function AppointmentDetails({ a, reload, accepting }: { a: AppointmentView; relo
                 ))}
             </div>
           )}
+          {a.status === "accepted" && <AddToCalendar appointment={a} />}
+          {a.status === "accepted" && a.series && a.series.remaining > 0 && <AddToCalendar appointment={a} wholeSeries />}
           {canRate && <RateBox a={a} onRated={reload} />}
           {canCancel && (
             <button type="button" className="btn btn-danger-outline" onClick={() => setMode("cancel")} data-testid="appt-cancel">

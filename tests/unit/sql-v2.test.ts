@@ -431,6 +431,30 @@ describe("profiles, masters, calendar, compatibility", () => {
     await h.admin("update public.app_config set calendar_function_url = null where id = 1");
   });
 
+  it("serves the calendar view only to a party with that viewer's token, never to clients directly (FR-136, NFR-20)", async () => {
+    const secret = String((await h.admin("select push_secret from public.app_secrets where id = 1")).rows[0].push_secret);
+    const token = (id: unknown, who: string) => createHmac("sha256", secret).update(`${id}:${who}`).digest("hex").slice(0, 32);
+    const view = async (kind: string, id: unknown, who: string, t: string) =>
+      (await h.admin("select public.siosia_calendar_view($1, $2, $3, $4) as v", [kind, id, who, t])).rows[0].v as Json | null;
+    const a = await request(U.client, "siosia", 24 * 60, { note: "Kids back at 14:30" });
+    await answer(U.siosia, a.id, "accept");
+    const mine = await view("a", a.id, pub.client, token(a.id, pub.client));
+    expect(mine).toMatchObject({ kind: "a", lang: "en", timezone: "Europe/Warsaw", reminderMin: [1440, 120], view: { id: a.id, role: "client", status: "accepted", note: "Kids back at 14:30" } });
+    expect((await view("a", a.id, pub.siosia, token(a.id, pub.siosia)))?.view).toMatchObject({ role: "provider" });
+    expect(await view("a", a.id, pub.siosia, token(a.id, pub.client))).toBeNull(); // someone else's token
+    expect(await view("a", a.id, pub.other, token(a.id, pub.other))).toBeNull(); // a valid token, but not a party
+    expect(await view("s", a.id, pub.client, token(a.id, pub.client))).toBeNull(); // not a series id
+    // A series: its first occurrence with every date.
+    const first = await request(U.client, "siosia", 2 * 24 * 60, { repeat: { every: 1, count: 3 } });
+    const sid = String((first.series as Json).id);
+    expect((await view("s", sid, pub.client, token(sid, pub.client)))?.view).toMatchObject({ series: { id: sid, count: 3, starts: expect.any(Array) } });
+    // A booked ride, for its rider (and not before it is booked for a time).
+    const r = await book(U.client, 3 * 60);
+    expect((await view("r", r.id, pub.client, token(r.id, pub.client)))?.view).toMatchObject({ id: r.id, role: "rider" });
+    expect(await view("r", r.id, pub.driver, token(r.id, pub.driver))).toBeNull();
+    expect(await errorOf(h.as(U.client, "select public.siosia_calendar_view($1, $2, $3, $4)", ["a", a.id, pub.client, token(a.id, pub.client)]))).toMatch(/permission denied/);
+  });
+
   it("keeps every v1 function signature next to the new ones (NFR-18)", async () => {
     const sigs = (await h.admin("select p.oid::regprocedure::text as s from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'siosia\\_%'")).rows.map((r) => String(r.s));
     for (const s of [

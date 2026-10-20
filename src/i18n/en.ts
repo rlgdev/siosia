@@ -496,7 +496,12 @@ export const en = {
   "profile.offersTitle": "Services I offer",
   "profile.offersHint": "Turn on what you can do: you then appear in Siosia under it and requests come to you.",
   "profile.offersRide": "Rides: add a car, then Siosia → Ride — Go online.",
-  "err.has_profile": "This phone already has a profile. Confirm to replace it."
+  "err.has_profile": "This phone already has a profile. Confirm to replace it.",
+  "cal.add": "Add to calendar",
+  "cal.addSeries": "Add all dates to calendar",
+  "cal.google": "Google Calendar",
+  "cal.apple": "Apple Calendar / .ics",
+  "cal.note": "Added events don't update by themselves — open the link again after a change."
 } as const;
 
 export type MessageKey = keyof typeof en;

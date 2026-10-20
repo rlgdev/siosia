@@ -3,6 +3,7 @@
 // (with the distance from here) and the ones they took (with when to leave) — Take and Give back.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AddToCalendar } from "../components/AddToCalendar";
 import { ProfileIcon } from "../components/ProfileIcon";
 import { Confirm, Money, Panel, RatingBadge, useBusy } from "../components/ui";
 import { coarse, haversineKm } from "../core/geo";
@@ -64,6 +65,7 @@ export function RiderBookingCard({ r, onChanged }: { r: RideView; onChanged: () 
           {error}
         </p>
       )}
+      <AddToCalendar ride={r} />
       <button type="button" className="btn btn-danger-outline" disabled={busy} onClick={() => setConfirm(true)} data-testid="cancel-booking">
         {t("book.cancel")}
       </button>
@@ -121,6 +123,7 @@ export function DriverBookingCard({ r, onChanged }: { r: RideView; onChanged: ()
           {error}
         </p>
       )}
+      <AddToCalendar ride={r} />
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setConfirm(true)} data-testid="release-booking">
         {t("book.release")}
       </button>
