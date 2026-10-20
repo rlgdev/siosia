@@ -289,6 +289,139 @@ create table if not exists public.ratings (
 create index if not exists ratings_to_idx on public.ratings (to_user, created_at desc);
 
 -- ---------------------------------------------------------------------------------------------
+-- Siosia 2.0: service catalog, appointments (single and series), rides as part of a service.
+-- Appended to the v1 schema; every statement is idempotent.
+-- ---------------------------------------------------------------------------------------------
+
+-- Reminder slots (minutes before the start): 15…10080, at most 4, distinct.
+create or replace function public.siosia_valid_slots(s int[])
+returns boolean language sql immutable as $$
+  select s is not null and cardinality(s) <= 4
+     and not exists (select 1 from unnest(s) x where x is null or x not between 15 and 10080)
+     and (select count(distinct x) from unnest(s) x) = cardinality(s);
+$$;
+
+-- The catalog (deployment configuration, set with siosia_set_services) and the appointment settings.
+alter table public.app_config add column if not exists services jsonb;
+alter table public.app_config add column if not exists appt_reminder_min int[] not null default '{1440,120}';
+alter table public.app_config add column if not exists appt_series_max_days int not null default 91;
+alter table public.app_config add column if not exists appt_series_max_count int not null default 12;
+-- Open bookings per rider (v1 had a fixed 5; series rides need room).
+alter table public.app_config add column if not exists booking_max_open int not null default 12;
+-- Where the calendar Edge Function lives (null = Google Calendar only).
+alter table public.app_config add column if not exists calendar_function_url text;
+alter table public.app_config drop constraint if exists app_config_appointment_check;
+alter table public.app_config add constraint app_config_appointment_check check (
+  siosia_valid_slots(appt_reminder_min) and appt_series_max_days between 30 and 365
+  and appt_series_max_count between 2 and 12 and booking_max_open between 1 and 50);
+-- Seeded once; the operator edits it with siosia_set_services (entries are disabled, never deleted).
+update public.app_config set services = $json$[
+  {"id": "ride", "kind": "ride", "name": {"en": "Ride", "pl": "Przejazd"},
+   "description": {"en": "A car now or booked for later", "pl": "Samochód teraz albo na później"},
+   "icon": "🚗", "duration": null, "price": null, "needsPlace": true, "enabled": true},
+  {"id": "learning", "kind": "time", "name": {"en": "Learning", "pl": "Nauka"},
+   "description": {"en": "Lessons and help with homework", "pl": "Lekcje i pomoc w nauce"},
+   "icon": "📚", "duration": {"default": 60, "min": 30, "max": 240, "step": 30}, "price": null,
+   "needsPlace": true, "enabled": true},
+  {"id": "childcare", "kind": "time", "name": {"en": "Childcare", "pl": "Opieka nad dziećmi"},
+   "description": {"en": "Someone with the kids", "pl": "Ktoś zostanie z dziećmi"},
+   "icon": "🧸", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null,
+   "needsPlace": true, "enabled": true}
+]$json$::jsonb where id = 1 and services is null;
+
+-- Profiles: the services a person offers (catalog ids of kind "time"), their place, and a random
+-- public id — the only reference to a person that reaches other users (catalog, requests).
+alter table public.profiles add column if not exists offers text[] not null default '{}';
+alter table public.profiles add column if not exists home jsonb;
+alter table public.profiles add column if not exists public_id text;
+alter table public.profiles alter column public_id
+  set default translate(encode(extensions.gen_random_bytes(9), 'base64'), '+/', '-_');
+update public.profiles set public_id = translate(encode(extensions.gen_random_bytes(9), 'base64'), '+/', '-_')
+ where public_id is null;
+create unique index if not exists profiles_public_id_idx on public.profiles (public_id);
+-- A master profile presets what every phone using it offers (null = by role: none besides rides).
+alter table public.master_profiles add column if not exists offers text[];
+
+-- A repeating request (weekly / every 2 weeks): one row; its occurrences are appointments.
+create table if not exists public.appointment_series (
+  id             uuid primary key default gen_random_uuid(),
+  client_id      uuid not null,
+  provider_id    uuid not null,
+  service_id     text not null,
+  rule           text not null check (rule in ('weekly', 'biweekly')),
+  first_start    timestamptz not null,
+  duration_min   int not null check (duration_min between 15 and 1440),
+  count          int not null check (count between 2 and 12),
+  until          timestamptz not null,
+  place_lat      double precision check (place_lat between -90 and 90),
+  place_lng      double precision check (place_lng between -180 and 180),
+  place_label    text check (char_length(place_label) <= 120),
+  note           text not null default '' check (char_length(note) <= 200),
+  price          numeric(10,2),
+  currency       text not null,
+  status         text not null default 'requested' check (status in ('requested', 'answered', 'cancelled', 'expired')),
+  -- Rides that repeat with the series: [{passenger, leg, pickup, dropoff, offsetMin, estKm, estMin, fareIsEstimate}]
+  ride_templates jsonb not null default '[]',
+  templates_at   timestamptz,
+  requested_at   timestamptz not null default now(),
+  answered_at    timestamptz
+);
+create index if not exists appointment_series_client_idx on public.appointment_series (client_id, status);
+create index if not exists appointment_series_provider_idx on public.appointment_series (provider_id, status);
+
+-- An appointment keeps both parties, the entry, the time, the place and a note — nothing else about
+-- location (FR-105). "In progress" is derived (accepted, start ≤ now < end).
+create table if not exists public.appointments (
+  id            uuid primary key default gen_random_uuid(),
+  client_id     uuid not null,
+  provider_id   uuid not null,
+  service_id    text not null,
+  status        text not null default 'requested'
+                  check (status in ('requested', 'accepted', 'declined', 'cancelled', 'expired', 'done')),
+  starts_at     timestamptz not null,
+  duration_min  int not null check (duration_min between 15 and 1440),
+  place_lat     double precision check (place_lat between -90 and 90),
+  place_lng     double precision check (place_lng between -180 and 180),
+  place_label   text check (char_length(place_label) <= 120),
+  note          text not null default '' check (char_length(note) <= 200),
+  price         numeric(10,2),
+  currency      text not null,
+  requested_at  timestamptz not null default now(),
+  answered_at   timestamptz,
+  ended_at      timestamptz,
+  cancelled_by  text check (cancelled_by in ('client', 'provider', 'system')),
+  cancel_reason text,
+  reminded      int[] not null default '{}',
+  series_id     uuid references public.appointment_series (id) on delete cascade,
+  seq           int
+);
+create index if not exists appointments_provider_idx on public.appointments (provider_id, status);
+create index if not exists appointments_client_idx on public.appointments (client_id, status);
+create index if not exists appointments_open_idx on public.appointments (starts_at) where status in ('requested', 'accepted');
+create index if not exists appointments_series_idx on public.appointments (series_id, seq);
+
+-- A ride may belong to an appointment (leg there / back); at most one live ride per passenger and leg.
+alter table public.rides add column if not exists appointment_id uuid references public.appointments (id) on delete set null;
+alter table public.rides add column if not exists leg text;
+alter table public.rides drop constraint if exists rides_leg_check;
+alter table public.rides add constraint rides_leg_check check (leg is null or leg in ('there', 'back'));
+create unique index if not exists rides_appointment_leg on public.rides (appointment_id, rider_id, leg)
+  where appointment_id is not null and status not in ('cancelled', 'expired');
+create index if not exists rides_appointment_idx on public.rides (appointment_id) where appointment_id is not null;
+
+-- Ratings: of a ride or of an appointment (exactly one), one per direction.
+alter table public.ratings add column if not exists appointment_id uuid references public.appointments (id) on delete cascade;
+alter table public.ratings drop constraint if exists ratings_pkey;
+alter table public.ratings alter column ride_id drop not null;
+alter table public.ratings drop constraint if exists ratings_one_target;
+alter table public.ratings add constraint ratings_one_target check ((ride_id is null) <> (appointment_id is null));
+create unique index if not exists ratings_ride_from_idx on public.ratings (ride_id, from_user) where ride_id is not null;
+create unique index if not exists ratings_appointment_from_idx on public.ratings (appointment_id, from_user) where appointment_id is not null;
+
+-- Notifications about an appointment carry its id (tag source).
+alter table public.push_outbox add column if not exists appointment_id uuid;
+
+-- ---------------------------------------------------------------------------------------------
 -- Row level security: clients may only READ their own rows; all writes go through functions.
 -- ---------------------------------------------------------------------------------------------
 
@@ -306,6 +439,8 @@ alter table public.master_profiles enable row level security;
 alter table public.account_transfers enable row level security;
 alter table public.push_subscriptions enable row level security;
 alter table public.push_outbox enable row level security;
+alter table public.appointments enable row level security;
+alter table public.appointment_series enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -313,7 +448,8 @@ grant usage on schema public to anon, authenticated;
 
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
               public.memberships, public.invite_failures, public.rides, public.offers, public.ratings,
-              public.master_profiles, public.account_transfers, public.push_subscriptions, public.push_outbox
+              public.master_profiles, public.account_transfers, public.push_subscriptions, public.push_outbox,
+              public.appointments, public.appointment_series
   from anon, authenticated;
 -- The sender (Edge Function, service role) reads the queue and the subscriptions.
 do $$
@@ -335,6 +471,8 @@ drop policy if exists siosia_member_read  on public.memberships;
 drop policy if exists siosia_ride_read    on public.rides;
 drop policy if exists siosia_offer_read   on public.offers;
 drop policy if exists siosia_rating_read  on public.ratings;
+drop policy if exists siosia_appointment_read on public.appointments;
+drop policy if exists siosia_series_read on public.appointment_series;
 
 create policy siosia_config_read  on public.app_config    for select to authenticated using (true);
 create policy siosia_profile_read on public.profiles      for select to authenticated using (user_id = auth.uid());
@@ -344,6 +482,8 @@ create policy siosia_member_read  on public.memberships   for select to authenti
 create policy siosia_ride_read    on public.rides         for select to authenticated using (rider_id = auth.uid() or driver_id = auth.uid());
 create policy siosia_offer_read   on public.offers        for select to authenticated using (driver_id = auth.uid());
 create policy siosia_rating_read  on public.ratings       for select to authenticated using (from_user = auth.uid() or to_user = auth.uid());
+create policy siosia_appointment_read on public.appointments for select to authenticated using (client_id = auth.uid() or provider_id = auth.uid());
+create policy siosia_series_read on public.appointment_series for select to authenticated using (client_id = auth.uid() or provider_id = auth.uid());
 
 -- ---------------------------------------------------------------------------------------------
 -- Pure helpers
@@ -1818,6 +1958,86 @@ begin
 exception when unique_violation then
   return siosia_err('already_rated');
 end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- Siosia 2.0: the service catalog (deployment configuration)
+-- ---------------------------------------------------------------------------------------------
+
+-- The reason a catalog is invalid, or null (V21): ids ^[a-z][a-z0-9_]{1,23}$ unique, exactly one
+-- entry of kind "ride" (id "ride"), at most 12, names/descriptions in EN and PL, time entries with
+-- 15 ≤ min ≤ default ≤ max ≤ 1440 on a step of 15 or 30, price null | {perHour} | {fixed}.
+create or replace function public.siosia_catalog_problem(p jsonb)
+returns text language plpgsql immutable as $$
+declare e jsonb; d jsonb; v_ids text[] := '{}'; v_rides int := 0;
+begin
+  if p is null or jsonb_typeof(p) <> 'array' then return 'the catalog is a JSON array'; end if;
+  if jsonb_array_length(p) not between 1 and 12 then return 'a catalog has 1 to 12 entries'; end if;
+  for e in select value from jsonb_array_elements(p) loop
+    if jsonb_typeof(e) <> 'object' or coalesce(e ->> 'id', '') !~ '^[a-z][a-z0-9_]{1,23}$' then
+      return format('bad id: %s', e ->> 'id');
+    end if;
+    if (e ->> 'id') = any (v_ids) then return format('duplicate id: %s', e ->> 'id'); end if;
+    v_ids := v_ids || (e ->> 'id');
+    if coalesce(e ->> 'kind', '') not in ('ride', 'time') then return format('%s: kind is ride or time', e ->> 'id'); end if;
+    if char_length(coalesce(e -> 'name' ->> 'en', '')) not between 1 and 40
+       or char_length(coalesce(e -> 'name' ->> 'pl', '')) not between 1 and 40 then
+      return format('%s: name {en, pl}, 1-40 characters each', e ->> 'id');
+    end if;
+    if jsonb_typeof(e -> 'description') <> 'object' or char_length(coalesce(e -> 'description' ->> 'en', '')) > 160
+       or char_length(coalesce(e -> 'description' ->> 'pl', '')) > 160 then
+      return format('%s: description {en, pl}, up to 160 characters each', e ->> 'id');
+    end if;
+    if char_length(coalesce(e ->> 'icon', '')) not between 1 and 40 then return format('%s: icon, 1-40 characters', e ->> 'id'); end if;
+    if jsonb_typeof(e -> 'enabled') <> 'boolean' or jsonb_typeof(e -> 'needsPlace') <> 'boolean' then
+      return format('%s: enabled and needsPlace are true or false', e ->> 'id');
+    end if;
+    if e -> 'price' is not null and jsonb_typeof(e -> 'price') <> 'null' and not (
+         (jsonb_typeof(e -> 'price' -> 'perHour') = 'number' and (e -> 'price' ->> 'perHour')::numeric > 0)
+         or (jsonb_typeof(e -> 'price' -> 'fixed') = 'number' and (e -> 'price' ->> 'fixed')::numeric >= 0)) then
+      return format('%s: price is null, {"perHour": n} or {"fixed": n}', e ->> 'id');
+    end if;
+    if e ->> 'kind' = 'ride' then
+      v_rides := v_rides + 1;
+      if e ->> 'id' <> 'ride' then return 'the ride entry has the id "ride"'; end if;
+    else
+      d := e -> 'duration';
+      if jsonb_typeof(d) <> 'object' or jsonb_typeof(d -> 'min') <> 'number' or jsonb_typeof(d -> 'max') <> 'number'
+         or jsonb_typeof(d -> 'default') <> 'number' or jsonb_typeof(d -> 'step') <> 'number'
+         or (d ->> 'step')::int not in (15, 30)
+         or not (15 <= (d ->> 'min')::int and (d ->> 'min')::int <= (d ->> 'default')::int
+                 and (d ->> 'default')::int <= (d ->> 'max')::int and (d ->> 'max')::int <= 1440)
+         or ((d ->> 'default')::int - (d ->> 'min')::int) % (d ->> 'step')::int <> 0 then
+        return format('%s: duration {default, min, max, step}: 15 ≤ min ≤ default ≤ max ≤ 1440, step 15 or 30', e ->> 'id');
+      end if;
+    end if;
+  end loop;
+  if v_rides <> 1 then return 'exactly one entry has kind "ride"'; end if;
+  return null;
+end $$;
+
+-- Operator only (SQL editor): replaces the catalog. Entries are disabled, never deleted, so old
+-- appointments still resolve their names.
+create or replace function public.siosia_set_services(p_services jsonb)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_problem text := siosia_catalog_problem(p_services); v_missing text;
+begin
+  if v_problem is not null then raise exception 'Catalog not saved: %', v_problem; end if;
+  select string_agg(o ->> 'id', ', ') into v_missing
+    from app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) o
+   where c.id = 1 and not exists (select 1 from jsonb_array_elements(p_services) n where n ->> 'id' = o ->> 'id');
+  if v_missing is not null then
+    raise exception 'Catalog not saved: keep every entry (set "enabled": false instead of removing): %', v_missing;
+  end if;
+  update app_config set services = p_services where id = 1;
+  return format('Catalog saved: %s entries.', jsonb_array_length(p_services));
+end $$;
+
+-- One catalog entry by id (enabled or not), or null.
+create or replace function public.siosia_service(p_id text)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select e from app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) e
+   where c.id = 1 and e ->> 'id' = p_id limit 1;
+$$;
 
 -- 12-month retention (§9) + housekeeping. Scheduled daily when pg_cron is available.
 create or replace function public.siosia_retention()
