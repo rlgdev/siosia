@@ -218,7 +218,12 @@ test("an open request: nobody offers Learning → Anyone who can → Ewa sees it
   await expect(toria.getByTestId("request-form")).toBeVisible();
   await expect(toria.getByRole("radio", { name: "Anyone who can" })).toBeChecked(); // nobody offers it: preselected
   await expect(toria.getByTestId("request-open-note")).toContainText("Everyone in the group sees this request");
-  await toria.getByTestId("request-place-here").click();
+  // The place by address search — inside the request form, this used to submit the whole page (B7).
+  await toria.getByTestId("request-place-search").click();
+  await toria.getByTestId("request-place-query").fill("Husarska 16, Lipków");
+  await toria.getByTestId("request-place-go").click();
+  await expect(toria.getByTestId("request-form")).toBeVisible(); // still here: nothing was submitted
+  await toria.getByTestId("request-place-here").click(); // the geocoder is blocked in e2e: Here gives the pin
   await expect(toria.getByTestId("request-place-value")).not.toHaveText("—");
   await toria.getByTestId("request-send").click();
   await expect(toria.getByTestId("planned")).toBeVisible();

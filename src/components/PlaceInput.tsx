@@ -1,7 +1,7 @@
 // A place chosen like an R1 field (FR-094, FR-140): My place, this phone's location, or an address
 // search (geocoding only on an explicit tap, FR-033). Used by C2, the ride sheets and S2.
 
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import type { LatLng, Place } from "../core/types";
 import { useI18n } from "../i18n";
 import { GeocodeError, reverseLabel, searchAddress } from "../services/geocode";
@@ -27,8 +27,7 @@ export function PlaceInput({ label, value, onChange, home, near, testId, optiona
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const search = async (e: FormEvent) => {
-    e.preventDefault();
+  const search = async () => {
     if (q.trim().length < 4) return setErr(t("rider.searchHint"));
     setBusy(true);
     setErr(null);
@@ -82,12 +81,26 @@ export function PlaceInput({ label, value, onChange, home, near, testId, optiona
         )}
       </div>
       {searching && (
-        <form className="row" onSubmit={(e) => void search(e)}>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("rider.searchPlaceholder")} aria-label={t("place.search")} data-testid={`${testId}-query`} />
-          <button type="submit" className="btn btn-secondary" disabled={busy}>
+        // Not a <form>: this field sits inside the request form (C2), and a nested form would submit
+        // the page instead (B7). Enter searches; the button is a plain button.
+        <div className="row" role="search">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void search();
+              }
+            }}
+            placeholder={t("rider.searchPlaceholder")}
+            aria-label={t("place.search")}
+            data-testid={`${testId}-query`}
+          />
+          <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void search()} data-testid={`${testId}-go`}>
             {t("rider.search")}
           </button>
-        </form>
+        </div>
       )}
       {err && <small className="form-error">{err}</small>}
       {searching && results && results.length > 0 && (

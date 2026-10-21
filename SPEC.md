@@ -92,6 +92,7 @@ V35: take = atomic claim (provider null → caller, first wins else taken) + acc
 V36: open request created → 1 appt_open ∀ other member (recipient lang, ?open=planned); taken/withdrawn → candidates' lists + badges update (notify), ⊥ further push to them
 V37: open request reminders & expiry → client only ("nobody took it"); provider-less views/texts/ics ⊥ crash (provider null ∀ code paths: chips, push-text, ics, history, calendar)
 V38: car icon tap (own driver icon) → colour swatches (10); choose → vehicle.colour (driver lang) + vehicle.paint #rrggbb, server-validated; icon drawn in paint ∀ places (S1, D1, profile, rider's driver card, booking card)
+V39: no <form> nested in a <form>: PlaceInput (C2, ride sheets, S2) searches w/ a plain button + Enter; ∀ screen form submits only its own action; e2e covers address search inside C2
 
 ## §T tasks
 
@@ -126,3 +127,4 @@ B3|2026-10-20|pre-release review: launch straight on non-S1 screen (notification
 B4|2026-10-20|pre-release review: escapeText only mapped `\r?\n` → lone CR / U+2028 in user text could inject .ics properties|V32
 B5|2026-10-20|pre-release review: templates stored client JSON verbatim, null-unsafe checks passed missing fields, valid_place NULL on missing lng, label rules differ by twin|V33
 B6|2026-10-21|2.1 review: take of open series w/ every date clashing for taker 'succeeded' → all dates declined, client told declined, request gone ∀ members (single clash already → overlap)|V35
+B7|2026-10-21|live check on public site: PlaceInput's own <form> nested in C2's <form> → Search button submitted the page, app reloaded w/o ?backend=mock (found only by driving the published app; unit/e2e used Here)|V39

@@ -28,7 +28,7 @@ import { AppStore, StoreContext } from "../../src/state/store";
 
 // No network in tests: a fixed road route.
 vi.mock("../../src/services/routing", () => ({ getRoute: async () => ({ km: 5, min: 12, line: [], estimate: false }) }));
-vi.mock("../../src/services/geocode", () => ({ GeocodeError: class extends Error {}, reverseLabel: async () => "Warszawska 269", searchAddress: async () => [] }));
+vi.mock("../../src/services/geocode", () => ({ GeocodeError: class extends Error {}, reverseLabel: async () => "Warszawska 269", searchAddress: vi.fn(async () => []) }));
 
 afterEach(() => {
   vi.useRealTimers();
@@ -668,6 +668,28 @@ describe("2.1 C1: an entry nobody offers can be asked for (FR-090)", () => {
     expect(screen.getByTestId("catalog-open-requests")).toHaveTextContent("Requests you could help with: 2");
     await userEvent.click(screen.getByTestId("catalog-open-requests"));
     expect(store.get().screen).toBe("planned");
+  });
+});
+
+describe("C2 address search inside the request form (B7)", () => {
+  it("searches on the button and on Enter without submitting the request", async () => {
+    const requestService = vi.fn(async () => ({}) as never);
+    const geocode = await import("../../src/services/geocode");
+    vi.mocked(geocode.searchAddress).mockResolvedValueOnce([{ lat: 52.2663, lng: 20.8143, label: "Husarska 16, Lipków" }]);
+    setup("en", <RequestPanel />, { catalog: async () => CATALOG, requestService }, { panel: "request", panelArg: "childcare", profile: { ...PROFILE, home: null } });
+    await screen.findByTestId("request-send");
+    await userEvent.click(screen.getByTestId("request-place-search"));
+    await userEvent.type(screen.getByTestId("request-place-query"), "Husarska 16");
+    await userEvent.click(screen.getByTestId("request-place-go"));
+    await userEvent.click(await screen.findByRole("button", { name: "Husarska 16, Lipków" }));
+    expect(screen.getByTestId("request-place-value")).toHaveTextContent("Husarska 16, Lipków");
+    expect(requestService).not.toHaveBeenCalled();
+    // Enter in the search box searches too, and still sends nothing.
+    vi.mocked(geocode.searchAddress).mockResolvedValueOnce([]);
+    await userEvent.click(screen.getByTestId("request-place-search"));
+    await userEvent.type(screen.getByTestId("request-place-query"), "Nowhere 1{enter}");
+    expect(await screen.findByText("No results — try another spelling or place a pin.")).toBeInTheDocument();
+    expect(requestService).not.toHaveBeenCalled();
   });
 });
 
