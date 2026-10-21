@@ -2,11 +2,13 @@
 // [S1, screen] (plus a panel's entry), so ← — a step back — always lands on the app's own S1, also
 // after a reload (a new store booting on the same entry). jsdom's history is real: pushState /
 // replaceState / back, with popstate a couple of timer turns later.
+// 2.1: an open request's notification opens P1, the take panel, and the car colour in the store.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
-import type { MyState, OfferView, Profile, RideView } from "../../src/core/types";
+import type { MyState, OfferView, Profile, RideView, Vehicle } from "../../src/core/types";
+import { ServerError } from "../../src/core/types";
 import { AppStore } from "../../src/state/store";
 
 const PROFILE: Profile = {
@@ -45,6 +47,7 @@ const MY: MyState = {
   standby: false,
   openBookings: 0,
   toAnswer: 0,
+  openRequests: 0,
   planned: 0,
   nextPlanned: null
 };
@@ -350,5 +353,59 @@ describe("a notification tapped while online on D1 (C11)", () => {
     await settle();
     expect(store.get().screen).toBe("home");
     expect(history.state).toEqual({ screen: "home" });
+  });
+});
+
+describe("2.1: an open request's notification and the take panel (FR-162, FR-163)", () => {
+  it("./?open=planned opens P1 (You could help); I can do it is one panel entry on Planned, ← closes it", async () => {
+    const store = await launch("/?open=planned", {}, { openRequests: 1 });
+    expect(store.get().screen).toBe("planned");
+    expect(store.get().my?.openRequests).toBe(1);
+    store.openPanel("appointment", "take:a7");
+    expect(history.state).toEqual({ panel: "appointment", screen: "planned" });
+    store.closePanel();
+    await settle();
+    expect(store.get().panel).toBeNull();
+    expect(store.get().screen).toBe("planned");
+    expect(history.state).toEqual({ screen: "planned" });
+    store.home();
+    await settle();
+    expect(history.state).toEqual({ screen: "home" });
+  });
+
+  it("the same notification while the app is open goes to Planned from wherever the user is", async () => {
+    const store = await launch("/");
+    store.go("history");
+    store.openFromUrl("./?open=planned");
+    expect(store.get().screen).toBe("planned");
+    await settle();
+    expect(history.state).toEqual({ screen: "planned" });
+  });
+});
+
+describe("2.1: the car colour (FR-170)", () => {
+  const kia: Vehicle = { make: "Kia", model: "Ceed", colour: "Blue", plate: "WX1", seats: 4, paint: null };
+
+  it("replaces the vehicle at once with the colour name and paint the server saved", async () => {
+    const setCarColour = vi.fn(async (colour: string, paint: string) => ({ ...kia, colour, paint }));
+    const store = await start({ getVehicle: async () => kia, setCarColour });
+    expect(store.get().vehicle).toEqual(kia);
+    const saved = await store.setCarColour("Red", "#c62828");
+    expect(setCarColour).toHaveBeenCalledWith("Red", "#c62828");
+    expect(saved).toEqual({ ...kia, colour: "Red", paint: "#c62828" });
+    expect(store.get().vehicle).toEqual(saved);
+    expect(store.get().screen).toBe("home"); // nothing else moves
+  });
+
+  it("keeps the chosen paint when a server returns the vehicle without it", async () => {
+    const store = await start({ getVehicle: async () => kia, setCarColour: async (colour: string) => ({ make: "Kia", model: "Ceed", colour, plate: "WX1", seats: 4 }) });
+    await store.setCarColour("Czerwony", "#C62828");
+    expect(store.get().vehicle).toEqual({ ...kia, colour: "Czerwony", paint: "#c62828" });
+  });
+
+  it("leaves the vehicle as it was when the server refuses", async () => {
+    const store = await start({ getVehicle: async () => kia, setCarColour: async () => Promise.reject(new ServerError("bad_vehicle")) });
+    await expect(store.setCarColour("Red", "#c62828")).rejects.toMatchObject({ code: "bad_vehicle" });
+    expect(store.get().vehicle).toEqual(kia);
   });
 });

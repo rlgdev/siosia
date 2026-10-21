@@ -1,6 +1,7 @@
 // Notification texts (EN/PL) for every push kind. Shared by the Edge Function that sends Web Push
 // (supabase/functions/push-dispatch), by the in-browser demo backend and by the app's Planned list
 // (the appointment and ride status words — one source, NFR-16), so all of them say the same.
+// 2.1: an open request has no provider; every text reads without one (V37).
 // No imports: runs unchanged in Deno and in the browser.
 
 export type PushKind =
@@ -15,6 +16,8 @@ export type PushKind =
   | "request_new"
   // 2.0: appointments (siosia-spec-v2.0.md §8)
   | "appt_new"
+  // 2.1: an open request, to every other member who could take it
+  | "appt_open"
   | "appt_accepted"
   | "appt_declined"
   | "appt_cancelled"
@@ -54,8 +57,10 @@ export interface PushParams {
   lead?: number;
   role?: "client" | "provider";
   other?: string;
-  /** confirmed | waiting (client of a request) | answer (provider of a request). */
+  /** confirmed | waiting (client of a request) | answer (provider of a request) | open (2.1: nobody took it yet). */
   status?: string;
+  /** 2.1: an open request (no provider yet). */
+  open?: boolean;
   rides?: RideLine[];
   rule?: "weekly" | "biweekly";
   count?: number;
@@ -164,10 +169,12 @@ export function leadText(slot: number | undefined, lang: string): string {
   return l === "pl" ? `Za ${h} godz.` : `In ${h} h`;
 }
 
-/** The appointment status words of reminders and Planned (§8, V8). */
-export function apptStatusText(status: string | undefined, provider: string, lang: string): string {
+/** The appointment status words of reminders and Planned (§8, V8). "open" (2.1): a request nobody
+ *  took yet; a client still waiting without a provider (an open request) reads the same (V37). */
+export function apptStatusText(status: string | undefined, provider: string | null | undefined, lang: string): string {
   const l: Lang = lang === "pl" ? "pl" : "en";
   if (status === "confirmed") return l === "pl" ? "Potwierdzone" : "Confirmed";
+  if (status === "open" || (status === "waiting" && !provider)) return l === "pl" ? "Czeka, aż ktoś się podejmie" : "Waiting for someone to take it";
   if (status === "waiting") return l === "pl" ? `Czeka na odpowiedź: ${provider}` : `Waiting for an answer from ${provider}`;
   if (status === "answer") return l === "pl" ? "Odpowiedz, proszę" : "Please answer";
   return "";
@@ -202,11 +209,12 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
     request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
     appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}. Answer in Siosia → Planned."],
+    appt_open: ["Can you help? {service}", "{client} asks: {service} {range}{atplace}. Open Siosia to take it."],
     appt_accepted: ["{provider} accepted", "{service} {range} is confirmed.{clashes}"],
     appt_declined: ["{provider} can't make it", "{service} {range} was declined."],
     appt_cancelled: ["{service} {when} cancelled", "Cancelled by {who}: {service} {range}.{remaining}"],
     appt_expired: ["No answer from {provider}", "{service} {range} got no answer and expired."],
-    appt_reminder: ["{lead}: {service} {range}", "With {other}{atplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
     appt_ride_added: ["{who} added a ride", "{service} {when}: ride {leg}{attime}, looking for a driver."],
     appt_ride_taken: ["Ride confirmed: {driver}", "{service} {when}: the ride {leg} has a driver."],
     appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
@@ -223,11 +231,12 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafiła do kierowców w pobliżu."],
     request_new: ["Nowe zamówienie", "Odbiór: {pickup}. Otwórz Siosię, aby je przyjąć."],
     appt_new: ["Nowa prośba: {service} {when}", "{client} prosi o: {service}, {range}. Odpowiedz w Siosi → Zaplanowane."],
+    appt_open: ["Możesz pomóc? {service}", "{client} prosi o pomoc: {service} {range}{atplace}. Otwórz Siosię, aby się tego podjąć."],
     appt_accepted: ["{provider} potwierdza", "{service} {range} — potwierdzone.{clashes}"],
     appt_declined: ["{provider} nie może", "{service} {range} — odrzucone."],
     appt_cancelled: ["{service} {when} odwołane", "Odwołane przez: {who}. {service} {range}.{remaining}"],
     appt_expired: ["Brak odpowiedzi od {provider}", "{service} {range} — bez odpowiedzi, prośba wygasła."],
-    appt_reminder: ["{lead}: {service} {range}", "Z {other}{atplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
     appt_ride_added: ["{who} dodaje przejazd", "{service} {when}: przejazd {leg}{attime}, szukamy kierowcy."],
     appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowcę."],
     appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} znów bez kierowcy."],
@@ -235,15 +244,32 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
   }
 };
 
+/** 2.1: the words of a kind that would name the provider, for an open request (nobody took it, V37). */
+const OPEN_TEXTS: Record<Lang, Partial<Record<PushKind, [string, string]>>> = {
+  en: { appt_expired: ["Nobody took it", "Nobody took your request: {service} {range}."] },
+  pl: { appt_expired: ["Nikt się nie zgłosił", "Nikt nie przyjął Twojej prośby: {service} {range}."] }
+};
+
+/** A party with no nickname in a text (never an empty name or a placeholder). */
+const SOMEONE: Record<Lang, string> = { en: "Someone", pl: "Ktoś" };
+const WITH: Record<Lang, (other: string) => string> = { en: (o) => `With ${o}`, pl: (o) => `Z ${o}` };
+const YOUR_OPEN: Record<Lang, string> = { en: "Your open request", pl: "Twoja otwarta prośba" };
+
 /**
  * Title, body and tag of a notification. `id` is the ride (v1 kinds) or the appointment (2.0
  * kinds); the tag `<kind>:<id>` makes a newer notification replace an older one of the same kind.
  */
 export function pushText(kind: PushKind, params: PushParams, lang: string, tz: string, id?: string | null): PushText {
   const l: Lang = lang === "pl" ? "pl" : "en";
-  const [title, body] = TEXTS[l][kind] ?? TEXTS[l].booking_open;
+  // 2.1: an open request has no provider (the backends send "" or nothing): its own words, never
+  // "No answer from " or "With  · " (V37).
+  const open = kind.startsWith("appt_") && (!!params.open || params.status === "open" || (!params.provider && params.role !== "provider"));
+  const [title, body] = (open ? OPEN_TEXTS[l][kind] : undefined) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
   const ms = toMs(params.at);
-  const series = !!params.rule && (kind === "appt_new" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
+  const series =
+    !!params.rule && (kind === "appt_new" || kind === "appt_open" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
+  const status = params.status === "waiting" && open ? "open" : params.status;
+  const withWho = params.other ? WITH[l](params.other) : status === "open" ? YOUR_OPEN[l] : "";
   const declined = (params.declined ?? []).map((d) => dayMonth(toMs(d), l, tz)).filter(Boolean);
   const total = (params.accepted ?? 0) + declined.length;
   const vars: Record<string, string> = {
@@ -254,16 +280,17 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
     driver: params.driver ?? "",
     rider: params.rider ?? "",
     service: params.service ?? "",
-    client: params.client ?? "",
-    provider: params.provider ?? "",
-    who: params.who ?? "",
+    client: params.client || SOMEONE[l],
+    provider: params.provider || SOMEONE[l],
+    who: params.who || SOMEONE[l],
     other: params.other ?? "",
     leg: LEG[l][params.leg ?? ""] ?? params.leg ?? "",
     lead: leadText(params.lead, l),
     range: series ? seriesText(params, l, tz) : rangeText(params.at, params.end, l, tz),
     atplace: params.place ? ` · ${params.place}` : "",
+    withplace: [withWho, params.place ?? ""].filter(Boolean).join(" · "),
     attime: params.time ? (l === "pl" ? ` o ${fmt(toMs(params.time), l, tz, false)}` : ` at ${fmt(toMs(params.time), l, tz, false)}`) : params.repeat ? (l === "pl" ? " w każdym terminie" : " for every date") : "",
-    status: apptStatusText(params.status, params.provider ?? "", l),
+    status: apptStatusText(status, params.provider, l),
     rides: (params.rides ?? []).length ? ` ${(params.rides ?? []).map((r) => rideLineText(r, l)).join(" · ")}` : "",
     clashes: declined.length
       ? l === "pl"
@@ -283,6 +310,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
       .replace(/\s+/g, " ")
       .replace(/\s+([.,])/g, "$1")
       .replace(/\.\./g, ".")
-      .trim();
+      .trim()
+      .replace(/^[.,·]\s*/, "");
   return { title: fill(title), body: fill(body), tag: `${kind}:${id ?? ""}` };
 }

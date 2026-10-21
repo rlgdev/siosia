@@ -6,7 +6,7 @@ import "leaflet/dist/leaflet.css";
 import { useEffect, useRef } from "react";
 import type { MapEndpoints } from "../config";
 import type { LatLng } from "../core/types";
-import { profileIcon } from "./profileIcons";
+import { iconSvg, normalPaint, profileIcon } from "./profileIcons";
 
 export type MarkerKind = "pickup" | "dropoff" | "car" | "nearby" | "rider" | "me";
 
@@ -21,6 +21,8 @@ export interface MapMarker {
   title?: string;
   /** Profile icon id: a rider or driver with one is drawn as that icon instead of the dot / car. */
   icon?: string | null;
+  /** 2.1: the car's paint (#rrggbb): the driver's car is drawn in it (FR-170). */
+  paint?: string | null;
 }
 
 export interface MapViewProps {
@@ -41,7 +43,10 @@ export interface MapViewProps {
   label: string;
 }
 
-const CAR_SVG = `<svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true"><g><rect x="9" y="3" width="14" height="26" rx="6" fill="#14161a" stroke="#fff" stroke-width="2"/><rect x="11" y="8" width="10" height="6" rx="2" fill="#9fd8ff"/><rect x="11" y="20" width="10" height="4" rx="1.5" fill="#9fd8ff" opacity=".8"/></g></svg>`;
+/** Is this #rrggbb light (a white, silver or yellow car needs a dark outline on the map)? */
+const light = (hex: string) => [1, 3, 5].reduce((sum, i, k) => sum + parseInt(hex.slice(i, i + 2), 16) * [0.299, 0.587, 0.114][k], 0) > 170;
+const carSvg = (paint: string | null) =>
+  `<svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true"><g><rect x="9" y="3" width="14" height="26" rx="6" fill="${paint ?? "#14161a"}" stroke="${paint && light(paint) ? "#14161a" : "#fff"}" stroke-width="2"/><rect x="11" y="8" width="10" height="6" rx="2" fill="#9fd8ff"/><rect x="11" y="20" width="10" height="4" rx="1.5" fill="#9fd8ff" opacity=".8"/></g></svg>`;
 const NEARBY_SVG = `<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><rect x="9" y="3" width="14" height="26" rx="6" fill="#4b5563" stroke="#fff" stroke-width="2"/><rect x="11" y="8" width="10" height="6" rx="2" fill="#d1d5db"/></svg>`;
 
 function iconFor(m: MapMarker): L.DivIcon {
@@ -68,16 +73,16 @@ function iconFor(m: MapMarker): L.DivIcon {
       if (def)
         return L.divIcon({
           className: `rider-icon car-icon${m.stale ? " is-stale" : ""}`,
-          html: `<span style="transform:scaleX(${rot > 180 && rot < 360 ? -1 : 1})">${def.svg}</span>`,
+          html: `<span style="transform:scaleX(${rot > 180 && rot < 360 ? -1 : 1})">${iconSvg(def, m.paint)}</span>`,
           iconSize: [64, 32],
           iconAnchor: [32, 16]
         });
-      return L.divIcon({ className: `car${m.stale ? " is-stale" : ""}`, html: `<span class="car-rot" style="transform:rotate(${rot}deg)">${CAR_SVG}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] });
+      return L.divIcon({ className: `car${m.stale ? " is-stale" : ""}`, html: `<span class="car-rot" style="transform:rotate(${rot}deg)">${carSvg(normalPaint(m.paint))}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] });
     }
   }
 }
 
-const iconKey = (m: MapMarker) => `${m.kind}|${Math.round(m.heading ?? 0)}|${m.stale ? 1 : 0}|${m.icon ?? ""}`;
+const iconKey = (m: MapMarker) => `${m.kind}|${Math.round(m.heading ?? 0)}|${m.stale ? 1 : 0}|${m.icon ?? ""}|${m.paint ?? ""}`;
 
 export function MapView(props: MapViewProps) {
   const el = useRef<HTMLDivElement>(null);

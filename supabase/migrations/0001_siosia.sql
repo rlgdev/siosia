@@ -1,6 +1,7 @@
 -- =============================================================================================
 -- Siosia — database schema, server rules and access policies (Supabase / Postgres 15+).
--- v1 rides plus 2.0 service catalog and appointments (siosia-spec-v2.0.md).
+-- v1 rides plus 2.0 service catalog and appointments (siosia-spec-v2.0.md, with its Amendment 2.1:
+-- open requests and the car colour).
 --
 -- Paste the whole file into Supabase → SQL Editor → Run. It is idempotent: re-running it upgrades
 -- functions and policies in place. Then set the invite code (see docs/SETUP.md, step 4):
@@ -405,6 +406,11 @@ create index if not exists appointments_provider_idx on public.appointments (pro
 create index if not exists appointments_client_idx on public.appointments (client_id, status);
 create index if not exists appointments_open_idx on public.appointments (starts_at) where status in ('requested', 'accepted');
 create index if not exists appointments_series_idx on public.appointments (series_id, seq);
+-- 2.1 (FR-160): an open request has no provider until a member takes it (siosia_take_request).
+alter table public.appointment_series alter column provider_id drop not null;
+alter table public.appointments alter column provider_id drop not null;
+create index if not exists appointments_open_requests_idx on public.appointments (starts_at)
+  where provider_id is null and status = 'requested';
 
 -- A ride may belong to an appointment (leg there / back); at most one live ride per passenger and leg.
 alter table public.rides add column if not exists appointment_id uuid references public.appointments (id) on delete set null;
@@ -427,6 +433,11 @@ create unique index if not exists ratings_appointment_from_idx on public.ratings
 
 -- Notifications about an appointment carry its id (tag source).
 alter table public.push_outbox add column if not exists appointment_id uuid;
+
+-- 2.1 (FR-170): the car's paint (#rrggbb, lowercase) the car icon is drawn in; null = not chosen.
+alter table public.vehicles add column if not exists paint text;
+alter table public.vehicles drop constraint if exists vehicles_paint_check;
+alter table public.vehicles add constraint vehicles_paint_check check (paint is null or paint ~ '^#[0-9a-f]{6}$');
 
 -- ---------------------------------------------------------------------------------------------
 -- Row level security: clients may only READ their own rows; all writes go through functions.
@@ -553,17 +564,20 @@ returns public.master_profiles language sql stable security definer set search_p
    where p.user_id = p_user and not p.deleted;
 $$;
 
+-- A person as others see them: nickname, rating, icon and (2.1, V38) the paint of their car —
+-- null without one — so a car icon is drawn in it everywhere. Nothing else of the vehicle.
 create or replace function public.siosia_party(p_user uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'nickname', coalesce((select nickname from profiles where user_id = p_user), 'Deleted user'),
     'rating',   siosia_rating(p_user),
-    'icon',     (siosia_master_of(p_user)).icon);
+    'icon',     (siosia_master_of(p_user)).icon,
+    'paint',    (select v.paint from vehicles v where v.user_id = p_user));
 $$;
 
 create or replace function public.siosia_vehicle_json(p_user uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
-  select jsonb_build_object('make', make, 'model', model, 'colour', colour, 'plate', plate, 'seats', seats)
+  select jsonb_build_object('make', make, 'model', model, 'colour', colour, 'plate', plate, 'seats', seats, 'paint', paint)
   from vehicles where user_id = p_user;
 $$;
 
@@ -587,12 +601,12 @@ returns text language sql stable security definer set search_path = public as $$
                     where c.id = 1 and e ->> 'id' = p_id limit 1), p_id);
 $$;
 
--- A person as other users see them in 2.0: nickname, rating, icon and the random public id —
--- never the auth user id (FR-143).
+-- A person as other users see them in 2.0: nickname, rating, icon, paint (2.1) and the random
+-- public id — never the auth user id (FR-143). Nobody (an open request's provider, 2.1) is null.
 create or replace function public.siosia_public_party(p_user uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
-  select siosia_party(p_user)
-         || jsonb_build_object('publicId', (select public_id from profiles where user_id = p_user and not deleted));
+  select case when p_user is null then null else siosia_party(p_user)
+         || jsonb_build_object('publicId', (select public_id from profiles where user_id = p_user and not deleted)) end;
 $$;
 
 -- The catalog entries a person offers: a master profile's preset (null = none besides rides,
@@ -669,6 +683,7 @@ $$;
 
 -- A series as one occurrence's viewer sees it: rule, counts, the dates left out (declined or
 -- cancelled — calendar EXDATEs), every start, and the ride templates (places only to their owner).
+-- A candidate (2.1: a member who could take the open series) gets neither templates nor a link.
 create or replace function public.siosia_series_json(p_series uuid, p_seq int, p_viewer uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
@@ -687,18 +702,23 @@ returns jsonb language sql stable security definer set search_path = public as $
              else jsonb_build_object('passenger', t ->> 'passenger', 'leg', t ->> 'leg', 'offsetMin', t -> 'offsetMin',
                                      'mine', false) end)
         -- only a list is read as one (as in siosia_materialize_templates): a non-list is no templates
-        from jsonb_array_elements(case when jsonb_typeof(s.ride_templates) = 'array'
+        from jsonb_array_elements(case when v.party and jsonb_typeof(s.ride_templates) = 'array'
                                        then s.ride_templates else '[]'::jsonb end) t), '[]'::jsonb),
-    'ics', siosia_ics_link('s', s.id, p_viewer))
-  from appointment_series s where s.id = p_series;
+    'ics', case when v.party then siosia_ics_link('s', s.id, p_viewer) end)
+  from appointment_series s
+  cross join lateral (select coalesce(p_viewer = s.client_id or p_viewer = s.provider_id, false) as party) v
+  where s.id = p_series;
 $$;
 
--- AppointmentView (§12) for one of its two parties.
+-- AppointmentView (§12) for one of its two parties, or (2.1, V34) for a candidate — a member who
+-- could take the open request: what is asked, when, where and by whom, never rides, reminders,
+-- ratings, calendar links or anyone's user id. An open request has no provider (null).
 create or replace function public.siosia_appointment_json(a public.appointments, p_viewer uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'id', a.id, 'status', a.status,
-    'role', case when a.client_id = p_viewer then 'client' else 'provider' end,
+    'role', v.role,
+    'open', a.provider_id is null and a.status = 'requested',
     'serviceId', a.service_id,
     'service', (select case when e is null then null else jsonb_build_object('name', e -> 'name', 'icon', e ->> 'icon') end
                   from (select siosia_service(a.service_id) e) q),
@@ -710,11 +730,33 @@ returns jsonb language sql stable security definer set search_path = public as $
     'client', siosia_public_party(a.client_id), 'provider', siosia_public_party(a.provider_id),
     'requestedAt', siosia_ms(a.requested_at), 'answeredAt', siosia_ms(a.answered_at), 'endedAt', siosia_ms(a.ended_at),
     'cancelledBy', a.cancelled_by, 'cancelReason', a.cancel_reason,
-    'rides', siosia_attached_json(a.id, p_viewer, a.client_id),
-    'reminders', to_jsonb(a.reminded),
-    'myRating', (select g.stars from ratings g where g.appointment_id = a.id and g.from_user = p_viewer),
+    'rides', case when v.party then siosia_attached_json(a.id, p_viewer, a.client_id) else '[]'::jsonb end,
+    'reminders', case when v.party then to_jsonb(a.reminded) else '[]'::jsonb end,
+    'myRating', case when v.party then (select g.stars from ratings g where g.appointment_id = a.id and g.from_user = p_viewer) end,
     'series', case when a.series_id is null then null else siosia_series_json(a.series_id, a.seq, p_viewer) end,
-    'calendar', jsonb_build_object('google', null, 'ics', siosia_ics_link('a', a.id, p_viewer)));
+    'calendar', jsonb_build_object('google', null, 'ics', case when v.party then siosia_ics_link('a', a.id, p_viewer) end))
+  from (select r.role, r.role <> 'candidate' as party
+          from (select case when a.client_id = p_viewer then 'client' when a.provider_id = p_viewer then 'provider'
+                            else 'candidate' end as role) r) v;
+$$;
+
+-- 2.1 (FR-161, V34): the open requests of other members a user could take — requested, nobody's
+-- yet, not started — soonest first, a series once (its earliest open date); none without a profile.
+create or replace function public.siosia_open_rows(p_user uuid)
+returns setof public.appointments language sql stable security definer set search_path = public as $$
+  select o.* from (select distinct on (coalesce(a.series_id, a.id)) a.* from appointments a
+                    where a.provider_id is null and a.status = 'requested' and a.starts_at > now()
+                      and a.client_id <> p_user
+                      and exists (select 1 from profiles p where p.user_id = p_user and not p.deleted)
+                    order by coalesce(a.series_id, a.id), a.starts_at) o
+   order by o.starts_at, o.id;
+$$;
+
+-- The same as the candidate sees them (P1 "You could help").
+create or replace function public.siosia_open_requests(p_user uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(siosia_appointment_json(o, p_user) order by o.starts_at, o.id), '[]'::jsonb)
+    from siosia_open_rows(p_user) o;
 $$;
 
 create or replace function public.siosia_profile_json(p_user uuid)
@@ -1238,6 +1280,8 @@ begin
     -- 2.0 (V22): requests waiting for my answer (a series counts once), upcoming items, the next one.
     'toAnswer', (select count(distinct coalesce(series_id, id)) from appointments
                   where provider_id = p_user and status = 'requested' and starts_at > now()),
+    -- 2.1 (FR-161): others' open requests I could take (a series counts once) — the S1 badge.
+    'openRequests', (select count(*) from siosia_open_rows(p_user)),
     'planned', (select count(*) from appointments
                  where (client_id = p_user or provider_id = p_user) and status in ('requested', 'accepted')
                    and starts_at + make_interval(mins => duration_min) > now())
@@ -1636,6 +1680,24 @@ begin
   return siosia_ok(siosia_vehicle_json(auth.uid()));
 end $$;
 
+-- 2.1 (FR-170, V38): the car's colour from the car icon — its name in the driver's words (riders
+-- read it) and the paint the icon is drawn in (#rrggbb, any case, kept lowercase). The rest of the
+-- vehicle stays; siosia_save_vehicle keeps the paint.
+create or replace function public.siosia_set_car_colour(p_colour text, p_paint text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_colour text := btrim(coalesce(p_colour, ''));
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if siosia_master_role(v_uid) = 'rider' then return siosia_err('rider_only'); end if;
+  if not exists (select 1 from vehicles where user_id = v_uid) then return siosia_err('no_vehicle'); end if;
+  if char_length(v_colour) not between 1 and 20 or coalesce(p_paint, '') !~* '^#[0-9a-f]{6}$' then
+    return siosia_err('bad_vehicle');
+  end if;
+  update vehicles set colour = v_colour, paint = lower(p_paint), updated_at = now() where user_id = v_uid;
+  perform siosia_notify(v_uid);
+  return siosia_ok(siosia_vehicle_json(v_uid));
+end $$;
+
 -- Delete = anonymise (nickname "Deleted user"), remove vehicle and memberships (§9 retention).
 create or replace function public.siosia_delete_profile()
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -1647,7 +1709,8 @@ begin
     return siosia_err('active_ride');
   end if;
   -- 2.0 (FR-142): upcoming appointments in either role end (system, user_gone), their rides follow,
-  -- and the other party is told once per appointment or series. Finished ones are anonymised below.
+  -- and the other party is told once per appointment or series (an open request has none: 2.1).
+  -- Finished ones are anonymised below.
   select array_agg(id) into v_ids from appointments
    where (client_id = v_uid or provider_id = v_uid) and status in ('requested', 'accepted');
   if v_ids is not null then
@@ -2302,12 +2365,14 @@ returns jsonb language sql stable security definer set search_path = public as $
 $$;
 
 -- A reminder for one party (V7, V8): lead slot, the other party, the status words, the ride lines.
+-- An open request (2.1, V37) has only its client, still waiting for someone to take it: "open".
 create or replace function public.siosia_reminder_params(a public.appointments, p_slot int, p_role text)
 returns jsonb language sql stable security definer set search_path = public as $$
   select siosia_appt_params(a) || jsonb_build_object(
     'lead', p_slot, 'role', p_role,
     'other', siosia_nick(case when p_role = 'client' then a.provider_id else a.client_id end),
-    'status', case when a.status = 'accepted' then 'confirmed' when p_role = 'client' then 'waiting' else 'answer' end,
+    'status', case when a.status = 'accepted' then 'confirmed' when a.provider_id is null then 'open'
+                   when p_role = 'client' then 'waiting' else 'answer' end,
     'rides', siosia_ride_lines(a.id));
 $$;
 
@@ -2481,7 +2546,9 @@ begin
       update appointments set status = 'expired', ended_at = now() where series_id = s.id and status = 'requested';
       update appointment_series set status = 'expired' where id = s.id;
       select * into a from appointments where series_id = s.id order by seq limit 1;
-      perform siosia_push_appt(s.client_id, 'appt_expired', a.id, siosia_appt_params(a) || siosia_series_params(s.id));
+      -- An open series nobody took (2.1, V37): the client is told "nobody took it".
+      perform siosia_push_appt(s.client_id, 'appt_expired', a.id, siosia_appt_params(a) || siosia_series_params(s.id)
+                               || case when s.provider_id is null then '{"open": true}'::jsonb else '{}'::jsonb end);
     exception when others then
       raise warning 'siosia_sweep_appointments: series % skipped: %', s.id, sqlerrm;
     end;
@@ -2491,7 +2558,8 @@ begin
            for update skip locked loop
     begin
       update appointments set status = 'expired', ended_at = now() where id = a.id;
-      perform siosia_push_appt(a.client_id, 'appt_expired', a.id, siosia_appt_params(a));
+      perform siosia_push_appt(a.client_id, 'appt_expired', a.id, siosia_appt_params(a)
+                               || case when a.provider_id is null then '{"open": true}'::jsonb else '{}'::jsonb end);
     exception when others then
       raise warning 'siosia_sweep_appointments: appointment % skipped: %', a.id, sqlerrm;
     end;
@@ -2499,7 +2567,8 @@ begin
   -- An accepted appointment is done at its end ("in progress" is derived, never stored).
   update appointments set status = 'done', ended_at = starts_at + make_interval(mins => duration_min)
    where status = 'accepted' and starts_at + make_interval(mins => duration_min) <= now();
-  -- Reminders: once per slot for both parties; none for a moment that had passed at the request.
+  -- Reminders: once per slot for both parties (an open request: its client only, V37); none for a
+  -- moment that had passed at the request.
   select coalesce(max(x), 0) into v_max from unnest(c.appt_reminder_min) x;
   for a in select * from appointments where status in ('requested', 'accepted') and starts_at > now()
              and starts_at <= now() + make_interval(mins => v_max) for update skip locked loop
@@ -2510,7 +2579,9 @@ begin
           update appointments set reminded = reminded || v_slot where id = a.id and not (v_slot = any (reminded));
           if found then
             perform siosia_push_appt(a.client_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'client'));
-            perform siosia_push_appt(a.provider_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'provider'));
+            if a.provider_id is not null then
+              perform siosia_push_appt(a.provider_id, 'appt_reminder', a.id, siosia_reminder_params(a, v_slot, 'provider'));
+            end if;
           end if;
         end if;
       end loop;
@@ -2531,12 +2602,29 @@ begin
   end loop;
 end $$;
 
--- Realtime: any change of an appointment tells both parties to refetch (no new channels).
+-- Every member with a profile refetches (2.1: an open request is on everyone's list).
+create or replace function public.siosia_notify_members()
+returns void language plpgsql security definer set search_path = public as $$
+declare u record;
+begin
+  for u in select user_id from profiles where not deleted loop
+    perform siosia_notify(u.user_id);
+  end loop;
+end $$;
+
+-- Realtime: any change of an appointment tells both parties to refetch (no new channels). An open
+-- request that appears, is taken or ends (withdrawn, expired, its client gone) changes every
+-- member's list and badge (V36); siosia_send keeps it to one message per member and transaction.
 create or replace function public.siosia_appointments_trigger()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
   perform siosia_notify(new.client_id);
   perform siosia_notify(new.provider_id);
+  if (tg_op = 'INSERT' and new.provider_id is null)
+     or (tg_op = 'UPDATE' and old.provider_id is null
+         and (new.provider_id is not null or new.status is distinct from old.status)) then
+    perform siosia_notify_members();
+  end if;
   return null;
 end $$;
 
@@ -2568,6 +2656,8 @@ end $$;
 
 -- Send request (V3, V4, V23): one provider, a time entry they offer, start and duration within the
 -- rules, a place unless the entry allows none; optionally repeating weekly / every 2 weeks.
+-- 2.1 (FR-160, V34): no provider (p_provider null) = an open request to anyone in the group —
+-- every other rule and limit the same, only the checks of a provider skipped.
 create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
                                                          p_duration int, p_place jsonb, p_note text, p_repeat jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -2575,7 +2665,7 @@ declare
   v_err text := siosia_guard(true); v_uid uuid := auth.uid(); c app_config; e jsonb; d jsonb; v_prov uuid;
   v_note text := btrim(coalesce(p_note, '')); v_price numeric; v_every int; v_count int; v_until timestamptz;
   v_starts timestamptz[] := '{}'; v_t timestamptz; k int; s appointment_series; a appointments; v_first appointments;
-  v_place jsonb := case when p_place is null or jsonb_typeof(p_place) = 'null' then null else p_place end;
+  v_place jsonb := case when p_place is null or jsonb_typeof(p_place) = 'null' then null else p_place end; u record;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
@@ -2585,9 +2675,11 @@ begin
   if e is null or e ->> 'kind' <> 'time' or not coalesce((e ->> 'enabled')::boolean, false) then
     return siosia_err('bad_service');
   end if;
-  select user_id into v_prov from profiles where public_id = p_provider and not deleted;
-  if v_prov is null or v_prov = v_uid or not siosia_member_ok(v_prov) then return siosia_err('no_provider'); end if;
-  if not (p_service = any (siosia_offers_of(v_prov))) then return siosia_err('not_offered'); end if;
+  if p_provider is not null then
+    select user_id into v_prov from profiles where public_id = p_provider and not deleted;
+    if v_prov is null or v_prov = v_uid or not siosia_member_ok(v_prov) then return siosia_err('no_provider'); end if;
+    if not (p_service = any (siosia_offers_of(v_prov))) then return siosia_err('not_offered'); end if;
+  end if;
   if p_starts_at is null or p_starts_at < now() + make_interval(mins => c.booking_min_lead_min)
      or p_starts_at > now() + make_interval(days => c.booking_max_days) then
     return siosia_err('bad_time');
@@ -2669,41 +2761,47 @@ begin
     returning * into a;
     if k = 1 then v_first := a; end if;
   end loop;
-  perform siosia_push_appt(v_prov, 'appt_new', v_first.id, siosia_appt_params(v_first) || siosia_series_params(s.id));
+  if v_prov is not null then
+    perform siosia_push_appt(v_prov, 'appt_new', v_first.id, siosia_appt_params(v_first) || siosia_series_params(s.id));
+  else
+    -- Every other member hears of an open request once (V36), tagged with its (first) date; their
+    -- lists change (siosia_appointments_trigger).
+    for u in select user_id from profiles where not deleted and user_id <> v_uid loop
+      perform siosia_push_appt(u.user_id, 'appt_open', v_first.id,
+                               siosia_appt_params(v_first) || siosia_series_params(s.id) || '{"open": true}'::jsonb);
+    end loop;
+  end if;
   return siosia_ok(siosia_appointment_json(v_first, v_uid));
 end $$;
 
--- Accept / Decline (V5, V24): only the provider, only while requested (atomic). A series is
--- answered as a whole: Accept takes every occurrence that does not clash and declines the rest.
-create or replace function public.siosia_answer_appointment(p_id uuid, p_decision text)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; o appointments;
-  v_declined timestamptz[] := '{}'; v_accepted int := 0;
+-- The answer itself (V5, V24), for siosia_answer_appointment and siosia_take_request: only the
+-- provider, only while requested (atomic). A series is answered as a whole: Accept takes every
+-- occurrence that does not clash and declines the rest. Returns an error code, or null when done;
+-- nothing is changed before an error.
+create or replace function public.siosia_answer_as(p_uid uuid, p_id uuid, p_decision text)
+returns text language plpgsql security definer set search_path = public as $$
+declare a appointments; o appointments; v_declined timestamptz[] := '{}'; v_accepted int := 0;
 begin
-  if v_err is not null then return siosia_err(v_err); end if;
-  if p_decision is null or p_decision not in ('accept', 'decline') then return siosia_err('bad_input'); end if;
-  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
-  perform siosia_sweep();
-  select * into a from appointments where id = p_id and provider_id = v_uid;
-  if a.id is null then return siosia_err('not_found'); end if;
-  if a.status <> 'requested' then return siosia_err('illegal_transition'); end if;
+  select * into a from appointments where id = p_id and provider_id = p_uid;
+  if a.id is null then return 'not_found'; end if;
+  if a.status <> 'requested' then return 'illegal_transition'; end if;
   if a.series_id is null then
     if p_decision = 'accept' then
-      if siosia_provider_busy(v_uid, a.starts_at, a.duration_min, a.id) then return siosia_err('overlap'); end if;
+      if siosia_provider_busy(p_uid, a.starts_at, a.duration_min, a.id) then return 'overlap'; end if;
       update appointments set status = 'accepted', answered_at = now()
-       where id = a.id and status = 'requested' and provider_id = v_uid;
-      if not found then return siosia_err('illegal_transition'); end if;
+       where id = a.id and status = 'requested' and provider_id = p_uid;
+      if not found then return 'illegal_transition'; end if;
       perform siosia_push_appt(a.client_id, 'appt_accepted', a.id, siosia_appt_params(a));
     else
       update appointments set status = 'declined', answered_at = now(), ended_at = now()
-       where id = a.id and status = 'requested' and provider_id = v_uid;
-      if not found then return siosia_err('illegal_transition'); end if;
+       where id = a.id and status = 'requested' and provider_id = p_uid;
+      if not found then return 'illegal_transition'; end if;
       perform siosia_push_appt(a.client_id, 'appt_declined', a.id, siosia_appt_params(a));
     end if;
   else
     perform 1 from appointment_series where id = a.series_id for update;
     for o in select * from appointments where series_id = a.series_id and status = 'requested' order by seq for update loop
-      if p_decision = 'accept' and not siosia_provider_busy(v_uid, o.starts_at, o.duration_min, o.id) then
+      if p_decision = 'accept' and not siosia_provider_busy(p_uid, o.starts_at, o.duration_min, o.id) then
         update appointments set status = 'accepted', answered_at = now() where id = o.id;
         v_accepted := v_accepted + 1;
       else
@@ -2716,7 +2814,89 @@ begin
                              siosia_appt_params(a) || siosia_series_params(a.series_id)
                              || jsonb_build_object('accepted', v_accepted, 'declined', to_jsonb(v_declined)));
   end if;
+  return null;
+end $$;
+
+-- Accept / Decline (V5, V24): the provider answers a request addressed to them.
+create or replace function public.siosia_answer_appointment(p_id uuid, p_decision text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if p_decision is null or p_decision not in ('accept', 'decline') then return siosia_err('bad_input'); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  perform siosia_sweep();
+  v_err := siosia_answer_as(v_uid, p_id, p_decision);
+  if v_err is not null then return siosia_err(v_err); end if;
   select * into a from appointments where id = p_id;
+  return siosia_ok(siosia_appointment_json(a, v_uid));
+end $$;
+
+-- I can do it (2.1, FR-163, V35): the caller takes someone's open request — becomes its provider
+-- and accepts it in one transaction. The claim is atomic (… WHERE provider_id IS NULL): the first
+-- taker wins, the others get taken. A series is taken as a whole and answered like any series
+-- (dates clashing with the taker's schedule declined) — unless every open date clashes (B6): then,
+-- as for a single request that clashes, it fails with overlap and stays open, untouched (no claim,
+-- no decline, nothing told). The client is told as for an accept; every member's list changes
+-- (siosia_appointments_trigger), nothing more is pushed to them.
+create or replace function public.siosia_take_request(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; o appointments;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  perform siosia_sweep();
+  select * into a from appointments where id = p_id;
+  if a.id is null then return siosia_err('not_found'); end if;
+  if a.client_id = v_uid then return siosia_err('forbidden'); end if;
+  if a.provider_id is not null then return siosia_err('taken'); end if;
+  if a.status <> 'requested' or a.starts_at <= now() then return siosia_err('illegal_transition'); end if;
+  -- Before the claim (twin of takeRequest): the caller is free for the request, or for at least
+  -- one open date of the series — otherwise nothing is claimed, changed or told.
+  if not exists (select 1 from appointments x
+                  where (x.id = a.id or x.series_id = a.series_id)
+                    and x.provider_id is null and x.status = 'requested'
+                    and not siosia_provider_busy(v_uid, x.starts_at, x.duration_min, x.id)) then
+    return siosia_err('overlap');
+  end if;
+  begin
+    -- The claim locks the series row first, then its occurrences (the order of siosia_answer_as
+    -- and siosia_cancel_appointment). A concurrent taker waits on the row, then finds it no longer open.
+    if a.series_id is null then
+      update appointments set provider_id = v_uid where id = a.id and provider_id is null and status = 'requested';
+      o := a;
+    else
+      update appointment_series set provider_id = v_uid where id = a.series_id and provider_id is null and status = 'requested';
+      if found then
+        update appointments set provider_id = v_uid where series_id = a.series_id and provider_id is null and status = 'requested';
+        -- A series row with no open date left: its claim is undone with this block.
+        if not found then raise exception using errcode = 'P0001', message = 'illegal_transition'; end if;
+        -- The Accept is for a date actually claimed: the one asked for may have been withdrawn meanwhile.
+        select * into o from appointments
+         where series_id = a.series_id and provider_id = v_uid and status = 'requested' order by seq limit 1;
+      end if;
+    end if;
+    if not found then
+      -- Lost to someone faster, or the client withdrew it meanwhile (nothing of ours to undo).
+      select * into a from appointments where id = p_id;
+      return siosia_err(case when a.provider_id is not null then 'taken' else 'illegal_transition' end);
+    end if;
+    v_err := siosia_answer_as(v_uid, o.id, 'accept');
+    -- overlap (a single request): the claim is undone with this block, the request stays open.
+    if v_err is not null then raise exception using errcode = 'P0001', message = v_err; end if;
+    -- The second guard for a series (V35): had every open date come to clash since the check above
+    -- (a withdrawal racing the claim), nothing was accepted — the claim, the declines and the
+    -- notification are undone with this block and the series stays open.
+    if a.series_id is not null and not exists (select 1 from appointments
+                                                where series_id = a.series_id and provider_id = v_uid and status = 'accepted') then
+      raise exception using errcode = 'P0001', message = 'overlap';
+    end if;
+  exception when raise_exception then
+    return siosia_err(sqlerrm);
+  end;
+  -- The date asked for — or, when that one was withdrawn as the claim landed, the first date taken.
+  select * into a from appointments where id = p_id;
+  if a.provider_id is distinct from v_uid then select * into a from appointments where id = o.id; end if;
   return siosia_ok(siosia_appointment_json(a, v_uid));
 end $$;
 
@@ -2726,10 +2906,14 @@ end $$;
 create or replace function public.siosia_cancel_appointment(p_id uuid, p_reason text, p_scope text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; v_who text;
-  v_ids uuid[]; v_from timestamptz; v_series boolean;
+  v_ids uuid[]; v_from timestamptz; v_series boolean; v_sid uuid;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform siosia_sweep();
+  -- Locks in the order of siosia_take_request and siosia_answer_as — the series row first, then
+  -- the occurrence — so a take of an open series and its client withdrawing it never deadlock.
+  select series_id into v_sid from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid);
+  if v_sid is not null then perform 1 from appointment_series where id = v_sid for update; end if;
   select * into a from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid) for update;
   if a.id is null then return siosia_err('not_found'); end if;
   v_who := case when a.client_id = v_uid then 'client' else 'provider' end;
@@ -2869,7 +3053,8 @@ begin
 end $$;
 
 -- Planned (V17): everything upcoming in both roles — appointments (requested / accepted, until
--- their end) and rides (booked as rider, taken as driver, the active one).
+-- their end; my open requests among them) and rides (booked as rider, taken as driver, the active
+-- one) — and (2.1, FR-161) the open requests of others I could take.
 create or replace function public.siosia_planned()
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(false); v_uid uuid := auth.uid();
@@ -2884,7 +3069,8 @@ begin
     'rides', coalesce((select jsonb_agg(siosia_ride_json(x, v_uid) order by coalesce(x.scheduled_for, x.requested_at))
                          from rides x
                         where (x.rider_id = v_uid or x.driver_id = v_uid)
-                          and x.status in ('scheduled', 'requested', 'accepted', 'arrived', 'in_progress')), '[]'::jsonb)));
+                          and x.status in ('scheduled', 'requested', 'accepted', 'arrived', 'in_progress')), '[]'::jsonb),
+    'open', siosia_open_requests(v_uid)));
 end $$;
 
 -- History (FR-133): finished appointments and rides of both roles, the last 50 of each, newest first.
@@ -2964,14 +3150,18 @@ exception when unique_violation then
   return siosia_err('already_rated');
 end $$;
 
--- One appointment for one of its parties (C3 opened from a notification or a link).
+-- One appointment for one of its parties (C3 opened from a notification or a link), or (2.1, V34)
+-- an open request for a member with a profile who could take it (the candidate view).
 create or replace function public.siosia_get_appointment(p_id uuid)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(false); v_uid uuid := auth.uid(); a appointments;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform siosia_sweep();
-  select * into a from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid);
+  select * into a from appointments
+   where id = p_id and (client_id = v_uid or provider_id = v_uid
+                        or (provider_id is null and status = 'requested' and starts_at > now()
+                            and exists (select 1 from profiles where user_id = v_uid and not deleted)));
   if a.id is null then return siosia_err('not_found'); end if;
   return siosia_ok(siosia_appointment_json(a, v_uid));
 end $$;
@@ -3076,6 +3266,9 @@ grant execute on function public.siosia_save_home(jsonb) to authenticated;
 grant execute on function public.siosia_rate_appointment(uuid, int, text) to authenticated;
 grant execute on function public.siosia_get_appointment(uuid) to authenticated;
 grant execute on function public.siosia_delete_push(text) to authenticated;
+-- 2.1
+grant execute on function public.siosia_take_request(uuid) to authenticated;
+grant execute on function public.siosia_set_car_colour(text, text) to authenticated;
 do $$
 begin
   if exists (select 1 from pg_roles where rolname = 'service_role') then

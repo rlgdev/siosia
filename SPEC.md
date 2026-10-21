@@ -87,6 +87,11 @@ V30: sweep (∀ API call + cron) ⊥ abort: ∀ per-row step (expiry, reminders,
 V31: history stack ∈ {[S1], [S1, screen]} (+ 1 panel entry): launch on non-S1 screen (link, notification, held screen) seeds S1 below unless already there; reload ⊥ extra entries; go home ⊥ leave app; held-screen prompt keeps its target
 V32: user text in `.ics` (note, nickname, label, vehicle) escaped: ∀ line break (CRLF, CR, LF, U+0085, U+2028, U+2029) → `\n`, other control chars dropped; ids/URLs stripped of breaks; GEO only w/ finite lat & lng
 V33: stored place = {lat, lng, btrim(label) cut to 120}; ⊥ extra keys; label non-blank; same rule both twins
+V34: open request = appointment requested ∧ provider null; ∀ FR-100–109 rules apply (limits, window, place, note, repeat, expiry, withdraw); visible ∀ other member (role candidate: service, times, client, place label, note, series rule, price; ⊥ rides, ⊥ My place, ⊥ user ids); series listed once
+V35: take = atomic claim (provider null → caller, first wins else taken) + accept in 1 tx; series whole (clashes declined per V24) unless ∀ date clashes → overlap (⊥ claim, ⊥ push); single clash → overlap; own request → forbidden; after start → illegal_transition; client told as accept
+V36: open request created → 1 appt_open ∀ other member (recipient lang, ?open=planned); taken/withdrawn → candidates' lists + badges update (notify), ⊥ further push to them
+V37: open request reminders & expiry → client only ("nobody took it"); provider-less views/texts/ics ⊥ crash (provider null ∀ code paths: chips, push-text, ics, history, calendar)
+V38: car icon tap (own driver icon) → colour swatches (10); choose → vehicle.colour (driver lang) + vehicle.paint #rrggbb, server-validated; icon drawn in paint ∀ places (S1, D1, profile, rider's driver card, booking card)
 
 ## §T tasks
 
@@ -107,6 +112,10 @@ T13|x|tests: engine (lifecycle, limits, overlap, expiry/done, reminders faked cl
 T14|x|docs: USER-GUIDE (EN+PL: series, Add to calendar), ARCHITECTURE (deviations: appointments, series, reminders, calendar fn), TRACEABILITY rows FR-080–153, SETUP (catalog, reminder cfg, pg_cron note, calendar fn deploy + url), README|FR-153,NFR-15
 T15|~|release: re-run migration on live DB, redeploy push fn, deploy calendar fn + set calendar_function_url, push main (Pages), `npm run smoke` + live test, field test (short reminder slots, iPhone .ics Add All, Android google) then restore slots|§15,§13,V30–V33
 T16|x|calendar: shared `supabase/functions/_shared/ics.ts` (appt, series, ride; viewer visibility), Edge Function `supabase/functions/calendar/` (hmac check, service role read, text/calendar, 404), `npm run calendar:bundle`, client Add to calendar action (google link builder, ics link | demo browser download via blob, share-sheet fallback on iOS, one-time "doesn't update" note)|V27,V28,V29,FR-135,FR-136,NFR-20
+T17|x|open requests backend: SQL + engine twin (provider_id null, candidates' list, take, appt_open push, notify all, expiry/reminders client-only, limits) + mock/supabase adapters + sql/engine tests|V34,V35,V36,V37,V19,FR-160–164
+T18|x|open requests UI: C1 entries never disabled + hint, C2 "Anyone who can" + visibility note, P1 "You could help (N)" + I can do it (take sheet w/ ride ticks), S1 badge, C3 candidate view, chips/texts for provider null, i18n EN/PL, robot Siosia takes open requests, component + e2e tests|V34–V37,FR-090,FR-094,FR-161,FR-163
+T19|x|car colour: vehicles.paint + set_car_colour (SQL + engine), icon tint (ProfileIcon paint), colour sheet on car icon tap, rider views tinted, i18n, tests|V38,FR-170
+T20|~|release 2.1: review, re-run migration on live DB, push-dispatch bundle redeploy, push main, verify live|§15,V30–V38
 
 ## §B bugs
 
@@ -116,3 +125,4 @@ B2|2026-10-20|pre-release review: ride template estMin unbounded + materialize/s
 B3|2026-10-20|pre-release review: launch straight on non-S1 screen (notification ?open=, held D1) overwrote first history entry → ← trapped (PWA) or left app; goFromPanel left stale entry; reload added S1 copies|V31
 B4|2026-10-20|pre-release review: escapeText only mapped `\r?\n` → lone CR / U+2028 in user text could inject .ics properties|V32
 B5|2026-10-20|pre-release review: templates stored client JSON verbatim, null-unsafe checks passed missing fields, valid_place NULL on missing lng, label rules differ by twin|V33
+B6|2026-10-21|2.1 review: take of open series w/ every date clashing for taker 'succeeded' → all dates declined, client told declined, request gone ∀ members (single clash already → overlap)|V35

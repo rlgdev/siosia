@@ -6,6 +6,7 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 // both see the driver; cancel cascades); a weekly series → All remaining; Add to calendar; the
 // opening rules and ?open=. Map services are blocked: routes fall back to the straight line and
 // "Here" gives the browser's (mocked) position without an address.
+// 2.1: an open request taken by another member; the car colour from the car icon.
 
 async function isolate(context: BrowserContext) {
   await context.route(/router\.project-osrm\.org|nominatim\.openstreetmap\.org|tile\.openstreetmap\.org/, (r) => r.abort());
@@ -191,4 +192,104 @@ test("opening rules: S1 by default, ?open=planned and ?open=history once, an onl
   await expect(driver.getByTestId("driver-state")).toHaveText("Online"); // online: reopens on D1
   await driver.getByTestId("back-home").click();
   await expect(driver.getByRole("alertdialog")).toContainText("offline"); // leaving D1 online asks first
+});
+
+// ---------- 2.1: open requests and the car colour ----------
+
+async function longPressMap(page: Page, dx: number, dy: number) {
+  const box = (await page.locator(".map").boundingBox())!;
+  // Leaflet turns a right-click / long-press into "contextmenu" → sets the dropoff (FR-011).
+  await page.mouse.click(box.x + box.width / 2 + dx, box.y + 120 + dy, { button: "right" });
+}
+
+test("an open request: nobody offers Learning → Anyone who can → Ewa sees it and takes it → Toria's is confirmed with Ewa (FR-160–164)", async ({
+  context
+}) => {
+  await isolate(context);
+  const ewa = await context.newPage();
+  await onboard(ewa, "Ewa");
+  await expect(ewa.getByTestId("badge-open")).toHaveCount(0);
+
+  const toria = await context.newPage();
+  await onboard(toria, "Toria");
+  await toria.getByTestId("start-siosia").click();
+  await expect(toria.getByTestId("nobody-learning")).toHaveText("Nobody offers this yet — ask anyway: everyone in the group sees it");
+  await toria.getByTestId("catalog-learning").click();
+  await expect(toria.getByTestId("request-form")).toBeVisible();
+  await expect(toria.getByRole("radio", { name: "Anyone who can" })).toBeChecked(); // nobody offers it: preselected
+  await expect(toria.getByTestId("request-open-note")).toContainText("Everyone in the group sees this request");
+  await toria.getByTestId("request-place-here").click();
+  await expect(toria.getByTestId("request-place-value")).not.toHaveText("—");
+  await toria.getByTestId("request-send").click();
+  await expect(toria.getByTestId("planned")).toBeVisible();
+  const mine = toria.getByTestId("planned-appointment");
+  await expect(mine.getByTestId("appt-chip")).toHaveText("Waiting for someone to take it");
+  await expect(mine).toContainText("Open to anyone");
+
+  // Ewa, on S1 all along: the badge, then Planned → You could help → I can do it.
+  await expect(ewa.getByTestId("badge-open")).toHaveText("1 you could help with", { timeout: 8000 });
+  await ewa.getByTestId("start-planned").click();
+  const could = ewa.getByTestId("open-requests");
+  await expect(could).toContainText("You could help (1)");
+  await expect(could).toContainText("Learning");
+  await expect(could).toContainText("Toria asks");
+  await could.getByTestId("take-request").click();
+  await expect(ewa.getByTestId("take-sheet")).toBeVisible();
+  await ewa.getByTestId("take-confirm").click();
+  await expect(ewa.getByTestId("appt-status")).toHaveText("Confirmed");
+  await expect(ewa.getByTestId("appt-party")).toContainText("For Toria");
+  await ewa.getByRole("dialog").getByRole("button", { name: "Back", exact: true }).click();
+  await expect(ewa.getByTestId("open-requests")).toHaveCount(0); // taken: no longer open
+  await expect(ewa.getByTestId("planned-appointment")).toContainText("For Toria");
+
+  // Toria is told as for an accept, and her item names Ewa.
+  await expect(mine.getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 8000 });
+  await expect(mine).toContainText("With Ewa");
+  await expect(toria.getByTestId("push-toast")).toContainText("Ewa", { timeout: 8000 });
+});
+
+test("the car icon picks the car's colour: the Roman link → plate → Red → his icon and car are red, for riders too (FR-170)", async ({ context }) => {
+  await isolate(context);
+  const roman = await context.newPage();
+  await roman.goto("/?robots=0&siosia=0#master=demo-roman");
+  await roman.bringToFront(); // GPS for going online
+  await expect(roman.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
+  await roman.getByTestId("start-siosia").click();
+  await roman.getByTestId("catalog-drive").click();
+  await roman.getByLabel("Plate").fill("WX 5555");
+  await roman.getByRole("button", { name: "Save" }).click();
+  const chip = roman.getByTestId("master-chip");
+  await expect(chip.getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeVisible();
+  await expect(chip.getByTestId("car-icon")).toHaveAccessibleName("Change car colour");
+
+  await chip.getByTestId("car-icon").click();
+  const sheet = roman.getByRole("dialog", { name: "Car colour" });
+  await expect(sheet.getByTestId("paint-red")).toHaveText("Red");
+  await sheet.getByTestId("paint-red").click();
+  await expect(sheet).toHaveCount(0);
+  const icon = chip.getByRole("img", { name: "Red Taycan Cross Turismo" });
+  await expect(icon.locator('[data-part="body"]')).toHaveAttribute("fill", "#c62828");
+  await expect(roman.getByTestId("vehicle-line")).toHaveText("Red Porsche Taycan Cross Turismo · WX 5555");
+
+  // Saved with the car: after a reload S1's icon is red too, and so is the form's colour.
+  await roman.reload();
+  await expect(roman.getByTestId("car-icon").locator('[data-part="body"]')).toHaveAttribute("fill", "#c62828");
+  await roman.getByTestId("start-siosia").click();
+  await roman.getByTestId("catalog-drive").click();
+  await expect(roman.getByTestId("vehicle-line")).toContainText("Red Porsche");
+  await roman.bringToFront();
+  await roman.getByTestId("toggle-online").click();
+  await expect(roman.getByTestId("driver-state")).toHaveText("Online");
+
+  const rider = await context.newPage();
+  await onboard(rider, "Ola");
+  await rider.getByTestId("start-siosia").click();
+  await rider.getByTestId("catalog-ride").click();
+  await longPressMap(rider, 100, 60);
+  await rider.getByTestId("request-ride").click();
+  await expect(roman.getByTestId("offer-card")).toBeVisible({ timeout: 5000 });
+  await roman.getByTestId("accept-offer").click();
+  const card = rider.getByTestId("driver-card");
+  await expect(card).toContainText("Red Porsche Taycan Cross Turismo");
+  await expect(card.getByRole("img", { name: "Red Taycan Cross Turismo" }).locator('[data-part="body"]')).toHaveAttribute("fill", "#c62828");
 });

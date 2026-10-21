@@ -2,7 +2,7 @@
 // bus (FR-070), presence expiry of a killed tab (FR-042), and i18n completeness (FR-073, NFR-11).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CONFIG } from "../../src/core/defaults";
+import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
 import { destination } from "../../src/core/geo";
 import { MockBackend } from "../../src/backend/mock/index";
 import { MockBus } from "../../src/backend/mock/bus";
@@ -144,6 +144,103 @@ describe("mock backend (FR-070)", () => {
     expect(await client.myState()).toMatchObject({ planned: 1, nextPlanned: { kind: "appointment", title: "Childcare" } });
     client.dispose();
     siosia.dispose();
+  });
+
+  it("runs a 2.1 open request → taken by another member round trip, with notifications to everyone", async () => {
+    resetMockDb();
+    const bus = new MockBus("test-bus-" + Math.random());
+    const cfg = { ...DEFAULT_CONFIG, inviteCode: null };
+    const client = new MockBackend("c1", cfg, { bus, sweep: false });
+    const ewa = new MockBackend("e1", cfg, { bus, sweep: false });
+    const adam = new MockBackend("a1", cfg, { bus, sweep: false });
+    await client.saveProfile("Toria", "en");
+    await ewa.saveProfile("Ewa", "pl");
+    await adam.saveProfile("Adam", "en");
+    // Nobody offers childcare: the request goes to anyone in the group.
+    expect((await client.catalog()).find((e) => e.id === "childcare")!.providers).toEqual([]);
+    const heard = (api: MockBackend) =>
+      new Promise<{ kind: string; appointmentId?: string | null; params: { service?: string; open?: boolean } }>((resolve) => api.onPush((m) => resolve(m)));
+    const toEwa = heard(ewa);
+    const toAdam = heard(adam);
+    const adamChanged = vi.fn();
+    adam.onMyChanges(adamChanged);
+    const a = await client.requestService({ serviceId: "childcare", providerId: null, startsAt: Date.now() + 26 * 3600_000, durationMin: 180, place: { ...A, label: "Dom" }, note: "" });
+    expect(a).toMatchObject({ role: "client", open: true, provider: null });
+    expect(await toEwa).toMatchObject({ kind: "appt_open", appointmentId: a.id, params: { service: "Opieka nad dziećmi", open: true } }); // her language
+    expect(await toAdam).toMatchObject({ kind: "appt_open", appointmentId: a.id, params: { service: "Childcare" } });
+    await vi.waitFor(() => expect(adamChanged).toHaveBeenCalled()); // his list and badge update
+    expect(await adam.myState()).toMatchObject({ openRequests: 1, planned: 0 });
+    expect((await ewa.planned()).open).toEqual([expect.objectContaining({ id: a.id, role: "candidate", provider: null })]);
+
+    const clientChanged = vi.fn();
+    client.onMyChanges(clientChanged);
+    const told = heard(client);
+    adamChanged.mockClear();
+    expect(await ewa.takeRequest(a.id)).toMatchObject({ status: "accepted", role: "provider", provider: { nickname: "Ewa" } });
+    expect(await told).toMatchObject({ kind: "appt_accepted", appointmentId: a.id });
+    await vi.waitFor(() => expect(clientChanged).toHaveBeenCalled());
+    await vi.waitFor(() => expect(adamChanged).toHaveBeenCalled()); // gone from his list
+    await expect(adam.takeRequest(a.id)).rejects.toMatchObject({ code: "taken" });
+    expect(await adam.myState()).toMatchObject({ openRequests: 0 });
+    expect((await client.planned()).appointments).toEqual([expect.objectContaining({ id: a.id, status: "accepted", open: false, provider: expect.objectContaining({ nickname: "Ewa" }) })]);
+    // 2.1: the car colour through the same interface.
+    await adam.saveVehicle({ make: "Kia", model: "Ceed", colour: "Blue", plate: "WX1", seats: 4 });
+    expect(await adam.setCarColour("Czerwony", "#C0392B")).toMatchObject({ colour: "Czerwony", paint: "#c0392b" });
+    await expect(client.setCarColour("Red", "#c0392b")).rejects.toMatchObject({ code: "no_vehicle" });
+    client.dispose();
+    ewa.dispose();
+    adam.dispose();
+  });
+
+  it("demo: the robot Siosia takes an open request for her services after 15 s, so a human can be first (2.1)", async () => {
+    resetMockDb();
+    resetRoutingState();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("offline"); // the straight-line route fallback
+      })
+    );
+    try {
+      const music = { ...DEFAULT_SERVICES[1], id: "music", name: { en: "Music", pl: "Muzyka" } };
+      const cfg = { ...DEFAULT_CONFIG, services: [...DEFAULT_SERVICES, music], inviteCode: null };
+      const robot = new RobotSiosia(cfg, { ...destination(A, 210, 1.2), label: "Siosia" });
+      await robot.init();
+      const client = new MockBackend("c1", cfg, { sweep: false });
+      await client.saveProfile("Toria", "en");
+      const q = (ms: number) => Math.ceil(ms / 900_000) * 900_000;
+      const ask = (serviceId: string, startsAt: number) =>
+        client.requestService({ serviceId, providerId: null, startsAt, durationMin: 120, place: { ...A, label: "Dom" }, note: "" });
+      const a = await ask("childcare", q(Date.now() + 3 * 3600_000));
+      const lesson = await ask("music", q(Date.now() + 5 * 3600_000)); // not one of hers
+      const t0 = Date.now();
+      await robot.tick(t0);
+      await robot.tick(t0 + 2000); // a request addressed to her would be answered by now…
+      expect((await client.getAppointment(a.id)).status).toBe("requested");
+      await robot.tick(t0 + 10_000);
+      expect((await client.getAppointment(a.id)).open).toBe(true); // …an open one waits for a human
+      await robot.tick(t0 + 15_000);
+      const taken = await client.getAppointment(a.id);
+      expect(taken).toMatchObject({ status: "accepted", open: false, provider: expect.objectContaining({ nickname: "Siosia" }) });
+      expect(taken.rides).toEqual([expect.objectContaining({ leg: "there", passenger: "provider", mine: false, status: "pending" })]);
+      await robot.tick(t0 + 60_000);
+      expect(await client.getAppointment(lesson.id)).toMatchObject({ status: "requested", open: true, provider: null });
+
+      // Taken by a human first: she leaves it be.
+      const ewa = new MockBackend("e1", cfg, { sweep: false });
+      await ewa.saveProfile("Ewa", "en");
+      const b = await ask("learning", q(Date.now() + 7 * 3600_000));
+      const t1 = Date.now();
+      await robot.tick(t1);
+      await ewa.takeRequest(b.id);
+      await robot.tick(t1 + 20_000);
+      expect(await client.getAppointment(b.id)).toMatchObject({ status: "accepted", provider: expect.objectContaining({ nickname: "Ewa" }) });
+      robot.stop();
+      client.dispose();
+      ewa.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("demo: the robot Siosia offers learning and childcare, accepts within 5 s and books a ride there (FR-151)", async () => {

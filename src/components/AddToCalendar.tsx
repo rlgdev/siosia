@@ -24,7 +24,8 @@ export function AddToCalendar(props: Props) {
   const app = useApp();
   const [open, setOpen] = useState(false);
   const dep = app.deployment;
-  if (!dep) return null;
+  // An open request has no provider and no fixed date with anyone yet: nothing to add (V37).
+  if (!dep || (props.appointment && (!props.appointment.provider || props.appointment.role === "candidate"))) return null;
   const ctx: IcsContext = {
     lang,
     timezone: dep.timezone,

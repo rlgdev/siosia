@@ -5,7 +5,7 @@
 // opens the same list as a panel.
 
 import { useCallback, useEffect, useState } from "react";
-import { otherOf } from "../components/apptWords";
+import { otherName, partyText, statusChip } from "../components/apptWords";
 import { Money, Page, Panel } from "../components/ui";
 import type { AppointmentView, Earnings, HistoryItem, RideView } from "../core/types";
 import { useI18n } from "../i18n";
@@ -113,28 +113,29 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
   const { t, lang } = useI18n();
   const store = useStore();
   const date = useDate();
-  const other = otherOf(a);
-  const canRate = a.status === "done" && a.myRating === null && store.serverNow() < (a.endedAt ?? a.endsAt) + RATE_WINDOW_MS;
+  const canRate = a.status === "done" && a.myRating === null && !!a.provider && store.serverNow() < (a.endedAt ?? a.endsAt) + RATE_WINDOW_MS;
   const status = a.status === "accepted" || a.status === "requested" ? "done" : a.status;
+  // An open request that nobody took reads so (V37); the other endings keep their words.
+  const word = status === "expired" ? statusChip(a, lang, t).text : t(`appt.status.${status}` as MessageKey);
   return (
     <li className="history-item" data-testid="history-appointment">
       <button type="button" className="planned-open" onClick={() => store.openPanel("appointment", a.id)}>
         <span className="row spread">
           <small className="muted">{date(a.startsAt)}</small>
-          <span className={`status status-${status === "done" ? "completed" : status}`}>{t(`appt.status.${status}` as MessageKey)}</span>
+          <span className={`status status-${status === "done" ? "completed" : status}`}>{word}</span>
         </span>
         <strong>
           <EntryIcon icon={a.service?.icon ?? "📅"} /> {localText(a.service?.name, lang) || a.serviceId}
         </strong>
         <span className="row spread">
-          <small className="muted">{t(a.role === "client" ? "appt.provider" : "appt.client", { name: other.nickname })}</small>
+          <small className="muted">{partyText(a, t)}</small>
           {a.price !== null && <Money amount={a.price} currency={a.currency} />}
         </span>
         {a.myRating !== null && <small className="muted">{t("history.rated", { n: a.myRating })}</small>}
       </button>
       {canRate && (
         <button type="button" className="btn btn-secondary btn-small" onClick={() => store.openPanel("appointment", a.id)} data-testid="history-rate">
-          {t("history.rate", { name: other.nickname })}
+          {t("history.rate", { name: otherName(a, t) })}
         </button>
       )}
     </li>

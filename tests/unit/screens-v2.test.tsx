@@ -1,14 +1,18 @@
 // Component tests of the 2.0 screens (spec §13 "Component"): C1 catalog, C2 request form, P1
 // planned, C3 appointment, H1 history, S2 additions — EN and PL, with a fake backend.
+// 2.1: open requests (FR-160–164, V34–V37) — C1 never disabled, C2 Anyone who can, P1 You could
+// help, C3 candidate view and the take sheet, provider null on every screen.
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
+import { AddToCalendar } from "../../src/components/AddToCalendar";
 import { toLocalInput } from "../../src/components/datetime";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
-import type { AppointmentView, CatalogItem, Lang, MyState, Place, Profile, RideView } from "../../src/core/types";
+import type { AppointmentView, CatalogItem, Lang, MyState, Place, Planned as PlannedData, Profile, RideView, ServiceRequestInput } from "../../src/core/types";
+import { ServerError } from "../../src/core/types";
 import { I18nProvider } from "../../src/i18n";
 import { en } from "../../src/i18n/en";
 import { pl } from "../../src/i18n/pl";
@@ -83,13 +87,16 @@ export function setup(lang: Lang, ui: ReactNode, backend: Partial<Backend>, extr
 }
 
 describe("C1 Catalog (FR-090–092)", () => {
-  it("lists every entry with who offers it, disables one nobody offers, in Polish", async () => {
-    setup("pl", <Catalog />, { catalog: async () => CATALOG });
+  it("lists every entry with who offers it; one nobody offers can still be asked for (2.1), in Polish", async () => {
+    const { store } = setup("pl", <Catalog />, { catalog: async () => CATALOG });
     expect(await screen.findByTestId("catalog-childcare")).toHaveTextContent("Opieka nad dziećmi");
     expect(screen.getByTestId("catalog-childcare")).toHaveTextContent("Siosia");
     expect(screen.getByTestId("catalog-childcare")).toBeEnabled();
-    expect(screen.getByTestId("catalog-learning")).toBeDisabled();
-    expect(screen.getByTestId("nobody-learning")).toHaveTextContent("Nikt tego jeszcze nie oferuje");
+    expect(screen.getByTestId("catalog-learning")).toBeEnabled();
+    expect(screen.getByTestId("nobody-learning")).toHaveTextContent("Nikt tego jeszcze nie oferuje — poproś mimo to, zobaczą to wszyscy w grupie");
+    await userEvent.click(screen.getByTestId("catalog-learning"));
+    expect(store.get().panel).toBe("request");
+    expect(store.get().panelArg).toBe("learning");
     expect(screen.getByTestId("catalog-ride")).toHaveTextContent("Przejazd");
     expect(screen.getByTestId("catalog-drive")).toHaveTextContent("Woź z Siosią"); // no car yet
   });
@@ -198,6 +205,7 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     id: "a1",
     status: "accepted",
     role: "client",
+    open: false,
     serviceId: "childcare",
     service: { name: DEFAULT_SERVICES[2].name, icon: DEFAULT_SERVICES[2].icon },
     startsAt,
@@ -289,7 +297,8 @@ describe("P1 Planned (FR-130–131, FR-123, US13)", () => {
     const planned = vi.fn(async () => ({
       appointments: [mine, ask, waiting],
       // the attached ride is in the appointment's line, not a second item
-      rides: [booking(), booking({ id: "r9", appointmentId: "a1", leg: "there", scheduledFor: now + 3600_000 })]
+      rides: [booking(), booking({ id: "r9", appointmentId: "a1", leg: "there", scheduledFor: now + 3600_000 })],
+      open: []
     }));
     setup("en", <Planned />, { planned, answerAppointment });
     const toAnswer = await screen.findByTestId("to-answer");
@@ -320,7 +329,7 @@ describe("P1 Planned (FR-130–131, FR-123, US13)", () => {
       "pl",
       <Planned />,
       {
-        planned: async () => ({ appointments: [], rides: [] }),
+        planned: async () => ({ appointments: [], rides: [], open: [] }),
         openBookings: async () => [{ ride: booking({ id: "r5", role: "driver", rider: { nickname: "Ola", rating: { mean: null, count: 0 } } }), distanceKm: 2.4 }],
         claimBooking
       },
@@ -334,7 +343,7 @@ describe("P1 Planned (FR-130–131, FR-123, US13)", () => {
   });
 
   it("opens C3 when an appointment is tapped", async () => {
-    const { store } = setup("en", <Planned />, { planned: async () => ({ appointments: [appt()], rides: [] }) });
+    const { store } = setup("en", <Planned />, { planned: async () => ({ appointments: [appt()], rides: [], open: [] }) });
     await userEvent.click(await screen.findByTestId("open-appointment"));
     expect(store.get().panel).toBe("appointment");
     expect(store.get().panelArg).toBe("a1");
@@ -554,6 +563,7 @@ const MY: MyState = {
   standby: false,
   openBookings: 2,
   toAnswer: 0,
+  openRequests: 0,
   planned: 1,
   nextPlanned: null
 };
@@ -580,7 +590,7 @@ describe("lists reload on a change, not on every heartbeat (C14)", () => {
   });
 
   it("P1 Planned and C3 reload on a change event (an appointment accepted counts nothing new)", async () => {
-    const planned = vi.fn(async () => ({ appointments: [appt()], rides: [] }));
+    const planned = vi.fn(async () => ({ appointments: [appt()], rides: [], open: [] }));
     const getAppointment = vi.fn(async () => appt());
     const myState = vi.fn(async () => ({ ...MY, serverNow: Date.now() }));
     const { store } = setup(
@@ -636,5 +646,343 @@ describe("a notification tapped while online on D1 (C11)", () => {
     await waitFor(() => expect(store.get().screen).toBe("planned"));
     expect(setOnline).toHaveBeenCalledWith(false);
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});
+
+// ---------- 2.1: open requests (FR-160–164, V34–V37) ----------
+
+const LEARNING = { name: DEFAULT_SERVICES[1].name, icon: DEFAULT_SERVICES[1].icon };
+
+/** Someone else's open request as a member who could take it sees it (role candidate, V34). */
+const candidate = (over: Partial<AppointmentView> = {}) =>
+  appt({ id: "a7", status: "requested", role: "candidate", open: true, provider: null, client: EWA, serviceId: "learning", service: LEARNING, durationMin: 60, ...over });
+
+/** The client's own open request (nobody took it yet). */
+const ownOpen = (over: Partial<AppointmentView> = {}) => appt({ id: "a5", status: "requested", open: true, provider: null, serviceId: "learning", service: LEARNING, durationMin: 60, ...over });
+
+describe("2.1 C1: an entry nobody offers can be asked for (FR-090)", () => {
+  it("says ask anyway, opens C2, and points to the open requests of others in Planned", async () => {
+    const { store } = setup("en", <Catalog />, { catalog: async () => CATALOG }, { my: { toAnswer: 0, openRequests: 2, planned: 0, nextPlanned: null, openBookings: 0 } });
+    expect(await screen.findByTestId("nobody-learning")).toHaveTextContent("Nobody offers this yet — ask anyway: everyone in the group sees it");
+    expect(screen.getByTestId("catalog-learning")).toBeEnabled();
+    expect(screen.getByTestId("catalog-open-requests")).toHaveTextContent("Requests you could help with: 2");
+    await userEvent.click(screen.getByTestId("catalog-open-requests"));
+    expect(store.get().screen).toBe("planned");
+  });
+});
+
+describe("2.1 C2: Anyone who can (FR-094, FR-161)", () => {
+  it("is preselected when nobody offers the entry, tells who sees it, and sends an open request", async () => {
+    const requestService = vi.fn(async (_input: ServiceRequestInput) => ({}) as never);
+    setup("en", <RequestPanel />, { catalog: async () => CATALOG, requestService }, { panel: "request", panelArg: "learning" });
+    const send = await screen.findByTestId("request-send");
+    expect(screen.getByRole("radio", { name: "Anyone who can" })).toBeChecked();
+    expect(screen.getByTestId("request-open-note")).toHaveTextContent("Everyone in the group sees this request — time, place and note — until someone takes it.");
+    expect(send).toBeEnabled();
+    await userEvent.click(send);
+    await waitFor(() => expect(requestService).toHaveBeenCalled());
+    expect(requestService.mock.calls[0][0]).toMatchObject({ serviceId: "learning", providerId: null, durationMin: 60, place: PROFILE.home, note: "" });
+  });
+
+  it("keeps the only provider preselected; with several the user picks — Anyone too — in Polish", async () => {
+    const { unmount } = setup("pl", <RequestPanel />, { catalog: async () => CATALOG }, { panel: "request", panelArg: "childcare" });
+    expect(await screen.findByRole("radio", { name: /Siosia/ })).toBeChecked();
+    expect(screen.getByTestId("request-anyone")).not.toBeChecked();
+    expect(screen.queryByTestId("request-open-note")).toBeNull();
+    unmount();
+    const requestService = vi.fn(async (_input: ServiceRequestInput) => ({}) as never);
+    const two: CatalogItem[] = [{ ...DEFAULT_SERVICES[1], providers: [SIOSIA, EWA] }];
+    setup("pl", <RequestPanel />, { catalog: async () => two, requestService }, { panel: "request", panelArg: "learning" });
+    expect(await screen.findByTestId("request-problem")).toHaveTextContent("Wybierz, kogo prosisz.");
+    expect(screen.getByTestId("request-anyone")).not.toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "Każdy, kto może" }));
+    expect(screen.getByTestId("request-open-note")).toHaveTextContent("Wszyscy w grupie widzą tę prośbę — termin, miejsce i notatkę — dopóki ktoś się jej nie podejmie.");
+    await userEvent.click(screen.getByTestId("request-send"));
+    await waitFor(() => expect(requestService).toHaveBeenCalled());
+    expect(requestService.mock.calls[0][0].providerId).toBeNull();
+  });
+});
+
+describe("2.1 P1: You could help (FR-161)", () => {
+  it("lists others' open requests with what they need and I can do it; my own open one waits for someone", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 21, 10, 0));
+    const now = Date.now();
+    const weekly = [new Date(2026, 9, 23, 9, 0), new Date(2026, 9, 30, 9, 0), new Date(2026, 10, 6, 9, 0), new Date(2026, 10, 13, 9, 0)].map((d) => d.getTime());
+    const single = candidate({ startsAt: new Date(2026, 9, 22, 16, 0).getTime(), endsAt: new Date(2026, 9, 22, 17, 0).getTime(), note: "Maths, grade 5", price: 40 });
+    const repeating = candidate({
+      id: "a8",
+      client: { publicId: "pub-ola", nickname: "Ola", rating: { mean: null, count: 0 }, icon: null },
+      startsAt: weekly[0],
+      endsAt: weekly[0] + 3600_000,
+      series: series({ id: "s8", seq: 1, count: 4, status: "requested", remaining: 4, starts: weekly })
+    });
+    const mine = ownOpen({ startsAt: now + 28 * 3600_000, endsAt: now + 29 * 3600_000 });
+    const { store } = setup("en", <Planned />, { planned: async () => ({ appointments: [mine], rides: [], open: [single, repeating] }) });
+    const section = await screen.findByTestId("open-requests");
+    expect(section).toHaveTextContent("You could help (2)");
+    const items = within(section).getAllByTestId("open-request");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("Learning");
+    expect(within(items[0]).getByTestId("open-request-when")).toHaveTextContent("Tomorrow · 16:00–17:00");
+    expect(items[0]).toHaveTextContent("Ewa asks");
+    expect(items[0]).toHaveTextContent("★ 5.0");
+    expect(items[0]).toHaveTextContent("Kids' home");
+    expect(items[0]).toHaveTextContent("„Maths, grade 5”");
+    expect(items[0]).toHaveTextContent(/40[.,]00/);
+    expect(items[1]).toHaveTextContent("Ola asks");
+    expect(within(items[1]).getByTestId("series-marker")).toHaveTextContent("↻ every week, 4 times: 23 Oct – 13 Nov");
+    // My own open request is in my schedule, never in To answer.
+    expect(screen.queryByTestId("to-answer")).toBeNull();
+    const own = screen.getAllByTestId("planned-appointment");
+    expect(own).toHaveLength(1);
+    expect(within(own[0]).getByTestId("appt-chip")).toHaveTextContent("Waiting for someone to take it");
+    expect(own[0]).toHaveTextContent("Open to anyone");
+    await userEvent.click(within(items[0]).getByTestId("take-request"));
+    expect(store.get().panel).toBe("appointment");
+    expect(store.get().panelArg).toBe("take:a7");
+  });
+
+  it("counts the dates still to take: a date the client withdrew is neither counted nor shown (U3)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 21, 10, 0));
+    const weekly = [new Date(2026, 9, 23, 9, 0), new Date(2026, 9, 30, 9, 0), new Date(2026, 10, 6, 9, 0), new Date(2026, 10, 13, 9, 0)].map((d) => d.getTime());
+    // The client withdrew 23 Oct: the series now opens on 30 Oct with three dates left.
+    const second = candidate({ id: "a8", startsAt: weekly[1], endsAt: weekly[1] + 3600_000, series: series({ id: "s8", seq: 2, count: 4, status: "requested", remaining: 3, gaps: [weekly[0]], starts: weekly }) });
+    // 6 Nov withdrawn too: two dates left, still 30 Oct – 13 Nov.
+    const third = candidate({ id: "a9", startsAt: weekly[1], endsAt: weekly[1] + 3600_000, series: series({ id: "s9", seq: 2, count: 4, status: "requested", remaining: 2, gaps: [weekly[0], weekly[2]], starts: weekly }) });
+    // Only the last date left: the plain marker, no range.
+    const last = candidate({ id: "a10", startsAt: weekly[3], endsAt: weekly[3] + 3600_000, series: series({ id: "s10", seq: 4, count: 4, status: "requested", remaining: 1, gaps: [weekly[0], weekly[1], weekly[2]], starts: weekly }) });
+    setup("en", <Planned />, { planned: async () => ({ appointments: [], rides: [], open: [second, third, last] }) });
+    const items = within(await screen.findByTestId("open-requests")).getAllByTestId("open-request");
+    expect(items).toHaveLength(3);
+    expect(within(items[0]).getByTestId("series-marker")).toHaveTextContent("↻ every week, 3 times: 30 Oct – 13 Nov");
+    expect(within(items[0]).getByTestId("series-marker")).not.toHaveTextContent("23 Oct");
+    expect(within(items[1]).getByTestId("series-marker")).toHaveTextContent("↻ every week, 2 times: 30 Oct – 13 Nov");
+    expect(within(items[2]).getByTestId("series-marker")).toHaveTextContent("↻ every week · 4/4");
+  });
+
+  it("says it in Polish, and a list without open requests (an older server) shows none", async () => {
+    const { unmount } = setup("pl", <Planned />, { planned: async () => ({ appointments: [ownOpen()], rides: [], open: [candidate()] }) });
+    const section = await screen.findByTestId("open-requests");
+    expect(section).toHaveTextContent("Możesz pomóc: 1");
+    expect(section).toHaveTextContent("Prosi: Ewa");
+    expect(within(section).getByTestId("take-request")).toHaveTextContent("Mogę to zrobić");
+    expect(screen.getByTestId("appt-chip")).toHaveTextContent("Czeka, aż ktoś się podejmie");
+    expect(screen.getByTestId("planned-appointment")).toHaveTextContent("Dla każdego, kto może");
+    unmount();
+    setup("en", <Planned />, { planned: async () => ({ appointments: [], rides: [] }) as unknown as PlannedData });
+    expect(await screen.findByTestId("planned-empty")).toBeInTheDocument();
+    expect(screen.queryByTestId("open-requests")).toBeNull();
+  });
+
+  it("reloads when the number of open requests changes (another member's request, or someone took it)", async () => {
+    const planned = vi.fn(async () => ({ appointments: [], rides: [], open: [] }));
+    const { store } = setup("en", <Planned />, { planned }, { my: MY });
+    await screen.findByTestId("planned-empty");
+    expect(planned).toHaveBeenCalledTimes(1);
+    act(() => store.applyMy({ ...MY, serverNow: Date.now(), openRequests: 1 }));
+    await waitFor(() => expect(planned).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("2.1 C3: someone's open request and the take sheet (FR-163)", () => {
+  it("shows what they need without any action of a party, then takes it and books a ride there — in that order", async () => {
+    const a = candidate({ note: "Maths", price: 40 });
+    const calls: string[] = [];
+    const takeRequest = vi.fn(async (_id: string) => (calls.push("take"), { ...a, role: "provider" as const, status: "accepted" as const, open: false, provider: TORIA }));
+    const bookRide = vi.fn(async () => (calls.push("book"), {}) as never);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, takeRequest, bookRide }, { panel: "appointment", panelArg: "a7" });
+    expect(await screen.findByTestId("appt-status")).toHaveTextContent("Open request");
+    expect(screen.getByTestId("appt-party")).toHaveTextContent("Ewa asks");
+    expect(screen.getByTestId("appt-party")).toHaveTextContent("★ 5.0");
+    expect(screen.getByTestId("appt-place")).toHaveTextContent("Kids' home");
+    expect(screen.getByTestId("appt-note")).toHaveTextContent("Maths");
+    expect(screen.queryByTestId("appt-cancel")).toBeNull();
+    expect(screen.queryByTestId("appt-accept")).toBeNull();
+    expect(screen.queryByTestId("add-ride-there")).toBeNull();
+    expect(screen.queryByTestId("cal-open")).toBeNull();
+    await userEvent.click(screen.getByTestId("appt-take"));
+    expect(screen.getByTestId("take-sheet")).toHaveTextContent("I can do it — do you need a ride?");
+    await userEvent.click(screen.getByTestId("need-ride-there"));
+    expect(screen.getByTestId("ride-there-pickup-value")).toHaveTextContent("Warszawska 269"); // the taker's My place
+    expect(screen.getByTestId("ride-there-dropoff-value")).toHaveTextContent("Kids' home");
+    const confirm = screen.getByTestId("take-confirm");
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await userEvent.click(confirm);
+    await waitFor(() => expect(bookRide).toHaveBeenCalled());
+    expect(calls).toEqual(["take", "book"]);
+    expect(takeRequest).toHaveBeenCalledWith("a7");
+    expect(bookRide).toHaveBeenCalledWith(expect.objectContaining({ appointmentId: "a7", leg: "there", pickup: PROFILE.home, dropoff: KIDS }));
+    await waitFor(() => expect(screen.queryByTestId("take-sheet")).toBeNull());
+  });
+
+  it("opens straight on the take sheet from P1; a series' rides become templates", async () => {
+    const a = candidate({ id: "a8", series: series({ id: "s8", seq: 1, count: 4, status: "requested", remaining: 4 }) });
+    const takeRequest = vi.fn(async (_id: string) => ({ ...a, role: "provider" as const, status: "accepted" as const, open: false, provider: TORIA }));
+    const setRideTemplate = vi.fn(async (_id: string, _t: { leg: string }) => ({}) as never);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, takeRequest, setRideTemplate } as Partial<Backend>, { panel: "appointment", panelArg: "take:a8" });
+    const sheet = await screen.findByTestId("take-sheet");
+    expect(sheet).toHaveTextContent("You take every date; dates that clash with your schedule are declined.");
+    await userEvent.click(screen.getByTestId("need-ride-back"));
+    const confirm = screen.getByTestId("take-confirm");
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await userEvent.click(confirm);
+    await waitFor(() => expect(setRideTemplate).toHaveBeenCalled());
+    expect(takeRequest).toHaveBeenCalledWith("a8");
+    expect(setRideTemplate.mock.calls[0][0]).toBe("s8");
+    expect(setRideTemplate.mock.calls[0][1].leg).toBe("back");
+  });
+
+  it("says when it clashes with the taker's schedule or someone was faster, and stays open — in Polish", async () => {
+    const a = candidate();
+    const takeRequest = vi.fn<(id: string) => Promise<AppointmentView>>().mockRejectedValueOnce(new ServerError("overlap")).mockRejectedValueOnce(new ServerError("taken"));
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => a, takeRequest }, { panel: "appointment", panelArg: "take:a7" });
+    expect(await screen.findByTestId("take-sheet")).toHaveTextContent("Mogę to zrobić — potrzebujesz przejazdu?");
+    await userEvent.click(screen.getByTestId("take-confirm"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("W tym czasie masz już coś zaplanowanego.");
+    await userEvent.click(screen.getByTestId("take-confirm"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Ktoś inny już się tego podjął."));
+    expect(takeRequest).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("take-sheet")).toBeInTheDocument();
+    expect(screen.getByTestId("appt-status")).toHaveTextContent("Otwarta prośba");
+  });
+
+  it("after the take went through but the ride failed, Confirm again books the ride only — never takes twice (U1)", async () => {
+    const a = candidate();
+    const taken: AppointmentView = { ...a, role: "provider", status: "accepted", open: false, provider: TORIA };
+    let current = a;
+    const getAppointment = vi.fn(async () => current);
+    // A second take would be refused as taken (by the caller) — it must never be sent.
+    const takeRequest = vi.fn<Backend["takeRequest"]>(async () => (current = taken));
+    const bookRide = vi.fn<Backend["bookRide"]>().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({} as never);
+    setup("en", <AppointmentPanel />, { getAppointment, takeRequest, bookRide }, { panel: "appointment", panelArg: "take:a7" });
+    await screen.findByTestId("take-sheet");
+    await userEvent.click(screen.getByTestId("need-ride-there"));
+    const confirm = screen.getByTestId("take-confirm");
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await userEvent.click(confirm);
+    // The take went through — the reload shows me as the provider — but the ride did not.
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("appt-status")).not.toHaveTextContent("Open request"));
+    expect(screen.getByTestId("appt-party")).toHaveTextContent("Ewa");
+    expect(takeRequest).toHaveBeenCalledTimes(1);
+    expect(bookRide).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("take-sheet")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("take-confirm"));
+    await waitFor(() => expect(bookRide).toHaveBeenCalledTimes(2));
+    expect(takeRequest).toHaveBeenCalledTimes(1);
+    expect(bookRide.mock.calls[1][0]).toEqual(expect.objectContaining({ appointmentId: "a7", leg: "there" }));
+    await waitFor(() => expect(screen.queryByTestId("take-sheet")).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The normal C3 of the provider: a ride back can still be added.
+    expect(screen.getByTestId("add-ride-back")).toBeInTheDocument();
+  });
+
+  it("drops the stale candidate view once the request is gone — taken by someone else or withdrawn (U2)", async () => {
+    const getAppointment = vi
+      .fn<Backend["getAppointment"]>()
+      .mockResolvedValueOnce(candidate())
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValue(new ServerError("not_found"));
+    const { store, unmount } = setup("en", <AppointmentPanel />, { getAppointment }, { my: MY, panel: "appointment", panelArg: "a7" });
+    expect(await screen.findByTestId("appt-take")).toBeInTheDocument();
+    // Offline for a moment: the view stays, with its I can do it.
+    act(() => store.applyMy({ ...MY, serverNow: Date.now(), openRequests: 1 }));
+    await waitFor(() => expect(getAppointment).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+    expect(screen.getByTestId("appt-take")).toBeInTheDocument();
+    expect(screen.queryByTestId("appt-gone")).toBeNull();
+    // Someone took it (the count of open requests moved): the reload says not_found.
+    act(() => store.applyMy({ ...MY, serverNow: Date.now(), openRequests: 0 }));
+    expect(await screen.findByTestId("appt-gone")).toHaveTextContent("This request is no longer open: someone else took it, or it was withdrawn.");
+    expect(screen.queryByTestId("appt-take")).toBeNull();
+    expect(screen.queryByTestId("appointment")).toBeNull();
+    expect(getAppointment).toHaveBeenCalledTimes(3);
+    unmount();
+    // The same with the take sheet open, in Polish.
+    const gone = vi.fn<Backend["getAppointment"]>().mockResolvedValueOnce(candidate()).mockRejectedValue(new ServerError("not_found"));
+    const second = setup("pl", <AppointmentPanel />, { getAppointment: gone }, { my: MY, panel: "appointment", panelArg: "take:a7" });
+    await screen.findByTestId("take-sheet");
+    act(() => second.store.applyMy({ ...MY, serverNow: Date.now(), openRequests: 1 }));
+    expect(await screen.findByTestId("appt-gone")).toHaveTextContent("Ta prośba nie jest już otwarta: ktoś inny się jej podjął albo została wycofana.");
+    expect(screen.queryByTestId("take-sheet")).toBeNull();
+    expect(screen.queryByTestId("take-confirm")).toBeNull();
+  });
+
+  it("the client's own open request: waiting for someone, open to anyone, and Withdraw (FR-164)", async () => {
+    const a = ownOpen();
+    const cancelAppointment = vi.fn(async () => undefined);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, cancelAppointment } as Partial<Backend>, { panel: "appointment", panelArg: "a5" });
+    expect(await screen.findByTestId("appt-status")).toHaveTextContent("Waiting for someone to take it");
+    expect(screen.getByTestId("appt-party")).toHaveTextContent("Open to anyone");
+    expect(screen.queryByTestId("appt-take")).toBeNull();
+    await userEvent.click(screen.getByTestId("appt-cancel"));
+    expect(screen.getByTestId("cancel-box")).toHaveTextContent("Withdraw your open request? Nobody will see it any more.");
+    await userEvent.click(screen.getByTestId("cancel-one"));
+    await waitFor(() => expect(cancelAppointment).toHaveBeenCalledWith("a5", null, "one"));
+  });
+});
+
+describe("2.1 provider null never breaks a screen (R7, V37)", () => {
+  it("H1: an open request nobody took reads so, with no one to rate; a withdrawn one is Cancelled", async () => {
+    const now = Date.now();
+    const lapsed = ownOpen({ status: "expired", open: false, startsAt: now - 3 * 3600_000, endsAt: now - 2 * 3600_000 });
+    const withdrawn = ownOpen({ id: "a6", status: "cancelled", open: false, cancelledBy: "client", startsAt: now - 86_400_000 });
+    const timeline = async () => [
+      { kind: "appointment" as const, at: lapsed.startsAt, appointment: lapsed },
+      { kind: "appointment" as const, at: withdrawn.startsAt, appointment: withdrawn }
+    ];
+    setup("pl", <HistoryScreen />, { timeline });
+    const rows = Array.from((await screen.findByTestId("history-list")).children);
+    expect(rows[0]).toHaveTextContent("Nikt się nie zgłosił");
+    expect(rows[0]).toHaveTextContent("Dla każdego, kto może");
+    expect(rows[1]).toHaveTextContent("Odwołane");
+    expect(screen.queryByTestId("history-rate")).toBeNull();
+  });
+
+  it("C3 of a withdrawn open request, and Add to calendar has nothing to offer without a provider", async () => {
+    const a = ownOpen({ status: "cancelled", open: false, cancelledBy: "client" });
+    const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a5" });
+    expect(await screen.findByTestId("appt-status")).toHaveTextContent("Cancelled");
+    expect(screen.getByTestId("appt-party")).toHaveTextContent("Open to anyone");
+    expect(screen.getByText("Cancelled by Toria")).toBeInTheDocument();
+    unmount();
+    setup("en", <AddToCalendar appointment={ownOpen({ status: "accepted", open: false })} />, {});
+    expect(screen.queryByTestId("add-to-calendar")).toBeNull();
+  });
+
+  it("the guide says it in the app's words (FR-153)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const [enPart, plPart] = readFileSync("public/guide.html", "utf-8").split('<section data-lang="pl">');
+    for (const k of ["request.anyone", "open.take", "car.title", "appt.waitingAnyone"] as const) {
+      expect(enPart, k).toContain(en[k]);
+      expect(plPart, k).toContain(pl[k]);
+    }
+    expect(enPart).toContain("You could help");
+    expect(plPart).toContain("Możesz pomóc");
+  });
+});
+
+describe("2.1 a party's car icon is drawn in their paint (FR-170, V38, U4)", () => {
+  const bodyFill = (el: HTMLElement) => el.querySelector('[data-part="body"]')?.getAttribute("fill");
+  /** A master driver who offers childcare: the party JSON carries the paint of their car. */
+  const PAINTED = { publicId: "pub-roman", nickname: "Roman", rating: { mean: 4.9, count: 12 }, icon: "taycan-ct-green", paint: "#c62828" };
+
+  it("C1 provider chips, the C3 party row and the P1 item use the party's paint; without one the icon keeps its own", async () => {
+    const catalog: CatalogItem[] = [{ ...DEFAULT_SERVICES[2], providers: [PAINTED, { ...SIOSIA, icon: "taycan-ct-green" }] }];
+    const first = setup("en", <Catalog />, { catalog: async () => catalog });
+    const entry = await screen.findByTestId("catalog-childcare");
+    expect(bodyFill(within(entry).getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+    expect(bodyFill(within(entry).getByRole("img", { name: "Green Taycan Cross Turismo" }))).toBe("#2e7d4f");
+    first.unmount();
+    const second = setup("pl", <AppointmentPanel />, { getAppointment: async () => appt({ provider: PAINTED }) }, { panel: "appointment", panelArg: "a1" });
+    const party = await screen.findByTestId("appt-party");
+    expect(party).toHaveTextContent("Roman");
+    expect(bodyFill(within(party).getByRole("img", { name: "Czerwony Taycan Cross Turismo" }))).toBe("#c62828");
+    second.unmount();
+    setup("en", <Planned />, { planned: async () => ({ appointments: [appt({ provider: PAINTED })], rides: [], open: [] }) });
+    const item = await screen.findByTestId("planned-appointment");
+    expect(bodyFill(within(item).getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
   });
 });

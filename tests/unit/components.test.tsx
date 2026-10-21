@@ -1,20 +1,23 @@
 // Component tests (spec §11 "Component"): screens render their states in EN and PL; S4 appears
-// whenever sharing is on.
+// whenever sharing is on. 2.1: the S1 badge of open requests (FR-161) and the car colour (FR-170).
 
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
+import { DriverIcon, MasterChip, ProfileIcon } from "../../src/components/ProfileIcon";
+import { CAR_PAINTS, carPaint, iconLabel, iconSvg, normalPaint, profileIcon, shade, shadesOf } from "../../src/components/profileIcons";
 import { SharingBanner } from "../../src/components/SharingBanner";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
-import type { Lang, MyState, OfferView, RideView } from "../../src/core/types";
+import type { Lang, MyState, OfferView, Profile, RideView, Vehicle } from "../../src/core/types";
 import { I18nProvider, translator } from "../../src/i18n";
 import { en } from "../../src/i18n/en";
 import { pl } from "../../src/i18n/pl";
 import { AfterRide } from "../../src/screens/AfterRide";
 import { Home } from "../../src/screens/Home";
-import { driverEndedNotice } from "../../src/screens/driver/DriverApp";
+import { RiderBookingCard } from "../../src/screens/Bookings";
+import { driverEndedNotice, VehicleLine } from "../../src/screens/driver/DriverApp";
 import { OfferCard } from "../../src/screens/driver/OfferCard";
 import { RiderActive } from "../../src/screens/rider/RiderActive";
 import { endedNotice, reasonText } from "../../src/screens/rider/RiderApp";
@@ -335,5 +338,222 @@ describe("D2 Offer card", () => {
     });
     expect(onTimeout).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+});
+
+// ---------- 2.1 ----------
+
+/** Renders `ui` on a ready store with these snapshot fields; returns the store too. */
+function mount(lang: Lang, ui: ReactNode, snap: Record<string, unknown>, backend: Partial<Backend> = {}) {
+  const store = new AppStore();
+  store.backend = backend as Backend;
+  (store as unknown as { snap: object }).snap = { ...store.get(), phase: "ready", lang, deployment: DEFAULT_CONFIG, cfg: { backend: "mock" }, ...snap };
+  const view = render(
+    <StoreContext.Provider value={store}>
+      <I18nProvider lang={lang}>{ui}</I18nProvider>
+    </StoreContext.Provider>
+  );
+  return { store, ...view };
+}
+
+const OLA: Profile = {
+  userId: "u",
+  nickname: "Ola",
+  language: "en",
+  riderCancels: 0,
+  driverCancels: 0,
+  lateCancels: 0,
+  rating: { mean: null, count: 0 },
+  masterId: null,
+  masterRole: null,
+  defaultPickup: null,
+  defaultDropoff: null,
+  masterVehicle: null,
+  icon: null,
+  fixedFare: null,
+  publicId: "pub-ola",
+  offers: [],
+  offersPreset: false,
+  home: null
+};
+/** The Roman master link: a driver profile with the green Taycan as its icon. */
+const ROMAN: Profile = {
+  ...OLA,
+  nickname: "Roman",
+  masterId: "m-roman",
+  masterRole: "driver",
+  masterVehicle: { make: "Porsche", model: "Taycan Cross Turismo", colour: "Zielony", seats: 4 },
+  icon: "taycan-ct-green",
+  offersPreset: true
+};
+const TAYCAN: Vehicle = { make: "Porsche", model: "Taycan Cross Turismo", colour: "Zielony", plate: "WX 5555", seats: 4, paint: null };
+const bodyFill = (el: HTMLElement) => el.querySelector('[data-part="body"]')?.getAttribute("fill");
+
+describe("2.1 S1: open requests others made (FR-161)", () => {
+  it.each([
+    ["en", "2 you could help with", "You could help: 2"],
+    ["pl", "możesz pomóc: 2", "Możesz pomóc: 2"]
+  ] as const)("badges them on Siosia in %s, Planned says where they are, and Siosia still opens C1", async (lang, badge, hint) => {
+    const { store } = mount(lang, <Home />, { profile: { ...OLA, language: lang }, my: { toAnswer: 0, openRequests: 2, planned: 0, nextPlanned: null } });
+    expect(screen.getByTestId("badge-open")).toHaveTextContent(badge);
+    expect(screen.getByTestId("planned-open")).toHaveTextContent(hint);
+    await userEvent.click(screen.getByTestId("start-siosia"));
+    expect(store.get().screen).toBe("catalog");
+  });
+
+  it("shows neither without open requests", () => {
+    mount("en", <Home />, { profile: OLA, my: { toAnswer: 0, openRequests: 0, planned: 0, nextPlanned: null } });
+    expect(screen.queryByTestId("badge-open")).toBeNull();
+    expect(screen.queryByTestId("planned-open")).toBeNull();
+  });
+});
+
+describe("2.1 the car icon in the car's paint (FR-170, V38)", () => {
+  it("has ten colours named in EN and PL; the green Taycan keeps its shades, any other paint is shaded from it", () => {
+    expect(CAR_PAINTS.map((p) => p.id)).toEqual(["green", "black", "white", "silver", "grey", "blue", "red", "yellow", "orange", "brown"]);
+    expect(CAR_PAINTS.every((p) => /^#[0-9a-f]{6}$/.test(p.hex))).toBe(true);
+    expect(carPaint("#C62828")?.name).toEqual({ en: "Red", pl: "Czerwony" });
+    expect(carPaint("#ef6c00")?.name.pl).toBe("Pomarańczowy");
+    expect(normalPaint(" #1E5AA8 ")).toBe("#1e5aa8");
+    expect(normalPaint("red")).toBeNull();
+    expect(shadesOf(null)).toEqual({ body: "#2e7d4f", lower: "#22603b", highlight: "#7cc896", trim: "#1d5233" });
+    expect(shadesOf("#2E7D4F")).toEqual(shadesOf(null));
+    expect(shade("#808080", -0.5)).toBe("#404040");
+    expect(shade("#000000", 1)).toBe("#ffffff");
+    const red = shadesOf("#c62828");
+    expect(red.body).toBe("#c62828");
+    expect(red.lower).toBe(shade("#c62828", -0.25));
+    expect(red.trim).toBe(shade("#c62828", -0.37));
+    expect(red.highlight).toBe(shade("#c62828", 0.42));
+    const def = profileIcon("taycan-ct-green")!;
+    const svg = iconSvg(def, "#c62828");
+    for (const c of Object.values(red)) expect(svg).toContain(`"${c}"`);
+    for (const c of ["#2e7d4f", "#22603b", "#7cc896", "#1d5233"]) expect(svg).not.toContain(c);
+    expect(iconSvg(def, null)).toBe(def.svg);
+    expect(def.svg).toContain('fill="#2e7d4f"');
+    expect(iconLabel(def, "#c62828", "en")).toBe("Red Taycan Cross Turismo");
+    expect(iconLabel(def, "#c62828", "pl")).toBe("Czerwony Taycan Cross Turismo");
+    expect(iconLabel(def, null, "en")).toBe("Green Taycan Cross Turismo");
+    expect(iconLabel(profileIcon("car")!, "#1e5aa8", "pl")).toBe("Niebieski samochód");
+    expect(iconLabel(profileIcon("car")!, "#123456", "en")).toBe("Car");
+  });
+
+  it("ProfileIcon draws it in the paint and names it, in EN and PL", () => {
+    const { unmount } = mount("en", <ProfileIcon icon="taycan-ct-green" paint="#c62828" />, {});
+    expect(bodyFill(screen.getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+    unmount();
+    mount("pl", <ProfileIcon icon="taycan-ct-green" />, {});
+    expect(bodyFill(screen.getByRole("img", { name: "Zielony Taycan Cross Turismo" }))).toBe("#2e7d4f");
+  });
+
+  it("S1: the driver profile's car icon opens Car colour; Red names the colour and redraws the icon at once", async () => {
+    const setCarColour = vi.fn(async (colour: string, paint: string) => ({ ...TAYCAN, colour, paint }));
+    const { store } = mount("en", <Home />, { profile: ROMAN, vehicle: TAYCAN, my: { toAnswer: 0, planned: 0, nextPlanned: null } }, { setCarColour });
+    const button = screen.getByTestId("car-icon");
+    expect(button).toHaveAccessibleName("Change car colour");
+    expect(within(button).getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeInTheDocument();
+    await userEvent.click(button);
+    const sheet = screen.getByRole("dialog", { name: "Car colour" });
+    for (const p of CAR_PAINTS) expect(within(sheet).getByTestId(`paint-${p.id}`)).toHaveTextContent(p.name.en);
+    await userEvent.click(within(sheet).getByTestId("paint-red"));
+    await waitFor(() => expect(setCarColour).toHaveBeenCalledWith("Red", "#c62828"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(store.get().vehicle).toEqual({ ...TAYCAN, colour: "Red", paint: "#c62828" });
+    const icon = within(screen.getByTestId("car-icon")).getByRole("img", { name: "Red Taycan Cross Turismo" });
+    expect(bodyFill(icon)).toBe("#c62828");
+  });
+
+  it("in Polish the colour is named in Polish, and the current one is marked", async () => {
+    const setCarColour = vi.fn(async (colour: string, paint: string) => ({ ...TAYCAN, colour, paint }));
+    mount("pl", <MasterChip />, { profile: { ...ROMAN, language: "pl" }, vehicle: { ...TAYCAN, colour: "Niebieski", paint: "#1e5aa8" } }, { setCarColour });
+    const button = screen.getByTestId("car-icon");
+    expect(button).toHaveAccessibleName("Zmień kolor auta");
+    expect(within(button).getByRole("img", { name: "Niebieski Taycan Cross Turismo" })).toBeInTheDocument();
+    await userEvent.click(button);
+    expect(screen.getByRole("dialog", { name: "Kolor auta" })).toBeInTheDocument();
+    expect(screen.getByTestId("paint-blue")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("paint-green")).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(screen.getByTestId("paint-yellow"));
+    await waitFor(() => expect(setCarColour).toHaveBeenCalledWith("Żółty", "#f2c230"));
+    await waitFor(() => expect(bodyFill(screen.getByRole("img", { name: "Żółty Taycan Cross Turismo" }))).toBe("#f2c230"));
+  });
+
+  it("without a car yet it says Add your car first and opens the vehicle form", async () => {
+    const setCarColour = vi.fn();
+    const { store } = mount("en", <Home />, { profile: ROMAN, vehicle: null, my: { toAnswer: 0, planned: 0, nextPlanned: null } }, { setCarColour });
+    await userEvent.click(screen.getByTestId("car-icon"));
+    expect(screen.getByTestId("car-none")).toHaveTextContent("Add your car first");
+    expect(screen.queryByTestId("paint-red")).toBeNull();
+    await userEvent.click(screen.getByTestId("car-add"));
+    expect(store.get().panel).toBe("vehicle");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(setCarColour).not.toHaveBeenCalled();
+  });
+
+  it("a rider profile's icon and a profile without an icon are no button", () => {
+    const { unmount } = mount("en", <Home />, { profile: { ...ROMAN, masterRole: "rider" }, my: { toAnswer: 0, planned: 0, nextPlanned: null } });
+    expect(screen.queryByTestId("car-icon")).toBeNull();
+    expect(screen.getByRole("img", { name: "Green Taycan Cross Turismo" })).toBeInTheDocument();
+    unmount();
+    mount("en", <Home />, { profile: OLA, vehicle: { ...TAYCAN, paint: "#c62828" }, my: { toAnswer: 0, planned: 0, nextPlanned: null } });
+    expect(screen.queryByTestId("car-icon")).toBeNull();
+  });
+
+  it("D1: the vehicle line names the car with a car icon; a master's car icon is on its chip instead (one button)", async () => {
+    const kia: Vehicle = { make: "Kia", model: "Ceed", colour: "Blue", plate: "WX1", seats: 4, paint: null };
+    const setCarColour = vi.fn(async (colour: string, paint: string) => ({ ...kia, colour, paint }));
+    const { unmount } = mount("en", <VehicleLine />, { profile: OLA, vehicle: kia }, { setCarColour });
+    expect(screen.getByTestId("vehicle-line")).toHaveTextContent("Blue Kia Ceed · WX1");
+    await userEvent.click(within(screen.getByTestId("car-icon")).getByRole("img", { name: "Car" }));
+    await userEvent.click(screen.getByTestId("paint-silver"));
+    await waitFor(() => expect(screen.getByTestId("vehicle-line")).toHaveTextContent("Silver Kia Ceed · WX1"));
+    expect(bodyFill(screen.getByRole("img", { name: "Silver car" }))).toBe("#b8bec6");
+    unmount();
+    mount(
+      "en",
+      <>
+        <MasterChip />
+        <VehicleLine />
+      </>,
+      { profile: ROMAN, vehicle: TAYCAN }
+    );
+    expect(screen.getAllByTestId("car-icon")).toHaveLength(1);
+    expect(within(screen.getByTestId("master-chip")).getByTestId("car-icon")).toBeInTheDocument();
+    expect(screen.getByTestId("vehicle-line")).toHaveTextContent("Zielony Porsche Taycan Cross Turismo · WX 5555");
+  });
+
+  it("riders see the driver's car in its paint on the driver card and the booking card; the initial without either", () => {
+    const driver = (over: Partial<NonNullable<RideView["driver"]>>) =>
+      ({ nickname: "Roman", rating: { mean: null, count: 0 }, icon: "taycan-ct-green", vehicle: { ...TAYCAN, paint: "#c62828" }, ...over }) as RideView["driver"];
+    const rt = { driverPos: null, driverSeenAt: Date.now(), driverPresent: true, sharingOn: true, setSharingOn: () => {}, fix: null } as unknown as RiderRuntime;
+    const route = { line: null, km: 2, min: 5, estimate: false };
+    const active = (d: RideView["driver"]) => <RiderActive ride={ride({ status: "accepted", driver: d })} rt={rt} route={route} busy={false} error={null} onCancel={() => {}} />;
+    const first = mount("en", active(driver({})), { profile: OLA });
+    expect(bodyFill(within(screen.getByTestId("driver-card")).getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+    first.unmount();
+    const second = mount("pl", active(driver({ icon: null, vehicle: { ...TAYCAN, make: "Kia", model: "Ceed", paint: "#1e5aa8" } })), { profile: OLA });
+    expect(bodyFill(within(screen.getByTestId("driver-card")).getByRole("img", { name: "Niebieski samochód" }))).toBe("#1e5aa8");
+    second.unmount();
+    const third = mount("en", active(driver({ icon: null, vehicle: { ...TAYCAN, paint: null } })), { profile: OLA });
+    expect(within(screen.getByTestId("driver-card")).queryByRole("img")).toBeNull();
+    expect(screen.getByTestId("driver-card").querySelector(".avatar")).toHaveTextContent("R");
+    third.unmount();
+    mount("en", <RiderBookingCard r={ride({ status: "scheduled", scheduledFor: Date.now() + 86_400_000, driver: driver({}) })} onChanged={() => {}} />, { profile: OLA });
+    expect(bodyFill(within(screen.getByTestId("booking-driver")).getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+  });
+
+  it("DriverIcon prefers the party's paint (sent with every party) over the assigned vehicle's (U4)", () => {
+    const { unmount } = mount("en", <DriverIcon driver={{ icon: "taycan-ct-green", paint: "#1e5aa8", vehicle: { ...TAYCAN, paint: "#c62828" } }} />, {});
+    expect(bodyFill(screen.getByRole("img", { name: "Blue Taycan Cross Turismo" }))).toBe("#1e5aa8");
+    unmount();
+    // No icon but a paint on the party: a plain car in that paint, before any vehicle is assigned.
+    mount("pl", <DriverIcon driver={{ icon: null, paint: "#f2c230", vehicle: null }} />, {});
+    expect(bodyFill(screen.getByRole("img", { name: "Żółty samochód" }))).toBe("#f2c230");
+  });
+
+  it("DriverIcon shows nothing (or the fallback) for a driver with neither icon nor paint", () => {
+    mount("en", <DriverIcon driver={{ icon: null, vehicle: null }} fallback={<span>fallback</span>} />, {});
+    expect(screen.getByText("fallback")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).toBeNull();
   });
 });

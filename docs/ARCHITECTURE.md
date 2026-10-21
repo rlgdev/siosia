@@ -214,6 +214,23 @@ Childcare, accepts within 5 s and books a ride there when the start is at least 
 covers the calendar module and function; `screens-v2.test.tsx` the new screens;
 `tests/e2e/v2.spec.ts` the flows across three pages.
 
+**2.1: open requests and the car colour** (2026-10-21, `siosia-spec-v2.0.md` "Amendment 2.1",
+SPEC.md V34–V38). A request may have no provider (`appointments.provider_id` and
+`appointment_series.provider_id` nullable): it is *open*. Every other member sees it as a
+*candidate* (`siosia_planned().open`, `MyState.openRequests`; the candidate view carries no rides,
+ratings or calendar links, and never anyone's My place or user id) and gets one `appt_open`
+notification. `siosia_take_request` claims and accepts in one transaction: the first taker wins
+(`taken` for the rest), the client cannot take their own, a clash with the taker's accepted
+appointments or taken bookings fails with `overlap` and leaves the request open — for a series only
+when no date is free (SPEC B6); otherwise the series is taken as a whole with clashing dates
+declined. Locks are taken series-first everywhere (take, answer, cancel) so a take racing a withdraw
+cannot deadlock. The accept body moved into the internal `siosia_answer_as`; the public
+`siosia_answer_appointment` keeps its signature. Open requests expire and remind the client only.
+`vehicles.paint` (`#rrggbb`, set with `siosia_set_car_colour`) travels in every public party as
+`paint`, so a car icon is drawn in that colour wherever the person appears; the icon's SVG derives
+its shades from the paint (`src/components/profileIcons.ts`). The demo's robot Siosia takes open
+requests for her services after 15 s, so a person in another tab sees them first.
+
 ### 2.0 deviations, on purpose
 
 - **A series in the calendar is written in local time** (spec V27 said UTC): `DTSTART`, `DTEND`

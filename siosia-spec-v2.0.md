@@ -630,3 +630,39 @@ Every screen talks to `Backend` (`src/backend/types.ts`); both the mock (engine)
 | Q15 | Third reminder at the start ("starting now") or a configurable third slot? | No; two slots, configurable |
 | Q16 | Should the Siosia's attached ride show its pickup time to the client? | Yes (time, leg, status, driver) — never her pickup place |
 | Q18 | In-app banner at launch for users without notifications when a reminder slot passed? | No; P1 markers and the S1 badge only |
+
+## Amendment 2.1 (2026-10-21): open requests and the car colour
+
+Operator request of 2026-10-21: a request must be possible even when nobody offers the service; it
+then reaches the other members as something they can do. And a driver can change the car's colour
+by tapping the car icon.
+
+**Changed.** FR-090: an entry nobody offers is no longer disabled — C1 says *Nobody offers this
+yet — ask anyway: everyone in the group sees it*. FR-094: the provider choice adds *Anyone who can*,
+preselected when nobody offers the entry (one provider is still preselected when exactly one offers
+it). FR-100: a request is addressed to one provider **or open** to anyone.
+
+**New.**
+
+- **FR-160**: An open request MUST be an appointment in status `requested` with no provider; it
+  follows every other rule of FR-100–FR-109 (limits, time window, place, note, repeat, expiry at
+  its start, withdraw by the client).
+- **FR-161**: Every other member MUST see open requests they could take — service, time range,
+  duration, the client with rating, place label, note, the repeat rule and the price — in P1 under
+  *You could help (N)*, soonest first, a series once; S1 MUST badge the number. C2 MUST tell the
+  client that everyone in the group sees the request until someone takes it.
+- **FR-162**: Creating an open request MUST notify every other member once (`appt_open`, in the
+  recipient's language, opening P1); members are told nothing more when it is taken.
+- **FR-163**: *I can do it* MUST make the caller the provider and accept the request atomically —
+  the first taker wins (`taken` for the others); for a series the whole series (dates clashing with
+  the taker's schedule declined, FR-108); a single request clashing with the taker's accepted
+  appointments or taken bookings MUST fail with `overlap`; the client cannot take their own. The
+  taker MAY tick rides there / back as in C4. The client MUST be notified as for an accept.
+- **FR-164**: While open, the client sees *Waiting for someone to take it*; an open request
+  unanswered at its start MUST expire with the client told *Nobody took it*; reminders go to the
+  client only.
+- **FR-170**: Tapping the car icon (a driver profile's icon) MUST offer the car colours (green,
+  black, white, silver, grey, blue, red, yellow, orange, brown); choosing one MUST set the vehicle's
+  colour name (in the driver's language) and paint, and the car icon MUST be drawn in that paint
+  wherever it appears — for the driver and for riders (driver card, booking card).
+

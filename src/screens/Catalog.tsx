@@ -1,6 +1,7 @@
 // C1 Catalog ("Siosia", FR-090–092): what the user offers first (drivers: Ride — Go online with the
 // rides to take), then every enabled entry with who offers it. Ride opens the v1 rider flow (R1);
-// a time entry opens the request form (C2); an entry nobody offers is disabled.
+// a time entry opens the request form (C2) — 2.1: also one nobody offers yet, as an open request
+// everyone in the group sees (FR-160); open requests of others lead to P1 (FR-161).
 
 import { useCallback, useEffect, useState } from "react";
 import { ProfileIcon } from "../components/ProfileIcon";
@@ -67,6 +68,12 @@ export function Catalog() {
           <span aria-hidden="true">→</span>
         </button>
       )}
+      {!!my?.openRequests && (
+        <button type="button" className="notice notice-info row spread" onClick={() => store.go("planned")} data-testid="catalog-open-requests">
+          <span>{t("catalog.openRequests", { n: my.openRequests })}</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      )}
       {(role !== "rider" || mine.length > 0) && (
         <section className="stack" aria-label={t("catalog.youOffer")}>
           <h2 className="section-title">{t("catalog.youOffer")}</h2>
@@ -127,7 +134,6 @@ export function Catalog() {
                 key={e.id}
                 type="button"
                 className="entry-card"
-                disabled={nobody}
                 onClick={() => store.openPanel("request", e.id)}
                 data-testid={`catalog-${e.id}`}
               >
@@ -150,21 +156,21 @@ export function Catalog() {
                     </span>
                   )}
                   {nobody ? (
-                    <span className="muted small" data-testid={`nobody-${e.id}`}>
+                    <span className="small entry-open" data-testid={`nobody-${e.id}`}>
                       {t("catalog.nobody")}
                     </span>
                   ) : (
                     <span className="providers">
                       {e.providers.map((p) => (
                         <span key={p.publicId ?? p.nickname} className="provider-chip">
-                          {p.icon && profileIcon(p.icon) ? <ProfileIcon icon={p.icon} size="sm" /> : null}
+                          {p.icon && profileIcon(p.icon) ? <ProfileIcon icon={p.icon} size="sm" paint={p.paint} /> : null}
                           {p.nickname} <RatingBadge rating={p.rating} />
                         </span>
                       ))}
                     </span>
                   )}
                 </span>
-                {!nobody && <span aria-hidden="true">→</span>}
+                <span aria-hidden="true">→</span>
               </button>
             );
           })}

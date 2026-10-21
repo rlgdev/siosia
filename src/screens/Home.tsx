@@ -1,8 +1,10 @@
 // S1 Home (2.0, FR-080, FR-083): Siosia (the catalog), Planned (the schedule), History; badges from
 // the live state — requests to answer, upcoming items and the next one; the v1 footer.
+// 2.1: open requests others made that the user could take (FR-161) badge Siosia, and the Planned
+// card says where they are; a driver profile's car icon picks the car's colour (FR-170).
 
 import { AppHint } from "../components/AppInstall";
-import { ProfileIcon } from "../components/ProfileIcon";
+import { CarIconButton, ownCarIcon, ProfileIcon } from "../components/ProfileIcon";
 import { whenText } from "../components/when";
 import { useI18n } from "../i18n";
 import { readPref } from "../services/device";
@@ -31,10 +33,19 @@ export function Home() {
   const my = app.my;
   const next = my?.nextPlanned ?? null;
   const receipt = receiptTarget(app);
+  const car = ownCarIcon(app.profile);
   return (
     <main className="home">
       <header className="home-head">
-        {app.profile?.icon ? <ProfileIcon icon={app.profile.icon} size="md" /> : <div className="logo" aria-hidden="true">S</div>}
+        {car ? (
+          <CarIconButton icon={car} />
+        ) : app.profile?.icon ? (
+          <ProfileIcon icon={app.profile.icon} size="md" />
+        ) : (
+          <div className="logo" aria-hidden="true">
+            S
+          </div>
+        )}
         <div>
           <h1>{t("home.hello", { name: app.profile?.nickname ?? "" })}</h1>
           <p className="muted">{t("start.choose")}</p>
@@ -58,6 +69,11 @@ export function Home() {
                 {t("start.toAnswer", { n: my.toAnswer })}
               </span>
             )}
+            {!!my?.openRequests && (
+              <span className="badge badge-accent" data-testid="badge-open">
+                {t("start.openRequests", { n: my.openRequests })}
+              </span>
+            )}
           </span>
           <span className="mode-body">{t("start.siosiaBody")}</span>
         </button>
@@ -71,8 +87,16 @@ export function Home() {
               </span>
             )}
           </span>
-          <span className="mode-body" data-testid="planned-next">
-            {next ? t("start.next", { title: next.title, when: whenText(next.at, store.serverNow(), locale, t) }) : t("start.plannedBody")}
+          <span className="mode-body">
+            <span data-testid="planned-next">
+              {next ? t("start.next", { title: next.title, when: whenText(next.at, store.serverNow(), locale, t) }) : t("start.plannedBody")}
+            </span>
+            {/* Where the open requests are: P1 → You could help. */}
+            {!!my?.openRequests && (
+              <strong className="mode-hint" data-testid="planned-open">
+                {t("start.plannedOpen", { n: my.openRequests })}
+              </strong>
+            )}
           </span>
         </button>
         <button type="button" className="mode-card" onClick={() => store.go("history")} data-testid="start-history">

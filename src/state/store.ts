@@ -534,6 +534,17 @@ export class AppStore {
     return vehicle;
   }
 
+  /**
+   * 2.1 (FR-170): the car's colour name (in the driver's words) and paint, from the car icon. The
+   * vehicle is replaced at once, so every car icon of this user redraws in the new paint.
+   */
+  async setCarColour(colour: string, paint: string): Promise<Vehicle> {
+    const saved = await this.api.setCarColour(colour, paint);
+    const vehicle: Vehicle = { ...saved, paint: saved.paint === undefined ? paint.toLowerCase() : saved.paint };
+    this.patch({ vehicle });
+    return vehicle;
+  }
+
   async reloadProfile(): Promise<void> {
     const profile = await this.api.getProfile();
     if (profile) this.patch({ profile });
@@ -671,5 +682,5 @@ export function useApp(): AppSnapshot {
 export function useListsKey(): string {
   const app = useApp();
   const my = app.my;
-  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings].join("|");
+  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.openRequests, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings].join("|");
 }

@@ -119,6 +119,8 @@ export interface AppointmentSettings {
 export type AppointmentStatus = "requested" | "accepted" | "declined" | "cancelled" | "expired" | "done";
 export type Leg = "there" | "back";
 export type PartyRole = "client" | "provider";
+/** 2.1: the viewer's side of an appointment; "candidate" = a member who could take an open request. */
+export type ViewerRole = PartyRole | "candidate";
 /** An attached ride as the appointment sees it (§7 rule 7). */
 export type AttachedStatus = "pending" | "confirmed" | "done" | "failed";
 
@@ -181,8 +183,13 @@ export interface SeriesView {
 export interface AppointmentView {
   id: string;
   status: AppointmentStatus;
-  /** The viewer's side. */
-  role: PartyRole;
+  /** The viewer's side (a candidate sees an open request someone else made). */
+  role: ViewerRole;
+  /**
+   * 2.1: an open request — sent to anyone in the group, nobody has taken it yet (provider null).
+   * Only while requested; taking it makes the taker the provider and accepts it.
+   */
+  open: boolean;
   serviceId: string;
   /** The entry's name and icon (also for disabled entries). */
   service: { name: LocalText; icon: string } | null;
@@ -195,7 +202,8 @@ export interface AppointmentView {
   price: number | null;
   currency: string;
   client: PublicProvider;
-  provider: PublicProvider;
+  /** null while the request is open (nobody took it yet). */
+  provider: PublicProvider | null;
   requestedAt: number;
   answeredAt: number | null;
   endedAt: number | null;
@@ -219,8 +227,8 @@ export interface RepeatInput {
 
 export interface ServiceRequestInput {
   serviceId: string;
-  /** The provider's public id. */
-  providerId: string;
+  /** The provider's public id; null = an open request to anyone in the group (2.1). */
+  providerId: string | null;
   startsAt: number;
   durationMin: number;
   place: Place | null;
@@ -242,6 +250,11 @@ export interface RideTemplateInput {
 export interface Planned {
   appointments: AppointmentView[];
   rides: RideView[];
+  /**
+   * 2.1: open requests of other members this user could take (role "candidate"), soonest first;
+   * a series appears once, as its first open date.
+   */
+  open: AppointmentView[];
 }
 
 export type HistoryItem = { kind: "appointment"; at: number; appointment: AppointmentView } | { kind: "ride"; at: number; ride: RideView };
@@ -290,6 +303,8 @@ export interface Vehicle {
   colour: string;
   plate: string;
   seats: number;
+  /** 2.1: the paint as #rrggbb (chosen with the car icon); the car icon is drawn in it. */
+  paint?: string | null;
 }
 
 /** Rider profile = basic info only (nickname + language). Drivers add a Vehicle. */
@@ -329,6 +344,8 @@ export interface PublicParty {
   rating: RatingSummary;
   /** Profile icon id, shown next to the nickname (master profiles only). */
   icon?: string | null;
+  /** 2.1: the paint of this person's car (#rrggbb), so a car icon is drawn in it everywhere. */
+  paint?: string | null;
 }
 
 export interface PublicDriver extends PublicParty {
@@ -423,6 +440,8 @@ export interface MyState {
   openBookings: number;
   /** 2.0: requests waiting for my answer (a series counts once). */
   toAnswer: number;
+  /** 2.1: open requests of others I could take (a series counts once). */
+  openRequests: number;
   /** Upcoming items in both roles. */
   planned: number;
   nextPlanned: NextPlanned | null;

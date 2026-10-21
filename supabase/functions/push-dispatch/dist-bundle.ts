@@ -69,6 +69,7 @@ function leadText(slot, lang) {
 function apptStatusText(status, provider, lang) {
   const l = lang === "pl" ? "pl" : "en";
   if (status === "confirmed") return l === "pl" ? "Potwierdzone" : "Confirmed";
+  if (status === "open" || status === "waiting" && !provider) return l === "pl" ? "Czeka, a\u017C kto\u015B si\u0119 podejmie" : "Waiting for someone to take it";
   if (status === "waiting") return l === "pl" ? `Czeka na odpowied\u017A: ${provider}` : `Waiting for an answer from ${provider}`;
   if (status === "answer") return l === "pl" ? "Odpowiedz, prosz\u0119" : "Please answer";
   return "";
@@ -100,11 +101,12 @@ var TEXTS = {
     booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
     request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
     appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}. Answer in Siosia \u2192 Planned."],
+    appt_open: ["Can you help? {service}", "{client} asks: {service} {range}{atplace}. Open Siosia to take it."],
     appt_accepted: ["{provider} accepted", "{service} {range} is confirmed.{clashes}"],
     appt_declined: ["{provider} can't make it", "{service} {range} was declined."],
     appt_cancelled: ["{service} {when} cancelled", "Cancelled by {who}: {service} {range}.{remaining}"],
     appt_expired: ["No answer from {provider}", "{service} {range} got no answer and expired."],
-    appt_reminder: ["{lead}: {service} {range}", "With {other}{atplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
     appt_ride_added: ["{who} added a ride", "{service} {when}: ride {leg}{attime}, looking for a driver."],
     appt_ride_taken: ["Ride confirmed: {driver}", "{service} {when}: the ride {leg} has a driver."],
     appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
@@ -121,22 +123,33 @@ var TEXTS = {
     booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafi\u0142a do kierowc\xF3w w pobli\u017Cu."],
     request_new: ["Nowe zam\xF3wienie", "Odbi\xF3r: {pickup}. Otw\xF3rz Siosi\u0119, aby je przyj\u0105\u0107."],
     appt_new: ["Nowa pro\u015Bba: {service} {when}", "{client} prosi o: {service}, {range}. Odpowiedz w Siosi \u2192 Zaplanowane."],
+    appt_open: ["Mo\u017Cesz pom\xF3c? {service}", "{client} prosi o pomoc: {service} {range}{atplace}. Otw\xF3rz Siosi\u0119, aby si\u0119 tego podj\u0105\u0107."],
     appt_accepted: ["{provider} potwierdza", "{service} {range} \u2014 potwierdzone.{clashes}"],
     appt_declined: ["{provider} nie mo\u017Ce", "{service} {range} \u2014 odrzucone."],
     appt_cancelled: ["{service} {when} odwo\u0142ane", "Odwo\u0142ane przez: {who}. {service} {range}.{remaining}"],
     appt_expired: ["Brak odpowiedzi od {provider}", "{service} {range} \u2014 bez odpowiedzi, pro\u015Bba wygas\u0142a."],
-    appt_reminder: ["{lead}: {service} {range}", "Z {other}{atplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
     appt_ride_added: ["{who} dodaje przejazd", "{service} {when}: przejazd {leg}{attime}, szukamy kierowcy."],
     appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowc\u0119."],
     appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} zn\xF3w bez kierowcy."],
     appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."]
   }
 };
+var OPEN_TEXTS = {
+  en: { appt_expired: ["Nobody took it", "Nobody took your request: {service} {range}."] },
+  pl: { appt_expired: ["Nikt si\u0119 nie zg\u0142osi\u0142", "Nikt nie przyj\u0105\u0142 Twojej pro\u015Bby: {service} {range}."] }
+};
+var SOMEONE = { en: "Someone", pl: "Kto\u015B" };
+var WITH = { en: (o) => `With ${o}`, pl: (o) => `Z ${o}` };
+var YOUR_OPEN = { en: "Your open request", pl: "Twoja otwarta pro\u015Bba" };
 function pushText(kind, params, lang, tz, id) {
   const l = lang === "pl" ? "pl" : "en";
-  const [title, body] = TEXTS[l][kind] ?? TEXTS[l].booking_open;
+  const open = kind.startsWith("appt_") && (!!params.open || params.status === "open" || !params.provider && params.role !== "provider");
+  const [title, body] = (open ? OPEN_TEXTS[l][kind] : void 0) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
   const ms = toMs(params.at);
-  const series = !!params.rule && (kind === "appt_new" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
+  const series = !!params.rule && (kind === "appt_new" || kind === "appt_open" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
+  const status = params.status === "waiting" && open ? "open" : params.status;
+  const withWho = params.other ? WITH[l](params.other) : status === "open" ? YOUR_OPEN[l] : "";
   const declined = (params.declined ?? []).map((d) => dayMonth(toMs(d), l, tz)).filter(Boolean);
   const total = (params.accepted ?? 0) + declined.length;
   const vars = {
@@ -147,21 +160,22 @@ function pushText(kind, params, lang, tz, id) {
     driver: params.driver ?? "",
     rider: params.rider ?? "",
     service: params.service ?? "",
-    client: params.client ?? "",
-    provider: params.provider ?? "",
-    who: params.who ?? "",
+    client: params.client || SOMEONE[l],
+    provider: params.provider || SOMEONE[l],
+    who: params.who || SOMEONE[l],
     other: params.other ?? "",
     leg: LEG[l][params.leg ?? ""] ?? params.leg ?? "",
     lead: leadText(params.lead, l),
     range: series ? seriesText(params, l, tz) : rangeText(params.at, params.end, l, tz),
     atplace: params.place ? ` \xB7 ${params.place}` : "",
+    withplace: [withWho, params.place ?? ""].filter(Boolean).join(" \xB7 "),
     attime: params.time ? l === "pl" ? ` o ${fmt(toMs(params.time), l, tz, false)}` : ` at ${fmt(toMs(params.time), l, tz, false)}` : params.repeat ? l === "pl" ? " w ka\u017Cdym terminie" : " for every date" : "",
-    status: apptStatusText(params.status, params.provider ?? "", l),
+    status: apptStatusText(status, params.provider, l),
     rides: (params.rides ?? []).length ? ` ${(params.rides ?? []).map((r) => rideLineText(r, l)).join(" \xB7 ")}` : "",
     clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const fill = (s) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim();
+  const fill = (s) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
   return { title: fill(title), body: fill(body), tag: `${kind}:${id ?? ""}` };
 }
 

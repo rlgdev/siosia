@@ -127,3 +127,15 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 151 | Robot Siosia in the demo | services "demo: the robot Siosia …"; e2e2 "one tab" |
 | 152 | EN and PL for every string | services "i18n" (keys used, error codes, status families, placeholders) |
 | 153 | Guide and docs describe 2.0 | services "in-app guide"; this file, USER-GUIDE, ARCHITECTURE, SETUP, README |
+
+## Siosia 2.1 (Amendment 2.1 in `siosia-spec-v2.0.md`, FR-160 – FR-170; SPEC.md V34–V38)
+
+| FR | Requirement (short) | Verified by |
+| --- | --- | --- |
+| 090/094 | Entries never disabled; *Anyone who can*, preselected when nobody offers | screens "C1" / "C2" 2.1 tests (hint, request-anyone, request-open-note); e2e2 "an open request" |
+| 160 | Open request = requested, no provider; every FR-100–109 rule applies | appt + sql2 "creates an open request (single and series)…", "applies every request rule and limit to an open request" |
+| 161 | Candidates see service, time, client, place, note, rule, price — never ids or My place; P1 *You could help (N)*; S1 badge | appt + sql2 "…never a user id or My place"; screens P1 open-requests, Home badge-open; e2e2 "an open request" |
+| 162 | One `appt_open` to every other member, in their language | appt + sql2 "tells every other member once (appt_open, their language), never the client"; push "appt_open" texts |
+| 163 | *I can do it*: atomic first-wins, series as a whole, overlap, own forbidden | appt + sql2 "lets the first taker have it…", "takes a series as a whole…", "refuses a single request that clashes…", "refuses a series none of whose dates… (B6)", "cancels and takes in either order…"; screens take sheet; e2e2 "an open request" |
+| 164 | *Waiting for someone to take it*; expiry → client told *Nobody took it*; reminders client-only | appt + sql2 "expires an open request nobody took…"; push open expiry / reminder texts; screens chip |
+| 170 | Car icon tap → colour; vehicle colour + paint; icon drawn in the paint everywhere | appt + sql2 "sets the colour name and paint…", "shows the paint to the rider…", "carries the paint in every party…"; components car-icon / paint-<id>; e2e2 "the car icon picks the car's colour" |

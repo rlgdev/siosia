@@ -138,8 +138,16 @@ export interface Backend {
 
   /** The enabled catalog with who offers each entry (public ids), without me. */
   catalog(): Promise<CatalogItem[]>;
-  /** Send request (one provider; optionally a weekly / every-2-weeks series). */
+  /** Send request (one provider, or open to anyone when providerId is null; optionally a series). */
   requestService(input: ServiceRequestInput): Promise<AppointmentView>;
+  /**
+   * 2.1: take someone's open request — the caller becomes the provider and it is accepted (a series
+   * as a whole, clashing dates declined). Fails with taken when someone was faster, overlap when it
+   * clashes with the caller's own schedule, forbidden for one's own request.
+   */
+  takeRequest(id: string): Promise<AppointmentView>;
+  /** 2.1: the car's colour (name in the driver's words, shown to riders) and paint for the car icon. */
+  setCarColour(colour: string, paint: string): Promise<Vehicle>;
   /** Provider: accept or decline (a series is answered as a whole). */
   answerAppointment(id: string, decision: "accept" | "decline"): Promise<AppointmentView>;
   /** Either party; a series: this one or all remaining. */

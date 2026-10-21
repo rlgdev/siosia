@@ -6,7 +6,8 @@ what you can do; see everything coming up in **Planned** and what's done in **Hi
 reminders a day and two hours before and *Add to calendar*. Real maps and GPS, no payments, no app
 store, **zero running cost** on free tiers.
 
-Version 2.0, built from [`siosia-spec-v2.0.md`](siosia-spec-v2.0.md) (the task list is in
+Version 2.1 — 2.0 plus open requests (ask *Anyone who can*; every member can take it) and the car
+colour picked on the car icon — built from [`siosia-spec-v2.0.md`](siosia-spec-v2.0.md) (the task list is in
 [`SPEC.md`](SPEC.md)) on top of the 1.x ride app of [`siosia-spec-v0.1.md`](siosia-spec-v0.1.md);
 the earlier Rubber project is the reference architecture. Users only ever see "Siosia".
 

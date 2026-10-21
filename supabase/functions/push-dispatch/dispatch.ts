@@ -42,7 +42,8 @@ export interface DispatchResult {
 }
 
 /** Appointment and booking notifications open Planned (FR-125: a booking's Take it lives there in 2.0,
- *  "./" is S1); ride ones open the app (the active ride shows). A held ride / D1 still wins on launch. */
+ *  "./" is S1; 2.1: appt_open's I can do it too, FR-162); ride ones open the app (the active ride
+ *  shows). A held ride / D1 still wins on launch. */
 export const openUrl = (kind: PushKind): string => (kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./");
 
 /** A message is claimed at most this many times (= runs); then it is given up. */

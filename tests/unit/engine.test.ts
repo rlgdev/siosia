@@ -861,6 +861,46 @@ describe("guards and privacy (FR-005, FR-007, FR-043, FR-044)", () => {
     expect(code(() => at((e) => e.getRide("d3", ride.id)))).toBe("not_found");
   });
 
+  it("shows the car's paint to the rider once a driver is assigned; the paint moves with the profile (V38)", () => {
+    expect(at((e) => e.setCarColour("d1", "Czerwony", "#C0392B"))).toMatchObject({ colour: "Czerwony", paint: "#c0392b" });
+    const ride = request();
+    const o = online("d1", near(1)).offer!;
+    expect(JSON.stringify(o)).not.toContain("#c0392b"); // the offer card shows the rider, not the car
+    expect(o.rider.paint).toBeNull(); // the rider has no car
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    expect(at((e) => e.getRide("rider", ride.id)).driver!.vehicle).toEqual({ make: "Toyota", model: "Yaris", colour: "Czerwony", plate: "WX D1", seats: 4, paint: "#c0392b" });
+    expect(at((e) => e.myState("rider")).ride!.driver!.vehicle!.paint).toBe("#c0392b");
+    // A car never painted shows no paint (null), the same as the SQL.
+    expect(at((e) => e.getVehicle("d2"))).toMatchObject({ plate: "WX D2", paint: null });
+    at((e) => e.setCarColour("d3", "Blue", "#1e5aa8"));
+    const { code: move } = at((e) => e.createTransfer("d3"));
+    at((e) => e.redeemTransfer("app", move, "dev-app"));
+    expect(at((e) => e.getVehicle("app"))).toMatchObject({ colour: "Blue", paint: "#1e5aa8" });
+  });
+
+  it("carries each person's own paint in the rider and driver parties, and nothing more of the car (V38, PublicParty.paint)", () => {
+    at((e) => e.setCarColour("d1", "Czerwony", "#C0392B"));
+    at((e) => e.setCarColour("d2", "Blue", "#1E5AA8"));
+    const ride = request();
+    at((e) => e.decideOffer("d1", online("d1", near(1)).offer!.id, "accept"));
+    const seen = at((e) => e.getRide("rider", ride.id));
+    expect(seen.driver).toMatchObject({ nickname: "D1", paint: "#c0392b", vehicle: { paint: "#c0392b" } });
+    expect(seen.rider).toEqual({ nickname: "Ola", rating: { mean: null, count: 0 }, icon: null, paint: null });
+    expect(at((e) => e.getRide("d1", ride.id)).driver!.paint).toBe("#c0392b");
+    // A driver riding: the driver who is offered the ride sees the rider's paint, never the car itself.
+    const ride2 = request("d2");
+    const o = online("d3", near(1)).offer!;
+    expect(o.rideId).toBe(ride2.id);
+    expect(o.rider).toEqual({ nickname: "D2", rating: { mean: null, count: 0 }, icon: null, paint: "#1e5aa8" });
+    expect(JSON.stringify(o)).not.toMatch(/WX D2|Blue|Yaris|Toyota/);
+    at((e) => e.decideOffer("d3", o.id, "accept"));
+    expect(at((e) => e.getRide("d3", ride2.id))).toMatchObject({ rider: { paint: "#1e5aa8" }, driver: { nickname: "D3", paint: null } });
+    // A deleted driver's car goes with the account: the party shows no paint.
+    at((e) => e.cancelRide("d2", ride2.id));
+    at((e) => e.deleteProfile("d2"));
+    expect(at((e) => e.history("d3")).find((x) => x.id === ride2.id)!.rider).toMatchObject({ nickname: "Deleted user", paint: null });
+  });
+
   it("lists the last 50 rides newest first and excludes cancelled rides from earnings", () => {
     for (let i = 0; i < 55; i++) {
       const r = request();

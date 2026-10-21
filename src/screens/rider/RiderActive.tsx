@@ -1,8 +1,7 @@
 // R3 Active ride: driver, vehicle and plate (only now — FR-044), live car, ETA, status, cancel.
 
 import { BookedFor } from "../../components/BookedFor";
-import { ProfileIcon } from "../../components/ProfileIcon";
-import { profileIcon } from "../../components/profileIcons";
+import { DriverIcon } from "../../components/ProfileIcon";
 import { useEffect, useState } from "react";
 import { Confirm, Money, RatingBadge, Sheet, fmtMin } from "../../components/ui";
 import { haversineM } from "../../core/geo";
@@ -61,13 +60,15 @@ export function RiderActive({ ride, rt, route, busy, error, onCancel }: Props) {
       {ride.scheduledFor !== null && ride.status !== "in_progress" && <BookedFor at={ride.scheduledFor} />}
       {d && (
         <div className="driver-card" data-testid="driver-card">
-          {profileIcon(d.icon) ? (
-            <ProfileIcon icon={d.icon} size="sm" />
-          ) : (
-            <div className="avatar" aria-hidden="true">
-              {d.nickname.slice(0, 1).toUpperCase()}
-            </div>
-          )}
+          {/* The driver's icon or car in the car's paint (FR-170), else the initial. */}
+          <DriverIcon
+            driver={d}
+            fallback={
+              <div className="avatar" aria-hidden="true">
+                {d.nickname.slice(0, 1).toUpperCase()}
+              </div>
+            }
+          />
           <div className="grow">
             <strong>{d.nickname}</strong> <RatingBadge rating={d.rating} />
             {d.vehicle && (

@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { ProfileIcon } from "../components/ProfileIcon";
+import { DriverIcon, ProfileIcon } from "../components/ProfileIcon";
 import { Confirm, Money, Panel, RatingBadge, useBusy } from "../components/ui";
 import { coarse, haversineKm } from "../core/geo";
 import type { OpenBooking, RideView } from "../core/types";
@@ -49,7 +49,7 @@ export function RiderBookingCard({ r, onChanged }: { r: RideView; onChanged: () 
       <Route r={r} />
       {r.driver ? (
         <p data-testid="booking-driver">
-          <ProfileIcon icon={r.driver.icon} size="sm" /> {t("book.driverIs", { name: r.driver.nickname })} <RatingBadge rating={r.driver.rating} />
+          <DriverIcon driver={r.driver} /> {t("book.driverIs", { name: r.driver.nickname })} <RatingBadge rating={r.driver.rating} />
           {r.driver.vehicle && (
             <span className="muted small">
               {" "}
@@ -111,7 +111,7 @@ export function DriverBookingCard({ r, onChanged }: { r: RideView; onChanged: ()
         </strong>
       </div>
       <p>
-        <ProfileIcon icon={r.rider.icon} size="sm" /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
+        <ProfileIcon icon={r.rider.icon} size="sm" paint={r.rider.paint} /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
       </p>
       <Route r={r} />
       {leave !== null && <p className="hint">{t("book.leaveBy", { time: time(leave) })}</p>}
@@ -194,7 +194,7 @@ export function OpenBookingsList({ open, onChanged }: { open: OpenBooking[]; onC
                 </strong>
               </div>
               <p>
-                <ProfileIcon icon={r.rider.icon} size="sm" /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
+                <ProfileIcon icon={r.rider.icon} size="sm" paint={r.rider.paint} /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
                 {distanceKm !== null && <span className="muted small"> · {t("book.away", { km: distanceKm.toFixed(1) })}</span>}
               </p>
               <Route r={r} />

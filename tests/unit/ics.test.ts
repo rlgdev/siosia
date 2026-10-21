@@ -208,6 +208,45 @@ describe(".ics (V27)", () => {
     }
   });
 
+  it("writes an open request (no provider) without crashing: its own title, open in the details (V37)", () => {
+    const desc = (l: string[]) => l.find((x) => x.startsWith("DESCRIPTION:"))!;
+    const open = appt({ status: "requested", provider: null, rides: [] });
+    const l = lines(appointmentIcs(open, CTX));
+    expect(l).toContain("SUMMARY:Childcare — open request");
+    expect(desc(l)).toContain("DESCRIPTION:Open request: anyone in the group can take it\\nWaiting for someone to take it\\nNote: ");
+    expect(l).toContain("STATUS:TENTATIVE");
+    expect(l.filter((x) => x.startsWith("TRIGGER:"))).toHaveLength(2);
+    const pl = lines(appointmentIcs(open, { ...CTX, lang: "pl" }));
+    expect(pl).toContain("SUMMARY:Opieka nad dziećmi — otwarta prośba");
+    expect(desc(pl)).toContain("Otwarta prośba: może się jej podjąć każdy w grupie\\nCzeka\\, aż ktoś się podejmie");
+    // A candidate (a member who could take it) reads whose request it is.
+    expect(desc(lines(appointmentIcs({ ...open, role: "candidate" }, CTX)))).toContain("For Toria\\nOpen request: anyone in the group can take it\\nWaiting for someone to take it");
+    // Expired unanswered: cancelled, no alarms, still no provider.
+    const expired = lines(appointmentIcs({ ...open, status: "expired" }, CTX));
+    expect(expired).toContain("STATUS:CANCELLED");
+    expect(desc(expired)).toContain("Open request: anyone in the group can take it\\nCancelled");
+    expect(expired.some((x) => x.startsWith("BEGIN:VALARM"))).toBe(false);
+    for (const ics of [appointmentIcs(open, CTX), appointmentIcs({ ...open, role: "provider" }, CTX)]) expect(ics).not.toMatch(/undefined|null|With \\n/);
+  });
+
+  it("writes an open series and its Google links without a provider", () => {
+    const starts = [START, START + WEEK, START + 2 * WEEK];
+    const open = appt({ status: "requested", provider: null, rides: [], series: { id: "6f1c1d2e-0000-4000-8000-0000000000ss", rule: "weekly", count: 3, status: "requested", starts, gaps: [] } });
+    const l = lines(seriesIcs(open, CTX));
+    expect(l).toContain("SUMMARY:Childcare — open request");
+    expect(l).toContain("RRULE:FREQ=WEEKLY;INTERVAL=1;COUNT=3");
+    expect(l).toContain("STATUS:TENTATIVE");
+    expect(l.find((x) => x.startsWith("DESCRIPTION:"))).toContain("Open request: anyone in the group can take it\\nWaiting for someone to take it");
+    for (const whole of [false, true]) {
+      const u = new URL(appointmentGoogleLink(open, CTX, whole));
+      expect(u.searchParams.get("text")).toBe("Childcare — open request");
+      expect(u.searchParams.get("details")).toContain("Open request: anyone in the group can take it\nWaiting for someone to take it");
+      expect(u.searchParams.get("details")).not.toMatch(/undefined|null/);
+    }
+    // Taken: the provider is back and the words are the 2.0 ones.
+    expect(lines(seriesIcs({ ...open, provider: { nickname: "Ewa" }, series: { ...open.series!, status: "answered" } }, CTX))).toContain("SUMMARY:Childcare with Ewa");
+  });
+
   it("escapes text and folds long lines at 75 octets without splitting a character", () => {
     expect(escapeText("a,b;c\\d\ne")).toBe("a\\,b\\;c\\\\d\\ne");
     const long = "DESCRIPTION:" + "Żółć ".repeat(40);
@@ -252,6 +291,17 @@ describe("calendar function (FR-136, NFR-20)", () => {
     expect(await res.text()).toContain("SUMMARY:Childcare with Siosia");
     const series = await handleCalendar(new Request(`https://x/calendar?s=${ID}&u=pub-toria1&t=${T}`), async () => ({ ...view, kind: "s" as const }));
     expect(await series.text()).not.toContain("RRULE:"); // a view without a series falls back to one event
+  });
+
+  it("serves the client's .ics of an open request (provider null from the database)", async () => {
+    const open = { ...view, view: appt({ status: "requested", provider: null, rides: [] }) };
+    for (const kind of ["a", "s"] as const) {
+      const res = await handleCalendar(new Request(`https://x/calendar?${kind}=${ID}&u=pub-toria1&t=${T}`), async () => ({ ...open, kind }));
+      expect(res.status).toBe(200);
+      const l = lines(await res.text());
+      expect(l).toContain("SUMMARY:Childcare — open request");
+      expect(l).toContain("STATUS:TENTATIVE");
+    }
   });
 
   it("serves a valid .ics for a place with a missing coordinate; a view it cannot write is a plain 500", async () => {

@@ -275,7 +275,7 @@ export function RiderApp() {
   } else if (ride) {
     const stale = rt.driverSeenAt !== null && Date.now() - rt.driverSeenAt > 10_000;
     if (rt.driverPos)
-      markers.push({ id: "car", kind: "car", pos: rt.driverPos, heading: rt.driverPos.heading, stale, title: ride.driver?.nickname, icon: ride.driver?.icon });
+      markers.push({ id: "car", kind: "car", pos: rt.driverPos, heading: rt.driverPos.heading, stale, title: ride.driver?.nickname, icon: ride.driver?.icon, paint: ride.driver?.vehicle?.paint });
     if (ride.status !== "in_progress") markers.push({ id: "pickup", kind: "pickup", pos: ride.pickup });
     markers.push({ id: "dropoff", kind: "dropoff", pos: ride.dropoff });
     if (fix && ride.status !== "in_progress") markers.push({ id: "me", kind: "me", pos: fix });

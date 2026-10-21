@@ -49,7 +49,8 @@ import {
   type RideStatus,
   type RideView,
   type CancelledBy,
-  type Vehicle
+  type Vehicle,
+  type ViewerRole
 } from "./types";
 
 export interface UserRow {
@@ -164,7 +165,8 @@ export interface RideRow {
 export interface ApptRow {
   id: string;
   clientId: string;
-  providerId: string;
+  /** 2.1: null = an open request nobody has taken yet (V34). */
+  providerId: string | null;
   serviceId: string;
   status: AppointmentStatus;
   startsAt: number;
@@ -199,7 +201,8 @@ export interface StoredTemplate {
 export interface SeriesRow {
   id: string;
   clientId: string;
-  providerId: string;
+  /** 2.1: null while the series is an open request. */
+  providerId: string | null;
   serviceId: string;
   rule: "weekly" | "biweekly";
   firstStart: number;
@@ -298,6 +301,8 @@ export interface Effects {
 export const normalizeInvite = (code: string) => code.trim().toUpperCase().replace(/\s+/g, "");
 
 const NICK_RE = /^.{2,20}$/u;
+/** A car paint as #rrggbb (any case in, stored lower case; twin of the check in siosia_set_car_colour). */
+const PAINT_RE = /^#[0-9a-f]{6}$/i;
 
 export class Engine {
   readonly effects: Effects = { notify: new Set(), pingDrivers: false, push: [] };
@@ -363,9 +368,10 @@ export class Engine {
     this.db.users[uid] = existing
       ? { ...existing, nickname: m.nickname, masterId: m.id, deleted: false }
       : { id: uid, nickname: m.nickname, language: language === "pl" ? "pl" : "en", createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, masterId: m.id, publicId: randomPublicId() };
-    // A driver profile with a complete vehicle (plate included) puts it on this account.
+    // A driver profile with a complete vehicle (plate included) puts it on this account (a paint
+    // chosen earlier stays, as in siosia_apply_master_vehicle).
     const v = m.role === "driver" ? m.vehicle : null;
-    if (v?.plate) this.db.vehicles[uid] = { ...v, plate: v.plate.toUpperCase() };
+    if (v?.plate) this.db.vehicles[uid] = { ...v, plate: v.plate.toUpperCase(), paint: this.db.vehicles[uid]?.paint ?? null };
     this.effects.notify.add(uid);
     return this.getProfile(uid)!;
   }
@@ -532,7 +538,13 @@ export class Engine {
   }
 
   getVehicle(uid: string): Vehicle | null {
-    return this.db.vehicles[uid] ?? null;
+    return this.vehicleOf(uid);
+  }
+
+  /** The vehicle as everyone sees it (siosia_vehicle_json): paint null until one is chosen. */
+  private vehicleOf(uid: string): Vehicle | null {
+    const v = this.db.vehicles[uid];
+    return v ? { ...v, paint: v.paint ?? null } : null;
   }
 
   saveVehicle(uid: string, v: Vehicle): Vehicle {
@@ -552,8 +564,24 @@ export class Engine {
       clean.plate.length >= 2 && clean.plate.length <= 12 &&
       clean.seats >= 1 && clean.seats <= 6;
     if (!ok) throw new ServerError("bad_vehicle");
-    this.db.vehicles[uid] = clean;
-    return clean;
+    // The paint is chosen with the car icon (setCarColour); editing the car keeps it.
+    this.db.vehicles[uid] = { ...clean, paint: this.db.vehicles[uid]?.paint ?? null };
+    return this.vehicleOf(uid)!;
+  }
+
+  /** 2.1 (V38, FR-170): the car's colour name (in the driver's words) and the paint of the car icon. */
+  setCarColour(uid: string, colour: string, paint: string): Vehicle {
+    this.requireUser(uid);
+    if (this.linkedRole(uid) === "rider") throw new ServerError("rider_only");
+    const v = this.db.vehicles[uid];
+    if (!v) throw new ServerError("no_vehicle");
+    const name = String(colour ?? "").trim();
+    const hex = String(paint ?? "");
+    if (name.length < 1 || name.length > 20 || !PAINT_RE.test(hex)) throw new ServerError("bad_vehicle");
+    v.colour = name;
+    v.paint = hex.toLowerCase();
+    this.effects.notify.add(uid);
+    return this.vehicleOf(uid)!;
   }
 
   /** Delete = anonymise rides (nickname → "Deleted user"), drop the vehicle (§9 retention). */
@@ -573,6 +601,8 @@ export class Engine {
       this.notifyAppt(a);
     }
     this.cascadeRides(upcoming.map((a) => a.id));
+    // 2.1: open requests of this client leave everyone's "You could help" list (no provider to tell).
+    if (upcoming.some((a) => a.providerId === null)) this.notifyMembers();
     const told = new Set<string>();
     for (const a of upcoming) {
       const key = a.seriesId ?? a.id;
@@ -632,7 +662,7 @@ export class Engine {
   }
 
   /** 2.0 (V22): requests waiting for my answer (a series once), upcoming items, the next one. */
-  private plannedSummary(uid: string): Pick<MyState, "toAnswer" | "planned" | "nextPlanned"> {
+  private plannedSummary(uid: string): Pick<MyState, "toAnswer" | "openRequests" | "planned" | "nextPlanned"> {
     const appts = Object.values(this.db.appointments ?? {}).filter(
       (a) => (a.clientId === uid || a.providerId === uid) && (a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now
     );
@@ -650,6 +680,7 @@ export class Engine {
           .filter((a) => a.providerId === uid && a.status === "requested" && a.startsAt > this.now)
           .map((a) => a.seriesId ?? a.id)
       ).size,
+      openRequests: this.openFor(uid).length,
       planned: appts.length + rides.length,
       nextPlanned: next ? { ...next, title: this.serviceName(next.serviceId, lang) } : null
     };
@@ -1281,15 +1312,21 @@ export class Engine {
 
   // ---------- 2.0: appointments ----------
 
-  /** Send request (V3, V4, V23): optionally a weekly / every-2-weeks series. */
+  /**
+   * Send request (V3, V4, V23): optionally a weekly / every-2-weeks series. 2.1 (V34): without a
+   * provider it is an open request to every other member — the same rules, minus the provider's.
+   */
   requestService(uid: string, input: ServiceRequestInput): AppointmentView {
     this.requireUser(uid);
     this.sweep();
     const e = this.service(input.serviceId);
     if (!e || e.kind !== "time" || !e.enabled || !e.duration) throw new ServerError("bad_service");
-    const provider = Object.values(this.db.users).find((u) => !u.deleted && u.publicId === input.providerId);
-    if (!provider || provider.id === uid || !this.isMember(provider.id)) throw new ServerError("no_provider");
-    if (!this.offersOf(provider.id).includes(e.id)) throw new ServerError("not_offered");
+    const open = input.providerId == null;
+    const provider = open ? null : Object.values(this.db.users).find((u) => !u.deleted && u.publicId === input.providerId);
+    if (!open) {
+      if (!provider || provider.id === uid || !this.isMember(provider.id)) throw new ServerError("no_provider");
+      if (!this.offersOf(provider.id).includes(e.id)) throw new ServerError("not_offered");
+    }
     const { minLeadMin, maxDays } = this.cfg.booking;
     const t0 = input.startsAt;
     if (!Number.isFinite(t0) || t0 < this.now + minLeadMin * 60_000 || t0 > this.now + maxDays * 86_400_000) throw new ServerError("bad_time");
@@ -1346,7 +1383,7 @@ export class Engine {
       throw new ServerError("too_many");
     const base = {
       clientId: uid,
-      providerId: provider.id,
+      providerId: provider?.id ?? null,
       serviceId: e.id,
       durationMin: d,
       place: place ? cleanPlace(place) : null,
@@ -1391,7 +1428,12 @@ export class Engine {
       first ??= a;
     });
     this.notifyAppt(first!);
-    this.pushAppt(provider.id, "appt_new", first!, this.seriesParams(series));
+    if (provider) this.pushAppt(provider.id, "appt_new", first!, this.seriesParams(series));
+    else {
+      // V36: every other member hears once (a series as its first date); their lists and badges update.
+      for (const m of this.members(uid)) this.pushAppt(m, "appt_open", first!, { ...this.seriesParams(series), open: true });
+      this.notifyMembers();
+    }
     return this.apptView(first!, uid);
   }
 
@@ -1403,6 +1445,43 @@ export class Engine {
     const a = this.db.appointments?.[id];
     if (!a || a.providerId !== uid) throw new ServerError("not_found");
     if (a.status !== "requested") throw new ServerError("illegal_transition");
+    this.settle(uid, a, decision);
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
+  /**
+   * 2.1 "I can do it" (V35, FR-163): the caller becomes the provider of someone's open request and
+   * it is accepted at once — the first taker wins; a series is taken as a whole (its clashing dates
+   * declined, as on Accept); a single request that clashes with the caller's schedule stays open,
+   * and so does a series none of whose open dates the caller is free for (nothing to accept).
+   */
+  takeRequest(uid: string, id: string): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a) throw new ServerError("not_found");
+    if (a.clientId === uid) throw new ServerError("forbidden");
+    if (a.providerId !== null) throw new ServerError("taken");
+    if (a.status !== "requested" || a.startsAt <= this.now) throw new ServerError("illegal_transition");
+    // Before the claim (twin of siosia_take_request): nothing is changed or told when it clashes —
+    // a single request the caller is busy for, or a series none of whose open dates the caller is
+    // free for (every date declined would be no take at all).
+    const free = (o: ApptRow) => !this.providerBusy(uid, o.startsAt, o.durationMin, o.id);
+    const open = a.seriesId ? this.occurrences(a.seriesId).filter((o) => o.providerId === null && o.status === "requested") : [a];
+    if (!open.some(free)) throw new ServerError("overlap");
+    // The claim (SQL: UPDATE … WHERE provider_id IS NULL AND status = 'requested'), then the Accept.
+    if (a.seriesId) {
+      this.db.series![a.seriesId].providerId = uid;
+      for (const o of this.occurrences(a.seriesId)) if (o.providerId === null && o.status === "requested") o.providerId = uid;
+    } else a.providerId = uid;
+    this.settle(uid, a, "accept");
+    this.notifyMembers();
+    return this.apptView(a, uid);
+  }
+
+  /** The provider's answer to a requested appointment (a series as a whole; Accept declines the clashes). */
+  private settle(uid: string, a: ApptRow, decision: "accept" | "decline"): void {
     if (!a.seriesId) {
       if (decision === "accept") {
         if (this.providerBusy(uid, a.startsAt, a.durationMin, a.id)) throw new ServerError("overlap");
@@ -1434,8 +1513,6 @@ export class Engine {
       s.answeredAt = this.now;
       this.pushAppt(a.clientId, accepted > 0 ? "appt_accepted" : "appt_declined", a, { ...this.seriesParams(s), accepted, declined });
     }
-    this.notifyAppt(a);
-    return this.apptView(a, uid);
   }
 
   /** Cancel (FR-102, V25): this one or all remaining; rides follow; the other party is told once. */
@@ -1463,6 +1540,8 @@ export class Engine {
       x.cancelReason = why;
       this.notifyAppt(x);
     }
+    // 2.1: a withdrawn open request leaves everyone's "You could help" list (nobody else is told).
+    if (targets.some((x) => x.providerId === null)) this.notifyMembers();
     this.cascadeRides(targets.map((x) => x.id));
     if (a.seriesId && !this.occurrences(a.seriesId).some((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now)) {
       const s = this.db.series![a.seriesId];
@@ -1478,7 +1557,8 @@ export class Engine {
     this.requireMember(uid);
     this.sweep();
     const a = this.db.appointments?.[id];
-    if (!a || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    // 2.1: an open request also opens for a member who could take it (candidate view, V34).
+    if (!a || (a.clientId !== uid && a.providerId !== uid && !this.takeable(a, uid))) throw new ServerError("not_found");
     return this.apptView(a, uid);
   }
 
@@ -1548,11 +1628,10 @@ export class Engine {
     if (!s || (s.clientId !== uid && s.providerId !== uid)) throw new ServerError("not_found");
     const role: PartyRole = s.clientId === uid ? "client" : "provider";
     s.rideTemplates = s.rideTemplates.filter((x) => !(x.passenger === role && x.leg === leg));
-    this.effects.notify.add(s.clientId);
-    this.effects.notify.add(s.providerId);
+    this.notifyAppt(s);
   }
 
-  /** Planned (V17): upcoming appointments and rides of both roles. */
+  /** Planned (V17): upcoming appointments and rides of both roles; 2.1: others' open requests (V34). */
   planned(uid: string): Planned {
     this.requireMember(uid);
     this.sweep();
@@ -1564,7 +1643,8 @@ export class Engine {
       rides: Object.values(this.db.rides)
         .filter((r) => (r.riderId === uid || r.driverId === uid) && (r.status === "scheduled" || isActive(r.status)))
         .sort((x, y) => (x.scheduledFor ?? x.requestedAt) - (y.scheduledFor ?? y.requestedAt))
-        .map((r) => this.rideView(r, uid))
+        .map((r) => this.rideView(r, uid)),
+      open: this.openFor(uid).map((a) => this.apptView(a, uid))
     };
   }
 
@@ -1595,7 +1675,10 @@ export class Engine {
     const s = Math.round(stars);
     if (!Number.isFinite(stars) || s < 1 || s > 5) throw new ServerError("bad_input");
     if (this.db.ratings.some((x) => x.appointmentId === id && x.fromUser === uid)) throw new ServerError("already_rated");
-    this.db.ratings.push({ appointmentId: id, fromUser: uid, toUser: a.clientId === uid ? a.providerId : a.clientId, stars: s, comment: String(comment ?? "").trim().slice(0, 140), createdAt: this.now });
+    // Done means accepted, so there is a provider (an open request never gets here).
+    const to = a.clientId === uid ? a.providerId : a.clientId;
+    if (!to) throw new ServerError("illegal_transition");
+    this.db.ratings.push({ appointmentId: id, fromUser: uid, toUser: to, stars: s, comment: String(comment ?? "").trim().slice(0, 140), createdAt: this.now });
     this.notifyAppt(a);
   }
 
@@ -1627,6 +1710,38 @@ export class Engine {
 
   private publicParty(uid: string): PublicProvider {
     return { ...this.party(uid), publicId: this.publicIdOf(uid) };
+  }
+
+  /** 2.1: every member with a profile but `except` — who sees an open request (V34). */
+  private members(except: string | null): string[] {
+    return Object.values(this.db.users)
+      .filter((u) => !u.deleted && u.id !== except && this.isMember(u.id))
+      .map((u) => u.id);
+  }
+
+  /** 2.1: an open request changed: everyone's list and badge update (V36). */
+  private notifyMembers(): void {
+    for (const m of this.members(null)) this.effects.notify.add(m);
+  }
+
+  /** 2.1: an open request of someone else, still waiting, and the viewer has a profile. */
+  private takeable(a: ApptRow, uid: string): boolean {
+    const u = this.db.users[uid];
+    return a.providerId === null && a.status === "requested" && a.startsAt > this.now && a.clientId !== uid && !!u && !u.deleted;
+  }
+
+  /** 2.1 (V34, FR-161): the open requests this user could take, soonest first, a series once (its first open date). */
+  private openFor(uid: string): ApptRow[] {
+    const seen = new Set<string>();
+    return Object.values(this.db.appointments ?? {})
+      .filter((a) => this.takeable(a, uid))
+      .sort((x, y) => x.startsAt - y.startsAt)
+      .filter((a) => {
+        const key = a.seriesId ?? a.id;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   }
 
   private occurrences(seriesId: string): ApptRow[] {
@@ -1674,6 +1789,7 @@ export class Engine {
       // A bad template (or booking) must never stop the sweep, which runs inside every call.
       try {
         const user = t.passenger === "client" ? s.clientId : s.providerId;
+        if (!user) continue;
         for (const a of this.occurrences(s.id).filter((x) => x.status === "accepted" && x.startsAt > this.now)) {
           const at = (t.leg === "there" ? a.startsAt : this.endOf(a)) + t.offsetMin * 60_000;
           if (at < this.now + minLeadMin * 60_000 || at > this.now + maxDays * 86_400_000) continue;
@@ -1706,14 +1822,17 @@ export class Engine {
           this.notifyAppt(a);
         }
       s.status = "expired";
-      if (occ[0]) this.pushAppt(s.clientId, "appt_expired", occ[0], this.seriesParams(s));
+      // 2.1 (V37): an open one is "Nobody took it" for the client, and leaves everyone's list.
+      if (occ[0]) this.pushAppt(s.clientId, "appt_expired", occ[0], { ...this.seriesParams(s), ...(s.providerId === null ? { open: true } : {}) });
+      if (s.providerId === null) this.notifyMembers();
     }
     for (const a of Object.values(all)) {
       if (a.status === "requested" && !a.seriesId && a.startsAt <= this.now) {
         a.status = "expired";
         a.endedAt = this.now;
         this.notifyAppt(a);
-        this.pushAppt(a.clientId, "appt_expired", a, {});
+        this.pushAppt(a.clientId, "appt_expired", a, a.providerId === null ? { open: true } : {});
+        if (a.providerId === null) this.notifyMembers();
       } else if (a.status === "accepted" && this.endOf(a) <= this.now) {
         a.status = "done";
         a.endedAt = this.endOf(a);
@@ -1721,6 +1840,7 @@ export class Engine {
       }
     }
     // Reminders: once per slot for both parties; none for a moment that had passed at the request.
+    // An open request has only its client (V37).
     for (const a of Object.values(all)) {
       if ((a.status !== "requested" && a.status !== "accepted") || a.startsAt <= this.now) continue;
       for (const slot of this.cfg.appointment.reminderMin) {
@@ -1728,7 +1848,7 @@ export class Engine {
         if (this.now < moment || a.requestedAt > moment || a.reminded.includes(slot)) continue;
         a.reminded.push(slot);
         this.pushAppt(a.clientId, "appt_reminder", a, this.reminderParams(a, slot, "client"));
-        this.pushAppt(a.providerId, "appt_reminder", a, this.reminderParams(a, slot, "provider"));
+        if (a.providerId) this.pushAppt(a.providerId, "appt_reminder", a, this.reminderParams(a, slot, "provider"));
       }
     }
     // Series rides: occurrences that came within the booking horizon (once a day per series). One
@@ -1747,8 +1867,8 @@ export class Engine {
     return {
       lead: slot,
       role,
-      other: this.db.users[role === "client" ? a.providerId : a.clientId]?.nickname ?? "",
-      status: a.status === "accepted" ? "confirmed" : role === "client" ? "waiting" : "answer",
+      other: this.nick(role === "client" ? a.providerId : a.clientId),
+      status: a.status === "accepted" ? "confirmed" : a.providerId === null ? "open" : role === "client" ? "waiting" : "answer",
       rides: this.attached(a, null).map((x) => ({ leg: x.leg, status: x.status, driver: x.driver?.nickname ?? null }))
     };
   }
@@ -1758,8 +1878,9 @@ export class Engine {
   }
 
   /** An appointment notification in the recipient's language (service name included). */
-  private pushAppt(userId: string, kind: PushKind, a: ApptRow, extra: Partial<PushParams>): void {
-    if (!this.isMember(userId)) return;
+  private pushAppt(userId: string | null, kind: PushKind, a: ApptRow, extra: Partial<PushParams>): void {
+    // An open request has no provider to tell (2.1).
+    if (!userId || !this.isMember(userId)) return;
     const lang = this.db.users[userId]?.language ?? "en";
     this.effects.push.push({
       userId,
@@ -1771,17 +1892,22 @@ export class Engine {
         service: this.serviceName(a.serviceId, lang),
         at: a.startsAt,
         end: this.endOf(a),
-        client: this.db.users[a.clientId]?.nickname ?? "",
-        provider: this.db.users[a.providerId]?.nickname ?? "",
+        client: this.nick(a.clientId),
+        provider: this.nick(a.providerId),
         place: a.place?.label ?? "",
         ...extra
       }
     });
   }
 
-  private notifyAppt(a: ApptRow): void {
+  /** A nickname for a notification; "" for nobody (twin of siosia_nick). */
+  private nick(uid: string | null): string {
+    return (uid && this.db.users[uid]?.nickname) || "";
+  }
+
+  private notifyAppt(a: { clientId: string; providerId: string | null }): void {
     this.effects.notify.add(a.clientId);
-    this.effects.notify.add(a.providerId);
+    if (a.providerId) this.effects.notify.add(a.providerId);
   }
 
   /** A ride that is part of an appointment changed: both parties refetch; news reaches the other party (V12). */
@@ -1823,15 +1949,21 @@ export class Engine {
       }));
   }
 
+  /**
+   * AppointmentView for one of its parties, or (2.1, V34) for a candidate of an open request: what
+   * the request says and who asks — no rides, reminders, ratings, templates or calendar links.
+   */
   private apptView(a: ApptRow, viewer: string): AppointmentView {
     const e = this.service(a.serviceId);
     const s = a.seriesId ? this.db.series?.[a.seriesId] ?? null : null;
-    const role: PartyRole = a.clientId === viewer ? "client" : "provider";
+    const role: ViewerRole = a.clientId === viewer ? "client" : a.providerId === viewer ? "provider" : "candidate";
+    const candidate = role === "candidate";
     const occ = s ? this.occurrences(s.id) : [];
     return {
       id: a.id,
       status: a.status,
       role,
+      open: a.providerId === null && a.status === "requested",
       serviceId: a.serviceId,
       service: e ? { name: { ...e.name }, icon: e.icon } : null,
       startsAt: a.startsAt,
@@ -1842,15 +1974,15 @@ export class Engine {
       price: a.price,
       currency: a.currency,
       client: this.publicParty(a.clientId),
-      provider: this.publicParty(a.providerId),
+      provider: a.providerId ? this.publicParty(a.providerId) : null,
       requestedAt: a.requestedAt,
       answeredAt: a.answeredAt,
       endedAt: a.endedAt,
       cancelledBy: a.cancelledBy,
       cancelReason: a.cancelReason,
-      rides: this.attached(a, viewer),
-      reminders: [...a.reminded],
-      myRating: this.db.ratings.find((x) => x.appointmentId === a.id && x.fromUser === viewer)?.stars ?? null,
+      rides: candidate ? [] : this.attached(a, viewer),
+      reminders: candidate ? [] : [...a.reminded],
+      myRating: candidate ? null : this.db.ratings.find((x) => x.appointmentId === a.id && x.fromUser === viewer)?.stars ?? null,
       series: s
         ? {
             id: s.id,
@@ -1863,9 +1995,11 @@ export class Engine {
             declined: occ.filter((x) => x.status === "declined").map((x) => x.startsAt).sort((x, y) => x - y),
             gaps: occ.filter((x) => x.status === "declined" || x.status === "cancelled").map((x) => x.startsAt).sort((x, y) => x - y),
             starts: occ.map((x) => x.startsAt),
-            rideTemplates: s.rideTemplates.map((t) =>
-              t.passenger === role ? { ...t, pickup: { ...t.pickup }, dropoff: { ...t.dropoff }, mine: true } : { passenger: t.passenger, leg: t.leg, offsetMin: t.offsetMin, mine: false }
-            ),
+            rideTemplates: candidate
+              ? []
+              : s.rideTemplates.map((t) =>
+                  t.passenger === role ? { ...t, pickup: { ...t.pickup }, dropoff: { ...t.dropoff }, mine: true } : { passenger: t.passenger, leg: t.leg, offsetMin: t.offsetMin, mine: false }
+                ),
             ics: null
           }
         : null,
@@ -2062,9 +2196,15 @@ export class Engine {
     return summarizeRatings(stars);
   }
 
+  /** A person as others see them (siosia_party): 2.1 adds the paint of their car (null when none). */
   private party(uid: string) {
     const u = this.db.users[uid];
-    return { nickname: u ? u.nickname : "Deleted user", rating: this.rating(uid), icon: this.masterOf(uid)?.icon ?? null };
+    return {
+      nickname: u ? u.nickname : "Deleted user",
+      rating: this.rating(uid),
+      icon: this.masterOf(uid)?.icon ?? null,
+      paint: this.db.vehicles[uid]?.paint ?? null
+    };
   }
 
   /** FR-044: the vehicle/plate is visible to the rider only once a driver is assigned. */
@@ -2100,7 +2240,7 @@ export class Engine {
       expiresAt: this.expiresAt(r),
       scheduledFor: r.scheduledFor ?? null,
       rider: this.party(r.riderId),
-      driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.db.vehicles[r.driverId] ?? null } : null,
+      driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.vehicleOf(r.driverId) } : null,
       myRating: mine ? mine.stars : null,
       // The appointment and leg are the rider's business only (FR-114).
       appointmentId: role === "rider" ? r.appointmentId ?? null : null,

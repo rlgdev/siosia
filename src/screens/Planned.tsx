@@ -1,18 +1,19 @@
 // P1 Planned (FR-130–132, FR-134, US13): To answer (providers), Rides to take (drivers, the v1
 // open-bookings list), then everything coming up in both roles grouped Today / Tomorrow / date,
 // soonest first, an appointment in progress on top. Refreshes on state changes and every 30 s.
+// 2.1 (FR-161): You could help (N) — others' open requests, soonest first, with I can do it.
 
 import { useCallback, useEffect, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { otherOf, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ProfileIcon } from "../components/ProfileIcon";
 import { dayText, rangeTimes, sameDay, timeText } from "../components/when";
-import { Money, Page, useBusy } from "../components/ui";
+import { Money, Page, RatingBadge, useBusy } from "../components/ui";
 import type { AppointmentView, Planned as PlannedData, RideView } from "../core/types";
 import { useI18n } from "../i18n";
 import { useApp, useListsKey, useStore } from "../state/store";
 import { DriverBookingCard, OpenBookingsList, RiderBookingCard, Route, useOpenBookings } from "./Bookings";
-import { EntryIcon, localText } from "./Catalog";
+import { durationText, EntryIcon, localText } from "./Catalog";
 
 type Item = { kind: "appointment"; at: number; a: AppointmentView } | { kind: "ride"; at: number; r: RideView };
 
@@ -52,6 +53,8 @@ export function Planned() {
 
   const now = store.serverNow();
   const toAnswer = data?.appointments.filter((a) => a.status === "requested" && a.role === "provider") ?? [];
+  // Others' open requests this user could take (a backend without them sends none).
+  const could = data?.open ?? [];
   const items: Item[] = data
     ? [
         ...data.appointments.filter((a) => !toAnswer.includes(a)).map((a): Item => ({ kind: "appointment", at: a.startsAt, a })),
@@ -88,6 +91,14 @@ export function Planned() {
               <h2 className="section-title">{t("planned.toAnswer", { n: toAnswer.length })}</h2>
               {toAnswer.map((a) => (
                 <AppointmentItem key={a.id} a={a} now={now} onChanged={changed} answer />
+              ))}
+            </section>
+          )}
+          {could.length > 0 && (
+            <section className="stack" data-testid="open-requests">
+              <h2 className="section-title">{t("planned.openRequests", { n: could.length })}</h2>
+              {could.map((a) => (
+                <OpenRequestItem key={a.id} a={a} />
               ))}
             </section>
           )}
@@ -163,7 +174,7 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
           <span>{rangeTimes(a.startsAt, a.endsAt, locale)}</span>
         </span>
         <span className="row muted small">
-          <ProfileIcon icon={other.icon} size="sm" /> {t(a.role === "client" ? "appt.provider" : "appt.client", { name: other.nickname })}
+          <ProfileIcon icon={other?.icon} size="sm" paint={other?.paint} /> {partyText(a, t)}
           {a.price !== null && (
             <>
               {" · "}
@@ -217,6 +228,59 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
           </button>
         </div>
       )}
+    </article>
+  );
+}
+
+/**
+ * Someone's open request in P1 (FR-161): service, when, who asks (with rating), place, note, the
+ * repeat and the price; I can do it opens C3 with the take sheet (FR-163).
+ */
+function OpenRequestItem({ a }: { a: AppointmentView }) {
+  const { t, lang, locale } = useI18n();
+  const store = useStore();
+  const now = store.serverNow();
+  const date = (ms: number) => new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }).format(ms);
+  // The dates still to take: from this one on, without the ones the client withdrew (gaps).
+  const gaps = new Set(a.series?.gaps ?? []);
+  const starts = (a.series?.starts ?? []).filter((s) => s >= a.startsAt && !gaps.has(s));
+  const repeat = a.series
+    ? starts.length >= 2
+      ? t("open.series", { rule: t(a.series.rule === "weekly" ? "appt.weekly" : "appt.biweekly"), n: starts.length, first: date(starts[0]), last: date(starts[starts.length - 1]) })
+      : seriesMarker(a, t)
+    : null;
+  return (
+    <article className="card stack planned-item open-item" data-testid="open-request">
+      <button type="button" className="planned-open" onClick={() => store.openPanel("appointment", a.id)} data-testid="open-request-details">
+        <span className="row spread">
+          <strong>
+            <EntryIcon icon={a.service?.icon ?? "📅"} /> {localText(a.service?.name, lang) || a.serviceId}
+          </strong>
+          {a.price !== null && (
+            <strong>
+              <Money amount={a.price} currency={a.currency} />
+            </strong>
+          )}
+        </span>
+        <span data-testid="open-request-when">
+          {dayText(a.startsAt, now, locale, t)} · {rangeTimes(a.startsAt, a.endsAt, locale)} ({durationText(a.durationMin, t)})
+        </span>
+        <span className="row small">
+          <ProfileIcon icon={a.client.icon} size="sm" paint={a.client.paint} /> {partyText(a, t)} <RatingBadge rating={a.client.rating} />
+        </span>
+        <span className="muted small">📍 {a.place ? a.place.label : t("appt.noPlace")}</span>
+        {a.note && <span className="note small">„{a.note}”</span>}
+        {repeat && (
+          <span className="muted small" data-testid="series-marker">
+            {repeat}
+          </span>
+        )}
+      </button>
+      <div className="row">
+        <button type="button" className="btn btn-primary grow" onClick={() => store.openPanel("appointment", `take:${a.id}`)} data-testid="take-request">
+          {t("open.take")}
+        </button>
+      </div>
     </article>
   );
 }

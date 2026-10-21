@@ -23,7 +23,7 @@ iPhone → *Settings → Privacy → Location Services → Safari Websites → W
 
 - **Siosia** — ask for help: a **Ride**, **Learning** (a lesson, homework) or **Childcare**
   (someone with the kids). Each entry shows who offers it; *Nobody offers this yet* means nobody
-  turned it on so far.
+  turned it on so far — ask anyway: everyone in the group then sees your request.
 - **Planned** — your schedule in both roles, day by day: what you asked for, what you agreed to
   do, rides you booked or took as a driver. The button names the next one (*Next: Childcare,
   today 14:00*) and counts requests waiting for your answer.
@@ -63,7 +63,8 @@ it on that phone.
 
 1. **Siosia → Drive with Siosia** and enter your car once: make, model, colour, plate, seats.
    Riders see it only after you accept them. From then on the card reads **Ride — Go online**
-   with the number of rides to take.
+   with the number of rides to take. **Tap the car icon** (on the start screen, your profile or
+   the driving screen) to pick the car's colour: the icon riders see is drawn in it.
 2. Tap **Go online**. Allow location. While you're online Siosia **keeps the screen on** (mount
    the phone) — keep it in front: phones pause location when the screen locks or another app opens. A green bar shows you are sharing your location.
 3. A request appears with a **chime**: rider, distance to pickup, trip and fare, and a **20-second
@@ -155,6 +156,12 @@ pick you up there. Only you see it.
    *I need a ride there / back* if you go by car — or **Decline**.
 3. A repeating request is answered as a whole: Accept confirms every date that fits your schedule
    and declines the clashing ones; both of you see which.
+4. **Open requests.** When someone asks *Anyone who can* (or for a service nobody offers yet),
+   every member gets *Can you help?* and sees it in **Planned → You could help (N)** — the
+   service, time, who asks, place and note. Tap **I can do it** (and tick a ride if you need one):
+   the first to do so has it; the others are told it's taken. A repeating one is taken as a whole
+   (dates you can't do are declined; if you can do none, nothing happens). The asker sees
+   *Waiting for someone to take it* until then.
 
 ## Reminders, changes and rating
 
@@ -196,7 +203,7 @@ is a copy: **it doesn't update by itself** — open the link again after a chang
 | Location off / inaccurate | Allow location (see above); outdoors GPS is better; you can always place pins by hand |
 | Driver: no requests | Be online, app open, screen on, within ~8 km of riders; tap *Show requests* |
 | Rider: car doesn't move | The driver's phone is locked or in another app (Maps) — the car stays greyed with "last seen … ago" and the ride is still on. After 15 min without contact (a booked ride: not before 15 min after its time) Siosia finds another driver; cancelling then isn't held against you |
-| *Nobody offers this yet* | Ask someone in the group to turn it on under ☰ → *Services I offer* |
+| *Nobody offers this yet* | Ask anyway — everyone in the group sees the request and anyone can take it; or ask someone to turn it on under ☰ → *Services I offer* |
 | *Too soon to book* on a ride to an appointment | Less than 30 minutes ahead — ask for a ride under *Siosia → Ride* at the time |
 | Two phones, one person | You can be a driver on one and a rider on another, but not both at once |
 
@@ -226,7 +233,7 @@ odśwież stronę.
 
 - **Siosia** — poproś o pomoc: **Przejazd**, **Nauka** (lekcja, zadanie domowe) albo **Opieka nad
   dziećmi**. Przy każdej usłudze widać, kto ją oferuje; *Nikt tego jeszcze nie oferuje* znaczy, że
-  nikt jej jeszcze nie włączył.
+  nikt jej jeszcze nie włączył — poproś mimo to: Twoją prośbę zobaczy wtedy cała grupa.
 - **Zaplanowane** — Twój plan w obu rolach, dzień po dniu: o co prosisz, na co się zgodziłeś/aś,
   przejazdy zarezerwowane lub wzięte jako kierowca. Przycisk podaje najbliższą pozycję
   (*Następne: Opieka nad dziećmi, dziś 14:00*) i liczbę próśb czekających na Twoją odpowiedź.
@@ -268,7 +275,9 @@ potwierdzenie zastępuje go na tym telefonie.
 
 1. **Siosia → Woź z Siosią** i raz wpisz samochód: marka, model, kolor, numer rejestracyjny,
    miejsca. Pasażer zobaczy go dopiero po przyjęciu kursu. Od tej chwili karta to **Przejazd —
-   przejdź online** z liczbą przejazdów do wzięcia.
+   przejdź online** z liczbą przejazdów do wzięcia. **Dotknij ikony auta** (na ekranie startowym,
+   w profilu albo na ekranie kierowcy), aby wybrać kolor auta: ikona, którą widzą pasażerowie,
+   jest w tym kolorze.
 2. Dotknij **Przejdź online**. Zezwól na lokalizację. Gdy jesteś online, Siosia **nie wygasza
    ekranu** (uchwyt na telefon) — trzymaj ją na wierzchu: telefon wstrzymuje lokalizację po
    zablokowaniu ekranu lub przejściu do innej aplikacji.
@@ -363,6 +372,12 @@ przejazd na termin. Widzisz je tylko Ty.
    zaznacz *Potrzebuję przejazdu tam / z powrotem*, jeśli jedziesz autem — albo **Odrzuć**.
 3. Prośbę powtarzaną odpowiada się w całości: Przyjmij potwierdza każdy termin, który pasuje do
    Twojego planu, a kolidujące odrzuca; oboje widzicie które.
+4. **Otwarte prośby.** Gdy ktoś prosi *Każdego, kto może* (albo o usługę, której nikt jeszcze
+   nie oferuje), każdy dostaje *Możesz pomóc?* i widzi prośbę w **Zaplanowane → Możesz pomóc: N**
+   — usługę, czas, kto prosi, miejsce i notatkę. Dotknij **Mogę to zrobić** (i zaznacz przejazd,
+   jeśli potrzebujesz): pierwsza osoba ją dostaje, pozostali widzą, że jest wzięta. Prośbę
+   powtarzaną bierze się w całości (terminy, których nie możesz, są odrzucane; jeśli nie możesz
+   żadnego, nic się nie dzieje). Proszący widzi *Czeka, aż ktoś się podejmie*.
 
 ## Przypomnienia, zmiany i oceny
 
@@ -404,6 +419,6 @@ terminów. Wpis w kalendarzu to kopia: **sam się nie aktualizuje** — po zmian
 | Lokalizacja wyłączona / niedokładna | Zezwól na lokalizację (wyżej); na zewnątrz GPS działa lepiej; pinezki zawsze można postawić ręcznie |
 | Kierowca: brak zamówień | Bądź online, aplikacja otwarta, ekran włączony, do ~8 km od pasażerów; dotknij *Pokaż zamówienia* |
 | Pasażer: auto stoi | Telefon kierowcy jest zablokowany lub w innej aplikacji (Mapy) — auto zostaje szare z „ostatnio widziany … temu”, a kurs jest aktualny. Po 15 min bez kontaktu (rezerwacja: nie wcześniej niż 15 min po jej godzinie) Siosia szuka innego kierowcy; anulowanie wtedy nie liczy się przeciwko Tobie |
-| *Nikt tego jeszcze nie oferuje* | Poproś kogoś z grupy, by włączył to w ☰ → *Co oferuję* |
+| *Nikt tego jeszcze nie oferuje* | Poproś mimo to — prośbę zobaczy cała grupa i każdy może się podjąć; albo poproś kogoś, by włączył to w ☰ → *Co oferuję* |
 | *Za późno na rezerwację* przejazdu na termin | Mniej niż 30 minut naprzód — zamów w tym czasie *Siosia → Przejazd* |
 | Dwa telefony, jedna osoba | Możesz być kierowcą na jednym i pasażerem na drugim, ale nie jednocześnie |

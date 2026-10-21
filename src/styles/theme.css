@@ -1443,3 +1443,69 @@ body:has(.sharing-banner) .panel-head {
 .cal-choices {
   width: 100%;
 }
+
+/* ---------- 2.1: open requests (C1, S1, P1) and the car colour ---------- */
+.entry-open {
+  color: var(--accent);
+  font-weight: 600;
+}
+.mode-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.open-item {
+  border-color: var(--accent);
+}
+.car-icon-btn {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 2px;
+  border: 1px dashed transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.car-icon-btn:hover {
+  border-color: var(--line);
+}
+.vehicle-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.swatch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.swatch[aria-pressed="true"] {
+  border: 2px solid var(--ink);
+  font-weight: 700;
+}
+.swatch-dot {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}

@@ -189,6 +189,13 @@ export class MockBackend implements Backend {
   requestService(input: ServiceRequestInput) {
     return this.call((e) => e.requestService(this.uid, input));
   }
+  /** 2.1: the Web Lock makes the claim atomic across tabs — the first taker wins. */
+  takeRequest(id: string) {
+    return this.call((e) => e.takeRequest(this.uid, id));
+  }
+  setCarColour(colour: string, paint: string) {
+    return this.call((e) => e.setCarColour(this.uid, colour, paint));
+  }
   answerAppointment(id: string, decision: "accept" | "decline") {
     return this.call((e) => e.answerAppointment(this.uid, id, decision));
   }

@@ -2,6 +2,7 @@
 // as one viewer may see it (FR-114), and the Google Calendar template link. One module for the
 // Edge Function "calendar", the demo's in-browser download and the app, so all three agree; the
 // words are those of the notifications (push-text). Positions and user ids never go in.
+// 2.1: an open request has no provider yet; every function here reads it as such (V37).
 //
 // Single events are written in UTC. A series is one VEVENT with an RRULE: its start is written as
 // local time with the deployment's TZID (and a VTIMEZONE), so every date keeps its wall-clock time
@@ -20,7 +21,8 @@ export interface IcsPlace {
 export interface IcsAppointment {
   id: string;
   status: string;
-  role: "client" | "provider";
+  /** 2.1: "candidate" = a member who could take an open request. */
+  role: "client" | "provider" | "candidate";
   serviceId: string;
   service: { name: { en: string; pl: string }; icon: string } | null;
   startsAt: number;
@@ -29,7 +31,8 @@ export interface IcsAppointment {
   place: IcsPlace | null;
   note: string;
   client: { nickname: string };
-  provider: { nickname: string };
+  /** null while the request is open (2.1: nobody took it yet). */
+  provider: { nickname: string } | null;
   rides: { leg: string; status: string; driver: { nickname: string } | null }[];
   series: { id: string; rule: "weekly" | "biweekly"; count: number; status: string; starts: number[]; gaps: number[] } | null;
 }
@@ -70,6 +73,8 @@ const lng = (l: string): Lang => (l === "pl" ? "pl" : "en");
 const W = {
   en: {
     with: (s: string, o: string) => `${s} with ${o}`,
+    openTitle: (s: string) => `${s} — open request`,
+    openLine: "Open request: anyone in the group can take it",
     ride: (a: string, b: string) => `Ride: ${a} → ${b}`,
     withWho: (n: string) => `With ${n}`,
     forWho: (n: string) => `For ${n}`,
@@ -83,6 +88,8 @@ const W = {
   },
   pl: {
     with: (s: string, o: string) => `${s} — ${o}`,
+    openTitle: (s: string) => `${s} — otwarta prośba`,
+    openLine: "Otwarta prośba: może się jej podjąć każdy w grupie",
     ride: (a: string, b: string) => `Przejazd: ${a} → ${b}`,
     withWho: (n: string) => `Z: ${n}`,
     forWho: (n: string) => `Dla: ${n}`,
@@ -97,7 +104,9 @@ const W = {
 } as const;
 
 const serviceName = (a: IcsAppointment, l: Lang) => a.service?.name[l] || a.service?.name.en || a.serviceId;
-const other = (a: IcsAppointment) => (a.role === "client" ? a.provider.nickname : a.client.nickname);
+/** Nobody took it yet (2.1): no provider. */
+const isOpen = (a: IcsAppointment) => !a.provider;
+const other = (a: IcsAppointment) => (a.role === "client" ? (a.provider?.nickname ?? "") : a.client.nickname);
 const link = (ctx: IcsContext) => (ctx.siteUrl ? `${bare(ctx.siteUrl).replace(/[?#].*$/, "")}?open=planned` : null);
 const gone = (status: string) => status === "cancelled" || status === "declined" || status === "expired";
 const icsStatus = (status: string) => (gone(status) ? "CANCELLED" : status === "requested" ? "TENTATIVE" : "CONFIRMED");
@@ -114,7 +123,7 @@ function asSeries(a: IcsAppointment): IcsAppointment {
 
 export function appointmentTitle(a: IcsAppointment, lang: string): string {
   const l = lng(lang);
-  return W[l].with(serviceName(a, l), other(a));
+  return isOpen(a) ? W[l].openTitle(serviceName(a, l)) : W[l].with(serviceName(a, l), other(a));
 }
 
 export function rideTitle(r: IcsRide, lang: string): string {
@@ -124,9 +133,16 @@ export function rideTitle(r: IcsRide, lang: string): string {
 /** The description: who, status, note, the ride lines the viewer may see, the link back. */
 export function appointmentDetails(a: IcsAppointment, ctx: IcsContext): string {
   const l = lng(ctx.lang);
-  const lines = [a.role === "client" ? W[l].withWho(a.provider.nickname) : W[l].forWho(a.client.nickname)];
+  const open = isOpen(a);
+  const lines: string[] = [];
+  if (a.role !== "client") lines.push(W[l].forWho(a.client.nickname));
+  else if (!open) lines.push(W[l].withWho(other(a)));
+  if (open) lines.push(W[l].openLine);
   if (gone(a.status)) lines.push(W[l].cancelled);
-  else lines.push(apptStatusText(a.status === "accepted" || a.status === "done" ? "confirmed" : a.role === "client" ? "waiting" : "answer", a.provider.nickname, l));
+  else
+    lines.push(
+      apptStatusText(a.status === "accepted" || a.status === "done" ? "confirmed" : open ? "open" : a.role === "client" ? "waiting" : "answer", a.provider?.nickname, l)
+    );
   if (a.note) lines.push(`${W[l].note}: ${a.note}`);
   for (const r of a.rides) lines.push(rideLineText({ leg: r.leg, status: r.status as never, driver: r.driver?.nickname ?? null }, l));
   const back = link(ctx);

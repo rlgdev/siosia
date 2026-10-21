@@ -75,6 +75,120 @@ describe("2.0 appointment texts (§8, V8)", () => {
   });
 });
 
+describe("2.1 open request texts (FR-162, FR-164, V36, V37)", () => {
+  const TZ = "Europe/Warsaw";
+  const H = 3600_000;
+  // As the backends send it: no provider ("" from siosia_nick, or nothing), open: true.
+  const open = { service: "Childcare", at: AT, end: AT + 3 * H, client: "Toria", provider: "", place: "Husarska 16", open: true };
+  const series = { ...open, service: "Learning", end: AT + H, rule: "weekly" as const, count: 8, first: AT, last: AT + 49 * 24 * H };
+
+  it("asks every other member to take it, with the range and the place, opening Planned", () => {
+    expect(pushText("appt_open", open, "en", TZ, "a1")).toEqual({
+      title: "Can you help? Childcare",
+      body: "Toria asks: Childcare Mon 12 Oct, 14:30–17:30 · Husarska 16. Open Siosia to take it.",
+      tag: "appt_open:a1"
+    });
+    expect(pushText("appt_open", { ...open, service: "Opieka nad dziećmi" }, "pl", TZ, "a1")).toMatchObject({
+      title: "Możesz pomóc? Opieka nad dziećmi",
+      body: expect.stringMatching(/^Toria prosi o pomoc: Opieka nad dziećmi .*12 paź, 14:30–17:30 · Husarska 16\. Otwórz Siosię, aby się tego podjąć\.$/)
+    });
+    expect(pushText("appt_open", { ...open, place: "" }, "en", TZ).body).toBe("Toria asks: Childcare Mon 12 Oct, 14:30–17:30. Open Siosia to take it.");
+    expect(openUrl("appt_open")).toBe("./?open=planned");
+  });
+
+  it("names a series' rule, span and count, like appt_new", () => {
+    expect(pushText("appt_open", series, "en", TZ).body).toBe(
+      "Toria asks: Learning every Mon 14:30–15:30, 12 Oct – 30 Nov (8×) · Husarska 16. Open Siosia to take it."
+    );
+    expect(pushText("appt_open", { ...series, service: "Nauka" }, "pl", TZ).body).toBe(
+      "Toria prosi o pomoc: Nauka co poniedziałek 14:30–15:30, 12 paź – 30 lis (8×) · Husarska 16. Otwórz Siosię, aby się tego podjąć."
+    );
+    expect(pushText("appt_open", { ...series, rule: "biweekly", first: AT + 2 * 24 * H }, "pl", TZ).body).toMatch(/co drugą środę/);
+  });
+
+  it("reads 'waiting for someone to take it' while open — also a waiting client with no provider", () => {
+    expect(apptStatusText("open", null, "en")).toBe("Waiting for someone to take it");
+    expect(apptStatusText("open", undefined, "pl")).toBe("Czeka, aż ktoś się podejmie");
+    expect(apptStatusText("waiting", "", "en")).toBe("Waiting for someone to take it");
+    expect(apptStatusText("waiting", null, "pl")).toBe("Czeka, aż ktoś się podejmie");
+    expect(apptStatusText("waiting", "Siosia", "en")).toBe("Waiting for an answer from Siosia"); // unchanged with a provider
+  });
+
+  it("tells the client that nobody took it when it expires — no provider name", () => {
+    expect(pushText("appt_expired", open, "en", TZ, "a1")).toEqual({
+      title: "Nobody took it",
+      body: "Nobody took your request: Childcare Mon 12 Oct, 14:30–17:30.",
+      tag: "appt_expired:a1"
+    });
+    expect(pushText("appt_expired", { ...open, service: "Opieka" }, "pl", TZ)).toMatchObject({
+      title: "Nikt się nie zgłosił",
+      body: expect.stringMatching(/^Nikt nie przyjął Twojej prośby: Opieka .*12 paź, 14:30–17:30\.$/)
+    });
+    expect(pushText("appt_expired", series, "en", TZ).body).toBe("Nobody took your request: Learning every Mon 14:30–15:30, 12 Oct – 30 Nov (8×).");
+    // Without the flag, a missing provider still reads as open; with a provider, the 2.0 words stay.
+    expect(pushText("appt_expired", { ...open, open: undefined, provider: undefined }, "en", TZ).title).toBe("Nobody took it");
+    expect(pushText("appt_expired", { ...open, open: undefined, provider: "Siosia" }, "en", TZ).title).toBe("No answer from Siosia");
+  });
+
+  it("reminds the client of an open request without a provider", () => {
+    const r = { ...open, lead: 1440, role: "client" as const, other: "", status: "open", rides: [] };
+    expect(pushText("appt_reminder", r, "en", TZ, "a1")).toEqual({
+      title: "Tomorrow: Childcare Mon 12 Oct, 14:30–17:30",
+      body: "Your open request · Husarska 16. Waiting for someone to take it.",
+      tag: "appt_reminder:a1"
+    });
+    expect(pushText("appt_reminder", { ...r, lead: 120 }, "pl", TZ).body).toBe("Twoja otwarta prośba · Husarska 16. Czeka, aż ktoś się podejmie.");
+    expect(pushText("appt_reminder", { ...r, place: "" }, "en", TZ).body).toBe("Your open request. Waiting for someone to take it.");
+    // Status "waiting" with no provider and no flag (a backend that does not say open) reads the same.
+    expect(pushText("appt_reminder", { ...r, open: undefined, status: "waiting", provider: undefined }, "en", TZ).body).toBe(
+      "Your open request · Husarska 16. Waiting for someone to take it."
+    );
+    // No other party for any other reason: the place and the status, never "With  ·".
+    expect(pushText("appt_reminder", { ...r, open: undefined, status: "confirmed" }, "en", TZ).body).toBe("Husarska 16. Confirmed.");
+    expect(pushText("appt_reminder", { ...r, open: undefined, status: "confirmed", place: "" }, "pl", TZ).body).toBe("Potwierdzone.");
+  });
+
+  it("the taker's accept reads as a normal accept", () => {
+    expect(pushText("appt_accepted", { ...open, open: undefined, provider: "Ewa" }, "en", TZ)).toMatchObject({
+      title: "Ewa accepted",
+      body: "Childcare Mon 12 Oct, 14:30–17:30 is confirmed."
+    });
+  });
+
+  it("never prints undefined, null or a placeholder for any appointment kind without a provider", () => {
+    const kinds = [
+      "appt_new",
+      "appt_open",
+      "appt_accepted",
+      "appt_declined",
+      "appt_cancelled",
+      "appt_expired",
+      "appt_reminder"
+    ] as const;
+    const variants = [
+      open,
+      series,
+      { ...open, provider: undefined },
+      { ...open, provider: null as unknown as string, open: undefined },
+      { ...open, place: "", other: "", status: "open", lead: 120, role: "client" as const },
+      { ...open, other: undefined, status: "waiting", lead: 1440, role: "client" as const, open: undefined },
+      { ...open, who: undefined, from: AT, left: 2 }
+    ];
+    for (const kind of kinds)
+      for (const lang of ["en", "pl"])
+        for (const p of variants) {
+          const t = pushText(kind, p, lang, TZ, "a1");
+          for (const s of [t.title, t.body]) {
+            expect(s, `${kind} ${lang} ${JSON.stringify(p)}`).not.toMatch(/undefined|null|NaN|[{}]/);
+            // No empty name: no leading or dangling punctuation, no "With ·", "by :", "przez:." …
+            expect(s, `${kind} ${lang}`).not.toMatch(/^[\s.,·:]|\s[.,:·]\s*$|\s{2}|(?<!\p{L})(With|Z|from|od|by)\s*[.,·:]|przez:\s*[.,·]/u);
+            expect(s.length, `${kind} ${lang}`).toBeGreaterThan(5);
+          }
+          expect(t.tag).toBe(`${kind}:a1`);
+        }
+  });
+});
+
 describe("push-dispatch", () => {
   const row = (id: number, user: string, attempts = 0): OutboxRow => ({
     id,
@@ -110,6 +224,18 @@ describe("push-dispatch", () => {
     await dispatch(deps);
     expect(JSON.parse(log.payloads[0])).toMatchObject({ title: "Siosia accepted", tag: "appt_accepted:a9", url: "./?open=planned" });
     expect(openUrl("driver_coming")).toBe("./");
+  });
+
+  it("sends an open request to a member as appt_open, tagged by the appointment, opening Planned (V36)", async () => {
+    const params = { service: "Childcare", at: AT, end: AT + 3 * 3600_000, client: "Toria", provider: "", place: "Husarska 16", open: true };
+    const { deps, log } = fake([{ ...row(11, "ewa", 1), kind: "appt_open", ride_id: null, appointment_id: "a11", params }], { ewa: [sub("https://push/e")] }, {});
+    expect(await dispatch(deps)).toEqual({ sent: 1, failed: 0, dropped: 0 });
+    expect(JSON.parse(log.payloads[0])).toEqual({
+      title: "Can you help? Childcare",
+      body: "Toria asks: Childcare Mon 12 Oct, 14:30–17:30 · Husarska 16. Open Siosia to take it.",
+      tag: "appt_open:a11",
+      url: "./?open=planned"
+    });
   });
 
   it("opens Planned for booking notifications too: their Take it lives there in 2.0, ./ is S1 (C16, FR-125)", async () => {

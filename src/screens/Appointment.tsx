@@ -2,10 +2,13 @@
 // time, the other party, place, note, status, the series line, attached rides — and the actions:
 // Accept (C4: with a ride there / back) or Decline, Add ride (for all remaining on a series),
 // Remove ride, Cancel (this one / all remaining), Add to calendar, Rate.
+// 2.1 (FR-163, FR-164): someone's open request (role candidate) shows its details and I can do it —
+// the take sheet is C4 with takeRequest instead of Accept; the client's own open request waits for
+// someone to take it and can be withdrawn.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { otherOf, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { isOpen, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { fromInput, toLocalInput } from "../components/datetime";
 import { PlaceInput } from "../components/PlaceInput";
 import { ProfileIcon } from "../components/ProfileIcon";
@@ -14,6 +17,7 @@ import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui"
 import { computeFare } from "../core/fare";
 import { derivedPickup } from "../core/time";
 import type { AppointmentView, Leg, Place, RideTemplateInput } from "../core/types";
+import { ServerError } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { navigationUrl } from "../services/device";
@@ -26,11 +30,24 @@ export function AppointmentPanel() {
   const app = useApp();
   const store = useStore();
   const arg = app.panelArg ?? "";
+  // "accept:<id>" opens C4 at once (To answer), "take:<id>" the take sheet (You could help).
   const accepting = arg.startsWith("accept:");
-  const id = accepting ? arg.slice(7) : arg;
+  const taking = arg.startsWith("take:");
+  const id = accepting ? arg.slice(7) : taking ? arg.slice(5) : arg;
   const [a, setA] = useState<AppointmentView | null>(null);
   const [failed, setFailed] = useState(false);
-  const load = useCallback(() => store.api.getAppointment(id).then(setA, () => setFailed(true)), [store, id]);
+  // The reload said not_found: no longer this viewer's — an open request someone else took or the
+  // client withdrew. The stale view (with its I can do it) is dropped; a failure like being
+  // offline keeps it.
+  const [gone, setGone] = useState(false);
+  const load = useCallback(
+    () =>
+      store.api.getAppointment(id).then(
+        (v) => (setA(v), setFailed(false), setGone(false)),
+        (e) => (setFailed(true), setGone(e instanceof ServerError && e.code === "not_found"))
+      ),
+    [store, id]
+  );
   // Not on every MyState: an online driver's heartbeat brings one every 4 s.
   const listsKey = useListsKey();
   useEffect(() => {
@@ -38,19 +55,29 @@ export function AppointmentPanel() {
   }, [load, listsKey]);
   return (
     <Panel title={a ? localText(a.service?.name, app.lang) || a.serviceId : t("appt.title")} onClose={() => store.closePanel()}>
-      {failed && !a ? <p className="form-error">{t("err.not_found")}</p> : !a ? <p className="muted">{t("common.loading")}</p> : <AppointmentDetails a={a} reload={load} accepting={accepting} />}
+      {gone || (failed && !a) ? (
+        <p className="form-error" data-testid="appt-gone">
+          {t(a?.role === "candidate" ? "open.gone" : "err.not_found")}
+        </p>
+      ) : !a ? (
+        <p className="muted">{t("common.loading")}</p>
+      ) : (
+        <AppointmentDetails a={a} reload={load} accepting={accepting} taking={taking} />
+      )}
     </Panel>
   );
 }
 
-function AppointmentDetails({ a, reload, accepting }: { a: AppointmentView; reload: () => void; accepting: boolean }) {
+function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentView; reload: () => void; accepting: boolean; taking: boolean }) {
   const { t, lang, locale } = useI18n();
   const app = useApp();
   const store = useStore();
   const dep = app.deployment!;
   const now = store.serverNow();
   const [busy, run, error] = useBusy();
-  const [mode, setMode] = useState<"view" | "accept" | "cancel" | Leg>(accepting && a.status === "requested" && a.role === "provider" ? "accept" : "view");
+  const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | Leg>(
+    accepting && a.status === "requested" && a.role === "provider" ? "accept" : taking && a.status === "requested" && a.role === "candidate" ? "take" : "view"
+  );
   const other = otherOf(a);
   const chip = statusChip(a, lang, t);
   const inProgress = a.status === "accepted" && a.startsAt <= now && now < a.endsAt;
@@ -94,10 +121,10 @@ function AppointmentDetails({ a, reload, accepting }: { a: AppointmentView; relo
               ` · ${t("appt.declinedDates", { dates: a.series.declined.map((d) => new Intl.DateTimeFormat(locale, { day: "numeric", month: "short" }).format(d)).join(", ") })}`}
           </p>
         )}
-        <p className="row">
-          <ProfileIcon icon={other.icon} size="sm" />
-          <span>{t(a.role === "client" ? "appt.provider" : "appt.client", { name: other.nickname })}</span>
-          <RatingBadge rating={other.rating} />
+        <p className="row" data-testid="appt-party">
+          <ProfileIcon icon={other?.icon} size="sm" paint={other?.paint} />
+          <span>{partyText(a, t)}</span>
+          {other && <RatingBadge rating={other.rating} />}
         </p>
         <p data-testid="appt-place">
           📍 {a.place ? a.place.label : t("appt.noPlace")}{" "}
@@ -114,7 +141,9 @@ function AppointmentDetails({ a, reload, accepting }: { a: AppointmentView; relo
           </p>
         )}
         {a.status === "cancelled" && a.cancelledBy && (
-          <p className="muted small">{t(`appt.cancelledBy.${a.cancelledBy}` as MessageKey, { name: a.cancelledBy === "client" ? a.client.nickname : a.provider.nickname })}</p>
+          <p className="muted small">
+            {t(`appt.cancelledBy.${a.cancelledBy}` as MessageKey, { name: a.cancelledBy === "client" ? a.client.nickname : (a.provider?.nickname ?? t("appt.anyone")) })}
+          </p>
         )}
       </section>
 
@@ -147,11 +176,12 @@ function AppointmentDetails({ a, reload, accepting }: { a: AppointmentView; relo
       )}
 
       {mode === "accept" && <AcceptSheet a={a} onDone={() => setMode("view")} reload={reload} />}
+      {mode === "take" && <AcceptSheet a={a} take onDone={() => setMode("view")} reload={reload} />}
       {(mode === "there" || mode === "back") && <AddRide a={a} leg={mode} onDone={() => setMode("view")} reload={reload} />}
 
       {mode === "cancel" && (
         <section className="card stack" data-testid="cancel-box">
-          <p>{t(a.status === "accepted" ? "appt.cancelConfirm" : "appt.withdrawConfirm", { name: other.nickname })}</p>
+          <p>{isOpen(a) ? t("appt.withdrawOpen") : t(a.status === "accepted" ? "appt.cancelConfirm" : "appt.withdrawConfirm", { name: otherName(a, t) })}</p>
           <div className="row wrap">
             <button type="button" className="btn btn-danger" disabled={busy} onClick={() => void act(() => store.api.cancelAppointment(a.id, null, "one")).then(() => setMode("view"))} data-testid="cancel-one">
               {a.series ? t("appt.cancelOne") : t("appt.cancelYes")}
@@ -170,6 +200,11 @@ function AppointmentDetails({ a, reload, accepting }: { a: AppointmentView; relo
 
       {mode === "view" && (
         <section className="stack">
+          {a.status === "requested" && a.role === "candidate" && (
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => setMode("take")} data-testid="appt-take">
+              {t("open.take")}
+            </button>
+          )}
           {a.status === "requested" && a.role === "provider" && (
             <div className="row">
               <button type="button" className="btn btn-primary grow" disabled={busy} onClick={() => setMode("accept")} data-testid="appt-accept">
@@ -310,23 +345,51 @@ async function bookDraft(store: ReturnType<typeof useStore>, a: AppointmentView,
   }
 }
 
-/** C4: Accept, optionally with a ride there and / or back (on a series: for every occurrence). */
-function AcceptSheet({ a, onDone, reload }: { a: AppointmentView; onDone: () => void; reload: () => void }) {
+/**
+ * C4: Accept, optionally with a ride there and / or back (on a series: for every occurrence).
+ * `take` (2.1, FR-163): someone's open request — take it (the first taker wins; a series as a
+ * whole), then book the ticked rides the same way. A retry after a failed ride books the rides only.
+ */
+function AcceptSheet({ a, take, onDone, reload }: { a: AppointmentView; take?: boolean; onDone: () => void; reload: () => void }) {
   const { t } = useI18n();
   const app = useApp();
   const store = useStore();
   const home = app.profile?.home ?? null;
   const [want, setWant] = useState<Record<Leg, boolean>>({ there: false, back: false });
   const [drafts, setDrafts] = useState<Record<Leg, RideDraft>>({ there: initialDraft(a, "there", home), back: initialDraft(a, "back", home) });
-  const [busy, run, error] = useBusy();
+  const [busy, run, error, setError] = useBusy();
   const minLead = app.deployment!.booking.minLeadMin;
   const legs = (["there", "back"] as const).filter((l) => want[l]);
   const blocked = legs.some((l) => draftProblem(a, l, drafts[l], minLead) !== null);
+  // The take / accept happens once: when it went through but a ride failed, Confirm again only
+  // books the rides not booked yet — taking again would be refused as taken (by the caller).
+  const claimed = useRef<AppointmentView | null>(null);
+  const booked = useRef(new Set<Leg>());
   const confirm = () =>
     run(async () => {
       try {
-        await store.api.answerAppointment(a.id, "accept");
-        for (const leg of legs) await bookDraft(store, a, leg, drafts[leg], !!a.series);
+        let mine = claimed.current ?? a;
+        if (!claimed.current) {
+          // Take only while the view is still a candidate's (a reload may already show me as provider).
+          if (take && a.role === "candidate") {
+            try {
+              mine = await store.api.takeRequest(a.id);
+            } catch (e) {
+              // Someone was faster, or it clashes with the taker's own schedule: say which.
+              if (e instanceof ServerError && (e.code === "taken" || e.code === "overlap")) {
+                setError(t(e.code === "taken" ? "open.taken" : "open.overlap"));
+                return;
+              }
+              throw e;
+            }
+          } else if (!take && a.status === "requested") await store.api.answerAppointment(a.id, "accept");
+          claimed.current = mine;
+        }
+        for (const leg of legs) {
+          if (booked.current.has(leg)) continue;
+          await bookDraft(store, mine, leg, drafts[leg], !!mine.series);
+          booked.current.add(leg);
+        }
         onDone();
       } finally {
         reload();
@@ -334,8 +397,9 @@ function AcceptSheet({ a, onDone, reload }: { a: AppointmentView; onDone: () => 
       }
     });
   return (
-    <section className="card stack" data-testid="accept-sheet">
-      <h3>{t("appt.acceptTitle")}</h3>
+    <section className="card stack" data-testid={take ? "take-sheet" : "accept-sheet"}>
+      <h3>{t(take ? "open.takeTitle" : "appt.acceptTitle")}</h3>
+      {take && a.series && <p className="muted small">{t("open.takeSeries")}</p>}
       {a.place &&
         (["there", "back"] as const).map((leg) => (
           <div key={leg} className="stack">
@@ -353,7 +417,13 @@ function AcceptSheet({ a, onDone, reload }: { a: AppointmentView; onDone: () => 
         </p>
       )}
       <div className="row">
-        <button type="button" className="btn btn-primary grow" disabled={busy || blocked} onClick={() => void confirm()} data-testid="accept-confirm">
+        <button
+          type="button"
+          className="btn btn-primary grow"
+          disabled={busy || blocked}
+          onClick={() => void confirm()}
+          data-testid={take ? "take-confirm" : "accept-confirm"}
+        >
           {t("appt.confirmAccept")}
         </button>
         <button type="button" className="btn btn-secondary" onClick={onDone}>
@@ -418,7 +488,7 @@ function RateBox({ a, onRated }: { a: AppointmentView; onRated: () => void }) {
   const [busy, run, error] = useBusy();
   return (
     <section className="card stack" data-testid="appt-rate">
-      <strong>{t("appt.rate", { name: otherOf(a).nickname })}</strong>
+      <strong>{t("appt.rate", { name: otherName(a, t) })}</strong>
       <StarInput value={stars} onChange={setStars} disabled={busy} />
       <input value={comment} maxLength={140} onChange={(e) => setComment(e.target.value)} placeholder={t("receipt.comment")} aria-label={t("receipt.comment")} />
       {error && <p className="form-error">{error}</p>}

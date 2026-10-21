@@ -61,7 +61,7 @@ export function DriverTrip({ ride, rt, route, timers, busy, error, onAdvance, on
         )}
       </p>
       <p>
-        <ProfileIcon icon={ride.rider.icon} size="sm" /> <strong>{ride.rider.nickname}</strong> <RatingBadge rating={ride.rider.rating} /> ·{" "}
+        <ProfileIcon icon={ride.rider.icon} size="sm" paint={ride.rider.paint} /> <strong>{ride.rider.nickname}</strong> <RatingBadge rating={ride.rider.rating} /> ·{" "}
         <Money amount={ride.fare} currency={ride.currency} />
       </p>
       <p className="muted">{s === "in_progress" ? ride.dropoff.label : ride.pickup.label}</p>

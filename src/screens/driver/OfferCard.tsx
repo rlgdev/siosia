@@ -63,7 +63,7 @@ export function OfferCard({ offer, queued, offerS, from, busy, onAccept, onDecli
         </span>
       </div>
       <p>
-        <ProfileIcon icon={offer.rider.icon} size="sm" /> <strong>{offer.rider.nickname}</strong> <RatingBadge rating={offer.rider.rating} />
+        <ProfileIcon icon={offer.rider.icon} size="sm" paint={offer.rider.paint} /> <strong>{offer.rider.nickname}</strong> <RatingBadge rating={offer.rider.rating} />
       </p>
       <p className="offer-pickup">{t("offer.toPickup", { km: fmtKm(km), min: fmtMin(min) })}</p>
       <p className="muted">{t("offer.trip", { km: fmtKm(offer.estKm), min: fmtMin(offer.estMin) })}</p>

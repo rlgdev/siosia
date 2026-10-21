@@ -9,6 +9,7 @@ var LEG = {
 function apptStatusText(status, provider, lang) {
   const l = lang === "pl" ? "pl" : "en";
   if (status === "confirmed") return l === "pl" ? "Potwierdzone" : "Confirmed";
+  if (status === "open" || status === "waiting" && !provider) return l === "pl" ? "Czeka, a\u017C kto\u015B si\u0119 podejmie" : "Waiting for someone to take it";
   if (status === "waiting") return l === "pl" ? `Czeka na odpowied\u017A: ${provider}` : `Waiting for an answer from ${provider}`;
   if (status === "answer") return l === "pl" ? "Odpowiedz, prosz\u0119" : "Please answer";
   return "";
@@ -35,6 +36,8 @@ var lng = (l) => l === "pl" ? "pl" : "en";
 var W = {
   en: {
     with: (s, o) => `${s} with ${o}`,
+    openTitle: (s) => `${s} \u2014 open request`,
+    openLine: "Open request: anyone in the group can take it",
     ride: (a, b) => `Ride: ${a} \u2192 ${b}`,
     withWho: (n) => `With ${n}`,
     forWho: (n) => `For ${n}`,
@@ -48,6 +51,8 @@ var W = {
   },
   pl: {
     with: (s, o) => `${s} \u2014 ${o}`,
+    openTitle: (s) => `${s} \u2014 otwarta pro\u015Bba`,
+    openLine: "Otwarta pro\u015Bba: mo\u017Ce si\u0119 jej podj\u0105\u0107 ka\u017Cdy w grupie",
     ride: (a, b) => `Przejazd: ${a} \u2192 ${b}`,
     withWho: (n) => `Z: ${n}`,
     forWho: (n) => `Dla: ${n}`,
@@ -61,7 +66,8 @@ var W = {
   }
 };
 var serviceName = (a, l) => a.service?.name[l] || a.service?.name.en || a.serviceId;
-var other = (a) => a.role === "client" ? a.provider.nickname : a.client.nickname;
+var isOpen = (a) => !a.provider;
+var other = (a) => a.role === "client" ? a.provider?.nickname ?? "" : a.client.nickname;
 var link = (ctx) => ctx.siteUrl ? `${bare(ctx.siteUrl).replace(/[?#].*$/, "")}?open=planned` : null;
 var gone = (status) => status === "cancelled" || status === "declined" || status === "expired";
 var icsStatus = (status) => gone(status) ? "CANCELLED" : status === "requested" ? "TENTATIVE" : "CONFIRMED";
@@ -73,16 +79,23 @@ function asSeries(a) {
 }
 function appointmentTitle(a, lang) {
   const l = lng(lang);
-  return W[l].with(serviceName(a, l), other(a));
+  return isOpen(a) ? W[l].openTitle(serviceName(a, l)) : W[l].with(serviceName(a, l), other(a));
 }
 function rideTitle(r, lang) {
   return W[lng(lang)].ride(r.pickup.label, r.dropoff.label);
 }
 function appointmentDetails(a, ctx) {
   const l = lng(ctx.lang);
-  const lines = [a.role === "client" ? W[l].withWho(a.provider.nickname) : W[l].forWho(a.client.nickname)];
+  const open = isOpen(a);
+  const lines = [];
+  if (a.role !== "client") lines.push(W[l].forWho(a.client.nickname));
+  else if (!open) lines.push(W[l].withWho(other(a)));
+  if (open) lines.push(W[l].openLine);
   if (gone(a.status)) lines.push(W[l].cancelled);
-  else lines.push(apptStatusText(a.status === "accepted" || a.status === "done" ? "confirmed" : a.role === "client" ? "waiting" : "answer", a.provider.nickname, l));
+  else
+    lines.push(
+      apptStatusText(a.status === "accepted" || a.status === "done" ? "confirmed" : open ? "open" : a.role === "client" ? "waiting" : "answer", a.provider?.nickname, l)
+    );
   if (a.note) lines.push(`${W[l].note}: ${a.note}`);
   for (const r of a.rides) lines.push(rideLineText({ leg: r.leg, status: r.status, driver: r.driver?.nickname ?? null }, l));
   const back = link(ctx);

@@ -52,6 +52,12 @@ const randomKey = () =>
 const PING_TIMEOUT_MS = 5000;
 const REBUILD_DELAY_MS = 2000;
 
+// A database not upgraded to 2.1 yet (the migration is re-run on release) leaves out the 2.1
+// fields: no open requests, no paint.
+const withOpen = (a: AppointmentView): AppointmentView => ({ ...a, open: a.open ?? false });
+const withOpenCount = (s: MyState): MyState => ({ ...s, openRequests: s.openRequests ?? 0 });
+const withPaint = (v: Vehicle): Vehicle => ({ ...v, paint: v.paint ?? null });
+
 /** Maps GoTrue errors to messages the user can act on (instead of a generic "unavailable"). */
 function authError(e: { status?: number; code?: string; message: string }): ServerError {
   const code = e.code ?? "";
@@ -232,23 +238,29 @@ export class SupabaseBackend implements Backend {
   saveProfile(nickname: string, language: Lang) {
     return this.rpc<Profile>("siosia_save_profile", { p_nickname: nickname, p_language: language });
   }
-  getVehicle() {
-    return this.rpc<Vehicle | null>("siosia_get_vehicle");
+  async getVehicle() {
+    const v = await this.rpc<Vehicle | null>("siosia_get_vehicle");
+    return v && withPaint(v);
   }
-  saveVehicle(v: Vehicle) {
-    return this.rpc<Vehicle>("siosia_save_vehicle", {
+  async saveVehicle(v: Vehicle) {
+    // The paint stays as it is (set with setCarColour).
+    const saved = await this.rpc<Vehicle>("siosia_save_vehicle", {
       p_make: v.make,
       p_model: v.model,
       p_colour: v.colour,
       p_plate: v.plate,
       p_seats: v.seats
     });
+    return withPaint(saved);
+  }
+  async setCarColour(colour: string, paint: string) {
+    return withPaint(await this.rpc<Vehicle>("siosia_set_car_colour", { p_colour: colour, p_paint: paint }));
   }
   async deleteProfile() {
     await this.rpc("siosia_delete_profile");
   }
-  myState() {
-    return this.rpc<MyState>("siosia_my_state");
+  async myState() {
+    return withOpenCount(await this.rpc<MyState>("siosia_my_state"));
   }
   getRide(rideId: string) {
     return this.rpc<RideView>("siosia_get_ride", { p_ride: rideId });
@@ -276,11 +288,11 @@ export class SupabaseBackend implements Backend {
     // Realtime authorisation is evaluated on join: re-join "drivers" so presence tracking is allowed.
     if (online) this.drivers?.rebuild();
   }
-  heartbeat(pos: LatLng | null) {
-    return this.rpc<MyState>("siosia_heartbeat", { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null });
+  async heartbeat(pos: LatLng | null) {
+    return withOpenCount(await this.rpc<MyState>("siosia_heartbeat", { p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null }));
   }
-  refreshOffers(pos: LatLng) {
-    return this.rpc<MyState>("siosia_refresh_offers", { p_lat: pos.lat, p_lng: pos.lng });
+  async refreshOffers(pos: LatLng) {
+    return withOpenCount(await this.rpc<MyState>("siosia_refresh_offers", { p_lat: pos.lat, p_lng: pos.lng }));
   }
   decideOffer(offerId: string, decision: OfferDecision) {
     return this.rpc<"won" | "ok">("siosia_decide_offer", { p_offer: offerId, p_decision: decision });
@@ -306,13 +318,17 @@ export class SupabaseBackend implements Backend {
   requestService(input: ServiceRequestInput) {
     return this.rpc<AppointmentView>("siosia_request_service", {
       p_service: input.serviceId,
-      p_provider: input.providerId,
+      // null = an open request to anyone in the group (2.1)
+      p_provider: input.providerId ?? null,
       p_starts_at: new Date(input.startsAt).toISOString(),
       p_duration: input.durationMin,
       p_place: input.place,
       p_note: input.note,
       p_repeat: input.repeat ?? null
     });
+  }
+  takeRequest(id: string) {
+    return this.rpc<AppointmentView>("siosia_take_request", { p_id: id });
   }
   answerAppointment(id: string, decision: "accept" | "decline") {
     return this.rpc<AppointmentView>("siosia_answer_appointment", { p_id: id, p_decision: decision });
@@ -329,8 +345,9 @@ export class SupabaseBackend implements Backend {
   async dropRideTemplate(seriesId: string, leg: Leg) {
     await this.rpc("siosia_drop_ride_template", { p_series: seriesId, p_leg: leg });
   }
-  planned() {
-    return this.rpc<Planned>("siosia_planned");
+  async planned() {
+    const p = await this.rpc<Planned>("siosia_planned");
+    return { ...p, appointments: p.appointments.map(withOpen), open: (p.open ?? []).map(withOpen) };
   }
   timeline() {
     return this.rpc<HistoryItem[]>("siosia_timeline");

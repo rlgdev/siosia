@@ -2,6 +2,8 @@
 // time (15-minute steps, at least booking.minLeadMin ahead), duration, repeat (none / weekly /
 // every 2 weeks; until a date or a number of times), place (default My place), note, the price per
 // occurrence when the entry has one. Send request stays disabled until the form is valid.
+// 2.1 (FR-094, FR-161): "Anyone who can" sends an open request (providerId null) that everyone in
+// the group sees until someone takes it; preselected when nobody offers the entry.
 
 import { useEffect, useMemo, useState } from "react";
 import { fromInput, roundUp, seriesStarts, toDateInput, toLocalInput } from "../components/datetime";
@@ -13,6 +15,9 @@ import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
 
 type Repeat = "none" | "weekly" | "biweekly";
+
+/** The provider choice "Anyone who can" (an open request). */
+const ANYONE = "*anyone";
 
 export function RequestPanel() {
   const { t, lang, locale } = useI18n();
@@ -76,7 +81,10 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   const dep = app.deployment!;
   const [busy, run, error] = useBusy();
   const d = entry.duration!;
-  const [provider, setProvider] = useState(entry.providers.length === 1 ? entry.providers[0].publicId ?? "" : "");
+  const [provider, setProvider] = useState(
+    entry.providers.length === 0 ? ANYONE : entry.providers.length === 1 ? (entry.providers[0].publicId ?? "") : ""
+  );
+  const open = provider === ANYONE;
   const minStart = roundUp(Date.now() + (dep.booking.minLeadMin + 1) * 60_000, 15);
   const [start, setStart] = useState(() => toLocalInput(roundUp(Date.now() + 24 * 3600_000, 60)));
   const [duration, setDuration] = useState(d.default);
@@ -117,7 +125,15 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   const send = () =>
     run(async () => {
       const rep: RepeatInput | undefined = repeat === "none" ? undefined : by === "times" ? { every, count: times } : { every, until: fromInput(until) };
-      await store.api.requestService({ serviceId: entry.id, providerId: provider, startsAt: startMs, durationMin: duration, place, note: note.trim(), repeat: rep });
+      await store.api.requestService({
+        serviceId: entry.id,
+        providerId: open ? null : provider,
+        startsAt: startMs,
+        durationMin: duration,
+        place,
+        note: note.trim(),
+        repeat: rep
+      });
       if (keepHome && place) await store.api.saveHome(place).then(() => store.reloadProfile());
       // The request now waits in Planned (US9).
       store.goFromPanel("planned");
@@ -147,7 +163,16 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
             </span>
           </label>
         ))}
+        <label className="switch-row">
+          <input type="radio" name="provider" checked={open} onChange={() => setProvider(ANYONE)} data-testid="request-anyone" />
+          <span>{t("request.anyone")}</span>
+        </label>
       </fieldset>
+      {open && (
+        <p className="notice notice-info" data-testid="request-open-note">
+          {t("request.openNote")}
+        </p>
+      )}
       <label className="field">
         <span>{t("request.start")}</span>
         <input

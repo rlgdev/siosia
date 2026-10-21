@@ -1,4 +1,5 @@
 // Driver mode: D1 dashboard with the online switch, D2 offer overlay, D3 trip, D4 summary.
+// 2.1 (FR-170): D1 names the car next to its icon; tapping the icon picks the car's colour.
 
 import { AppHint, PushPrompt } from "../../components/AppInstall";
 import { useCallback, useEffect, useState } from "react";
@@ -13,7 +14,8 @@ import { useApp, useStore } from "../../state/store";
 import { AfterRide } from "../AfterRide";
 import { DriverTrip } from "./DriverTrip";
 import { OfferCard } from "./OfferCard";
-import { MasterChip } from "../../components/ProfileIcon";
+import { CarIconButton, MasterChip, ownCarIcon } from "../../components/ProfileIcon";
+import { PLAIN_CAR } from "../../components/profileIcons";
 import { VehicleSetup } from "./VehicleForm";
 import { ScreenOnToggle } from "../../components/ScreenOn";
 
@@ -177,7 +179,7 @@ function DriverMain() {
   let fitPoints: LatLng[] = [];
   let fitKey = "";
   const me = rt.fix;
-  if (me) markers.push({ id: "me", kind: "car", pos: me, heading: me.heading });
+  if (me) markers.push({ id: "me", kind: "car", pos: me, heading: me.heading, paint: app.vehicle?.paint });
   if (offer) {
     markers.push({ id: "pickup", kind: "pickup", pos: offer.pickup }, { id: "dropoff", kind: "dropoff", pos: offer.dropoff });
     fitPoints = [me, offer.pickup, offer.dropoff].filter(Boolean) as LatLng[];
@@ -214,6 +216,7 @@ function DriverMain() {
         <AppHint />
         <PushPrompt />
         <MasterChip />
+        <VehicleLine />
         <div className="online-row">
           <div>
             <span className={`dot ${rt.online ? "dot-on" : "dot-off"}`} aria-hidden="true" />
@@ -324,6 +327,24 @@ function DriverMain() {
           {toast}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * "Red Porsche Taycan · WX 5555" with the car icon (FR-170). A master profile's own car icon is
+ * already on the chip above, so the line then names the car only.
+ */
+export function VehicleLine() {
+  const app = useApp();
+  const v = app.vehicle;
+  if (!v) return null;
+  return (
+    <div className="vehicle-line">
+      {!ownCarIcon(app.profile) && <CarIconButton icon={PLAIN_CAR} size="sm" />}
+      <span data-testid="vehicle-line">
+        {v.colour} {v.make} {v.model} · {v.plate}
+      </span>
     </div>
   );
 }
