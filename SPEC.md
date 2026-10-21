@@ -115,7 +115,7 @@ T16|x|calendar: shared `supabase/functions/_shared/ics.ts` (appt, series, ride; 
 T17|x|open requests backend: SQL + engine twin (provider_id null, candidates' list, take, appt_open push, notify all, expiry/reminders client-only, limits) + mock/supabase adapters + sql/engine tests|V34,V35,V36,V37,V19,FR-160–164
 T18|x|open requests UI: C1 entries never disabled + hint, C2 "Anyone who can" + visibility note, P1 "You could help (N)" + I can do it (take sheet w/ ride ticks), S1 badge, C3 candidate view, chips/texts for provider null, i18n EN/PL, robot Siosia takes open requests, component + e2e tests|V34–V37,FR-090,FR-094,FR-161,FR-163
 T19|x|car colour: vehicles.paint + set_car_colour (SQL + engine), icon tint (ProfileIcon paint), colour sheet on car icon tap, rider views tinted, i18n, tests|V38,FR-170
-T20|~|release 2.1: review, re-run migration on live DB, push-dispatch bundle redeploy, push main, verify live|§15,V30–V38
+T20|x|release 2.1: review, re-run migration on live DB, push-dispatch bundle redeploy, push main, verify live|§15,V30–V38
 
 ## §B bugs
 
