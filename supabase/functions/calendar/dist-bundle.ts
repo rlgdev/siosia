@@ -29,6 +29,12 @@ function rideLineText(r, lang) {
       return `${head}: ${l === "pl" ? "nie znaleziono kierowcy" : "no driver found"}`;
   }
 }
+function kidsText(names, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  const list = (names ?? []).map((n) => String(n ?? "").trim()).filter(Boolean);
+  if (list.length < 2) return list[0] ?? "";
+  return `${list.slice(0, -1).join(", ")} ${l === "pl" ? "i" : "and"} ${list[list.length - 1]}`;
+}
 
 // supabase/functions/_shared/ics.ts
 var RIDE_ALARM_MIN = 30;
@@ -41,6 +47,7 @@ var W = {
     ride: (a, b) => `Ride: ${a} \u2192 ${b}`,
     withWho: (n) => `With ${n}`,
     forWho: (n) => `For ${n}`,
+    withKids: (k) => `With ${k}`,
     driver: (n) => `Driver: ${n}`,
     rider: (n) => `Rider: ${n}`,
     noDriver: "No driver yet",
@@ -56,6 +63,7 @@ var W = {
     ride: (a, b) => `Przejazd: ${a} \u2192 ${b}`,
     withWho: (n) => `Z: ${n}`,
     forWho: (n) => `Dla: ${n}`,
+    withKids: (k) => `Z: ${k}`,
     driver: (n) => `Kierowca: ${n}`,
     rider: (n) => `Pasa\u017Cer: ${n}`,
     noDriver: "Jeszcze bez kierowcy",
@@ -90,6 +98,8 @@ function appointmentDetails(a, ctx) {
   const lines = [];
   if (a.role !== "client") lines.push(W[l].forWho(a.client.nickname));
   else if (!open) lines.push(W[l].withWho(other(a)));
+  const kids = a.role === "provider" ? kidsText((a.kids ?? []).map((k) => k.name), l) : "";
+  if (kids) lines.push(W[l].withKids(kids));
   if (open) lines.push(W[l].openLine);
   if (gone(a.status)) lines.push(W[l].cancelled);
   else

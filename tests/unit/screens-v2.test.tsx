@@ -2,6 +2,8 @@
 // planned, C3 appointment, H1 history, S2 additions — EN and PL, with a fake backend.
 // 2.1: open requests (FR-160–164, V34–V37) — C1 never disabled, C2 Anyone who can, P1 You could
 // help, C3 candidate view and the take sheet, provider null on every screen.
+// 2.3: kids (S2 My kids, the C2 picker, the C3 cards / Change / rate-a-kid, the P1 line), photos
+// (the pickers, the avatars) and the chat sheet (FR-200–225, V44–V48).
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,9 +11,25 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { AddToCalendar } from "../../src/components/AddToCalendar";
+import { CHAT_HEARTBEAT_MS, ChatPanel } from "../../src/components/ChatSheet";
 import { toLocalInput } from "../../src/components/datetime";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
-import type { AppointmentView, CatalogItem, Lang, MyState, Place, Planned as PlannedData, Profile, RideView, ServiceRequestInput } from "../../src/core/types";
+import type {
+  AppointmentView,
+  AttachedKid,
+  CatalogItem,
+  ChatMessage,
+  ChatThread,
+  Kid,
+  KidInput,
+  Lang,
+  MyState,
+  Place,
+  Planned as PlannedData,
+  Profile,
+  RideView,
+  ServiceRequestInput
+} from "../../src/core/types";
 import { ServerError } from "../../src/core/types";
 import { I18nProvider } from "../../src/i18n";
 import { en } from "../../src/i18n/en";
@@ -29,6 +47,8 @@ import { AppStore, StoreContext } from "../../src/state/store";
 // No network in tests: a fixed road route.
 vi.mock("../../src/services/routing", () => ({ getRoute: async () => ({ km: 5, min: 12, line: [], estimate: false }) }));
 vi.mock("../../src/services/geocode", () => ({ GeocodeError: class extends Error {}, reverseLabel: async () => "Warszawska 269", searchAddress: vi.fn(async () => []) }));
+// jsdom has no canvas: the resize is a pass-through to a JPEG blob here (photo.test.ts covers the real one).
+vi.mock("../../src/components/photo", () => ({ resizeToJpeg: vi.fn(async (f: Blob) => new Blob([f], { type: "image/jpeg" })) }));
 
 afterEach(() => {
   vi.useRealTimers();
@@ -50,6 +70,7 @@ const PROFILE: Profile = {
   icon: null,
   fixedFare: null,
   publicId: "pub-toria",
+  photo: null,
   offers: [],
   offersPreset: false,
   home: { lat: 52.25, lng: 20.82, label: "Warszawska 269" }
@@ -227,6 +248,9 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     myRating: null,
     series: null,
     calendar: { google: null, ics: null },
+    kids: [],
+    kidCount: 0,
+    unread: 0,
     ...over
   };
 }
@@ -565,6 +589,7 @@ const MY: MyState = {
   openBookings: 2,
   toAnswer: 0,
   openRequests: 0,
+  unreadChats: 0,
   planned: 1,
   nextPlanned: null
 };
@@ -1012,5 +1037,510 @@ describe("2.1 a party's car icon is drawn in their paint (FR-170, V38, U4)", () 
     setup("en", <Planned />, { planned: async () => ({ appointments: [appt({ provider: PAINTED })], rides: [], open: [] }) });
     const item = await screen.findByTestId("planned-appointment");
     expect(bodyFill(within(item).getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+  });
+});
+
+// ---------- 2.3: kids, photos, chat (FR-200–225, V44–V48) ----------
+
+const THIS_YEAR = new Date().getFullYear();
+const KID_ZOSIA: Kid = {
+  id: "k1",
+  name: "Zosia",
+  photo: null,
+  bornYear: THIS_YEAR - 7,
+  note: "Nut allergy",
+  rating: { mean: 4.5, count: 2 },
+  ratings: [
+    { appointmentId: "a0", by: "Siosia", stars: 5, comment: "Lovely afternoon", at: Date.now() - 86_400_000 },
+    { appointmentId: "a00", by: "Ewa", stars: 4, comment: "", at: Date.now() - 3 * 86_400_000 }
+  ]
+};
+const KID_KUBA: Kid = { id: "k2", name: "Kuba", photo: "data:image/jpeg;base64,/9j/KUBA", bornYear: null, note: "", rating: { mean: null, count: 0 }, ratings: [] };
+/** A kid as the appointment's views carry it (the server computes the age). */
+const attached = (k: Kid, over: Partial<AttachedKid> = {}): AttachedKid => ({ id: k.id, name: k.name, photo: k.photo, age: k.bornYear === null ? null : THIS_YEAR - k.bornYear, note: k.note, rating: k.rating, myRating: null, ...over });
+const H = 3600_000;
+
+describe("2.3 S2 My kids and photos (FR-200, FR-203, FR-210)", () => {
+  it("lists the kids with age, rating and their ratings; adds, edits and removes one", async () => {
+    let kids: Kid[] = [KID_ZOSIA, KID_KUBA];
+    const kidsApi = vi.fn(async () => kids);
+    const addKid = vi.fn<Backend["addKid"]>(async (input: KidInput) => {
+      const k: Kid = { id: "k3", ...input, photo: null, rating: { mean: null, count: 0 }, ratings: [] };
+      kids = [...kids, k];
+      return k;
+    });
+    const updateKid = vi.fn<Backend["updateKid"]>(async (id, input) => {
+      kids = kids.map((k) => (k.id === id ? { ...k, ...input } : k));
+      return kids.find((k) => k.id === id)!;
+    });
+    const removeKid = vi.fn<Backend["removeKid"]>(async (id) => {
+      kids = kids.filter((k) => k.id !== id);
+    });
+    setup("en", <ProfilePanel />, { getProfile: async () => PROFILE, kids: kidsApi, addKid, updateKid, removeKid } as Partial<Backend>, { panel: "profile" });
+    const section = await screen.findByTestId("my-kids");
+    expect(section).toHaveTextContent("My kids");
+    const zosia = await within(section).findByTestId("kid-card-k1");
+    expect(zosia).toHaveTextContent("Zosia");
+    expect(zosia).toHaveTextContent("age 7");
+    expect(zosia).toHaveTextContent("★ 4.5");
+    expect(zosia).toHaveTextContent("(2)");
+    expect(zosia).toHaveTextContent("„Nut allergy”");
+    expect(zosia.querySelector(".avatar")).toHaveTextContent("Z"); // no photo: the initial
+    const kuba = within(section).getByTestId("kid-card-k2");
+    expect(within(kuba).getByTestId("avatar-photo")).toHaveAttribute("src", KID_KUBA.photo);
+    expect(kuba).toHaveTextContent("New");
+    expect(kuba).not.toHaveTextContent("age");
+    // The ratings unfold: who, when, stars, comment.
+    expect(within(zosia).queryByTestId("kid-ratings-list-k1")).toBeNull();
+    await userEvent.click(within(zosia).getByTestId("kid-ratings-k1"));
+    const list = within(zosia).getByTestId("kid-ratings-list-k1");
+    expect(list).toHaveTextContent("★★★★★");
+    expect(list).toHaveTextContent("Siosia");
+    expect(list).toHaveTextContent("„Lovely afternoon”");
+    expect(list).toHaveTextContent("★★★★ Ewa");
+    await userEvent.click(within(kuba).getByTestId("kid-ratings-k2"));
+    expect(within(kuba).getByTestId("kid-ratings-list-k2")).toHaveTextContent("No ratings yet");
+    // Add.
+    await userEvent.click(within(section).getByTestId("kid-add"));
+    expect(within(section).getByTestId("kid-save")).toBeDisabled();
+    await userEvent.type(within(section).getByTestId("kid-name"), "Ola");
+    await userEvent.selectOptions(within(section).getByTestId("kid-born"), String(THIS_YEAR - 3));
+    await userEvent.type(within(section).getByTestId("kid-note"), "Naps at 13:00");
+    await userEvent.click(within(section).getByTestId("kid-save"));
+    await waitFor(() => expect(addKid).toHaveBeenCalledWith({ name: "Ola", bornYear: THIS_YEAR - 3, note: "Naps at 13:00" }));
+    expect(await within(section).findByTestId("kid-card-k3")).toHaveTextContent("Ola");
+    expect(within(section).getByTestId("kid-card-k3")).toHaveTextContent("age 3");
+    // Edit.
+    await userEvent.click(within(section).getByTestId("kid-edit-k2"));
+    const name = within(section).getByTestId("kid-name");
+    expect(name).toHaveValue("Kuba");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Jakub");
+    await userEvent.click(within(section).getByTestId("kid-save"));
+    await waitFor(() => expect(updateKid).toHaveBeenCalledWith("k2", { name: "Jakub", bornYear: null, note: "" }));
+    expect(await within(section).findByText("Jakub")).toBeInTheDocument();
+    // Remove, after a confirmation.
+    await userEvent.click(within(section).getByTestId("kid-remove-k1"));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Remove Zosia? The photo and the ratings go too.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeKid).toHaveBeenCalledWith("k1"));
+    await waitFor(() => expect(within(section).queryByTestId("kid-card-k1")).toBeNull());
+  }, 15_000);
+
+  it("stops at 8 kids, shows the empty state, and says it all in Polish", async () => {
+    const eight: Kid[] = Array.from({ length: 8 }, (_, i) => ({ ...KID_KUBA, id: `k${i}`, name: `Kid ${i}`, photo: null }));
+    const first = setup("pl", <ProfilePanel />, { getProfile: async () => PROFILE, kids: async () => eight } as Partial<Backend>, { panel: "profile" });
+    const section = await screen.findByTestId("my-kids");
+    expect(section).toHaveTextContent("Moje dzieci");
+    await within(section).findByTestId("kid-card-k7");
+    expect(within(section).queryByTestId("kid-add")).toBeNull();
+    expect(section).toHaveTextContent("Najwyżej 8 dzieci.");
+    first.unmount();
+    setup("pl", <ProfilePanel />, { getProfile: async () => PROFILE, kids: async () => [] } as Partial<Backend>, { panel: "profile" });
+    expect(await screen.findByTestId("kids-empty")).toHaveTextContent("Nie ma jeszcze dzieci.");
+    await userEvent.click(screen.getByTestId("kid-add"));
+    expect(screen.getByTestId("kid-form")).toHaveTextContent("Imię");
+    expect(screen.getByTestId("kid-form")).toHaveTextContent("Rok urodzenia");
+    expect(screen.getByTestId("kid-born")).toHaveTextContent("Nie podano");
+    expect(screen.getByTestId("kid-save")).toHaveTextContent("Zapisz");
+  });
+
+  it("the 9th kid the server refuses (too_many) reads as the kids limit, not the bookings one; the form stays — in EN and PL (C18)", async () => {
+    const addKid = vi.fn<Backend["addKid"]>().mockRejectedValue(new ServerError("too_many"));
+    for (const [lang, text] of [
+      ["en", "Up to 8 kids."],
+      ["pl", "Najwyżej 8 dzieci."]
+    ] as const) {
+      const view = setup(lang, <ProfilePanel />, { getProfile: async () => PROFILE, kids: async () => [KID_ZOSIA], addKid }, { panel: "profile" });
+      const section = await screen.findByTestId("my-kids");
+      await within(section).findByTestId("kid-card-k1");
+      await userEvent.click(within(section).getByTestId("kid-add"));
+      await userEvent.type(within(section).getByTestId("kid-name"), "Ola");
+      await userEvent.click(within(section).getByTestId("kid-save"));
+      const alert = await within(section).findByRole("alert");
+      expect(alert).toHaveTextContent(text);
+      expect(alert).not.toHaveTextContent(/bookings|rezerwacji/);
+      expect(within(section).getByTestId("kid-form")).toBeInTheDocument();
+      view.unmount();
+    }
+    expect(addKid).toHaveBeenCalledTimes(2);
+  });
+
+  it("stores a resized photo for the profile and for a kid, removes one, and refuses what is no picture — in Polish", async () => {
+    const photo = await import("../../src/components/photo");
+    const setPhoto = vi.fn<Backend["setPhoto"]>(async () => "https://x/signed");
+    const profile: Profile = { ...PROFILE, language: "pl", photo: "data:image/jpeg;base64,/9j/ME" };
+    const getProfile = vi.fn(async () => profile);
+    const kidsApi = vi.fn(async () => [KID_ZOSIA]);
+    setup("pl", <ProfilePanel />, { getProfile, kids: kidsApi, setPhoto } as Partial<Backend>, { panel: "profile", profile });
+    const mine = await screen.findByTestId("profile-photo");
+    expect(mine).toHaveTextContent("Twoje zdjęcie");
+    expect(within(mine).getByTestId("avatar-photo")).toHaveAttribute("src", profile.photo);
+    expect(within(mine).getByTestId("profile-photo-pick")).toHaveTextContent("Zmień zdjęcie");
+    const input = within(mine).getByTestId("profile-photo-file");
+    expect(input).toHaveAttribute("accept", "image/*");
+    // No `capture`: with it iOS / Android open the camera only, never the gallery (C3, C7).
+    expect(input).not.toHaveAttribute("capture");
+    const file = new File(["png-bytes"], "me.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(setPhoto).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(photo.resizeToJpeg)).toHaveBeenCalledWith(file);
+    expect(setPhoto.mock.calls[0][0]).toEqual({ kind: "profile" });
+    expect(setPhoto.mock.calls[0][1]).toBeInstanceOf(Blob);
+    expect((setPhoto.mock.calls[0][1] as Blob).type).toBe("image/jpeg");
+    await waitFor(() => expect(getProfile).toHaveBeenCalledTimes(2)); // the profile reloads
+    await userEvent.click(within(mine).getByTestId("profile-photo-remove"));
+    await waitFor(() => expect(setPhoto).toHaveBeenLastCalledWith({ kind: "profile" }, null));
+    // A kid's photo.
+    const kid = await screen.findByTestId("kid-card-k1");
+    expect(within(kid).getByTestId("kid-photo-k1-pick")).toHaveTextContent("Dodaj zdjęcie");
+    expect(within(kid).queryByTestId("kid-photo-k1-remove")).toBeNull();
+    fireEvent.change(within(kid).getByTestId("kid-photo-k1-file"), { target: { files: [file] } });
+    await waitFor(() => expect(setPhoto).toHaveBeenLastCalledWith({ kind: "kid", id: "k1" }, expect.any(Blob)));
+    await waitFor(() => expect(kidsApi).toHaveBeenCalledTimes(2));
+    // What the browser cannot decode never leaves the phone.
+    vi.mocked(photo.resizeToJpeg).mockRejectedValueOnce(new Error("not an image"));
+    fireEvent.change(within(kid).getByTestId("kid-photo-k1-file"), { target: { files: [new File(["x"], "x.txt", { type: "text/plain" })] } });
+    expect(await within(kid).findByRole("alert")).toHaveTextContent("Nie udało się użyć tego obrazu.");
+    expect(setPhoto).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("2.3 C2: the kids picker (FR-201)", () => {
+  it("shows a tick per own kid and sends the ticked ones as kidIds; nothing without kids", async () => {
+    const requestService = vi.fn(async (_input: ServiceRequestInput) => ({}) as never);
+    const first = setup("en", <RequestPanel />, { catalog: async () => CATALOG, requestService, kids: async () => [KID_ZOSIA, KID_KUBA] }, { panel: "request", panelArg: "childcare" });
+    const box = await screen.findByTestId("request-kids");
+    expect(box).toHaveTextContent("Kids");
+    expect(box).toHaveTextContent("Zosia · age 7");
+    expect(within(box).getByTestId("avatar-photo")).toHaveAttribute("src", KID_KUBA.photo);
+    await userEvent.click(screen.getByTestId("request-kids-info"));
+    expect(screen.getByTestId("request-kids-tip")).toHaveTextContent("Tick who will be there.");
+    await userEvent.click(screen.getByTestId("kid-k1"));
+    await userEvent.click(screen.getByTestId("kid-k2"));
+    await userEvent.click(screen.getByTestId("kid-k1")); // unticked again
+    await userEvent.click(screen.getByTestId("request-send"));
+    await waitFor(() => expect(requestService).toHaveBeenCalled());
+    expect(requestService.mock.calls[0][0].kidIds).toEqual(["k2"]);
+    expect(requestService.mock.calls[0][0].serviceId).toBe("childcare");
+    first.unmount();
+    setup("pl", <RequestPanel />, { catalog: async () => CATALOG, requestService, kids: async () => [] }, { panel: "request", panelArg: "childcare" });
+    await screen.findByTestId("request-send");
+    expect(screen.queryByTestId("request-kids")).toBeNull();
+  });
+});
+
+describe("2.3 C3: the kids of an appointment (FR-201–203)", () => {
+  it("the provider sees the kids' cards (name, photo, age, note, rating), never a Change", async () => {
+    const a = appt({ role: "provider", client: EWA, provider: TORIA, kids: [attached(KID_ZOSIA), attached(KID_KUBA)], kidCount: 2 });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    const box = await screen.findByTestId("appt-kids");
+    expect(box).toHaveTextContent("Kids");
+    const zosia = within(box).getByTestId("attached-kid-k1");
+    expect(zosia).toHaveTextContent("Zosia");
+    expect(zosia).toHaveTextContent("age 7");
+    expect(zosia).toHaveTextContent("„Nut allergy”");
+    expect(zosia).toHaveTextContent("★ 4.5");
+    expect(within(within(box).getByTestId("attached-kid-k2")).getByTestId("avatar-photo")).toHaveAttribute("src", KID_KUBA.photo);
+    expect(screen.queryByTestId("appt-kids-change")).toBeNull();
+    expect(screen.queryByTestId("appt-rate-kids")).toBeNull(); // not done yet
+  });
+
+  it("once done, the provider rates each attached kid once within 24 h; a given rating reads as done", async () => {
+    const now = Date.now();
+    let current = appt({ status: "done", role: "provider", client: EWA, provider: TORIA, startsAt: now - 5 * H, endsAt: now - 2 * H, endedAt: now - 2 * H, kids: [attached(KID_ZOSIA), attached(KID_KUBA, { myRating: 4 })], kidCount: 2 });
+    const getAppointment = vi.fn(async () => current);
+    const rateKid = vi.fn<Backend["rateKid"]>(async () => {
+      current = { ...current, kids: current.kids.map((k) => (k.id === "k1" ? { ...k, myRating: 5 } : k)) };
+    });
+    const first = setup("en", <AppointmentPanel />, { getAppointment, rateKid }, { panel: "appointment", panelArg: "a1" });
+    const rate = await screen.findByTestId("appt-rate-kids");
+    const zosia = within(rate).getByTestId("rate-kid-k1");
+    expect(zosia).toHaveTextContent("How was it with Zosia?");
+    expect(within(rate).getByTestId("rate-kid-k2")).toHaveTextContent("Kuba — you rated 4 ★");
+    expect(within(zosia).getByTestId("rate-kid-k1-send")).toBeDisabled();
+    await userEvent.click(within(zosia).getByRole("radio", { name: "5 of 5 stars" }));
+    await userEvent.type(within(zosia).getByRole("textbox"), "Great");
+    await userEvent.click(within(zosia).getByTestId("rate-kid-k1-send"));
+    await waitFor(() => expect(rateKid).toHaveBeenCalledWith("a1", "k1", 5, "Great"));
+    await waitFor(() => expect(screen.getByTestId("rate-kid-k1")).toHaveTextContent("Zosia — you rated 5 ★"));
+    expect(screen.queryByTestId("rate-kid-k1-send")).toBeNull();
+    first.unmount();
+    // After 24 h only what was given remains, in Polish.
+    const late = appt({ status: "done", role: "provider", client: EWA, provider: TORIA, startsAt: now - 30 * H, endsAt: now - 27 * H, endedAt: now - 27 * H, kids: [attached(KID_ZOSIA), attached(KID_KUBA, { myRating: 4 })], kidCount: 2 });
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => late }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("rate-kid-k2")).toHaveTextContent("Kuba — Twoja ocena: 4 ★");
+    expect(screen.queryByTestId("rate-kid-k1")).toBeNull();
+    expect(screen.getByTestId("appt-kids")).toHaveTextContent("wiek: 7");
+  });
+
+  it("the client changes the kids until the end; a candidate sees only the count — in Polish", async () => {
+    let a = appt({ kids: [attached(KID_ZOSIA)], kidCount: 1 });
+    const getAppointment = vi.fn(async () => a);
+    const setAppointmentKids = vi.fn<Backend["setAppointmentKids"]>(async (_id, ids) => {
+      a = { ...a, kids: [KID_ZOSIA, KID_KUBA].filter((k) => ids.includes(k.id)).map((k) => attached(k)), kidCount: ids.length };
+      return a;
+    });
+    const first = setup("pl", <AppointmentPanel />, { getAppointment, setAppointmentKids, kids: async () => [KID_ZOSIA, KID_KUBA] }, { panel: "appointment", panelArg: "a1" });
+    const box = await screen.findByTestId("appt-kids");
+    expect(box).toHaveTextContent("Dzieci");
+    expect(box).toHaveTextContent("Zosia");
+    expect(box).toHaveTextContent("wiek: 7");
+    await userEvent.click(screen.getByTestId("appt-kids-change"));
+    const editor = await screen.findByTestId("appt-kids-editor");
+    expect(await within(editor).findByTestId("kid-k1")).toBeChecked();
+    expect(within(editor).getByTestId("kid-k2")).not.toBeChecked();
+    await userEvent.click(within(editor).getByTestId("kid-k2"));
+    await userEvent.click(within(editor).getByTestId("appt-kids-save"));
+    await waitFor(() => expect(setAppointmentKids).toHaveBeenCalledWith("a1", ["k1", "k2"]));
+    await waitFor(() => expect(screen.getByTestId("appt-kids")).toHaveTextContent("Kuba"));
+    expect(screen.queryByTestId("appt-kids-editor")).toBeNull();
+    first.unmount();
+    // Over: no Change, and the client never rates kids.
+    const now = Date.now();
+    const over = appt({ status: "done", startsAt: now - 5 * H, endsAt: now - 2 * H, endedAt: now - 2 * H, kids: [attached(KID_ZOSIA)], kidCount: 1 });
+    const second = setup("en", <AppointmentPanel />, { getAppointment: async () => over }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-kids")).toHaveTextContent("Zosia");
+    expect(screen.queryByTestId("appt-kids-change")).toBeNull();
+    expect(screen.queryByTestId("appt-rate-kids")).toBeNull();
+    second.unmount();
+    // A candidate of an open request: how many, no names.
+    const third = setup("en", <AppointmentPanel />, { getAppointment: async () => candidate({ kidCount: 2 }) }, { panel: "appointment", panelArg: "a7" });
+    expect(await screen.findByTestId("appt-kid-count")).toHaveTextContent("2 kids");
+    expect(screen.getByTestId("appt-kids")).not.toHaveTextContent("Zosia");
+    third.unmount();
+    // A client without kids attached: "No kids attached" and Change (their kids may be picked later).
+    setup("en", <AppointmentPanel />, { getAppointment: async () => appt(), kids: async () => [KID_ZOSIA] }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-kids")).toHaveTextContent("No kids attached");
+    expect(screen.getByTestId("appt-kids-change")).toBeInTheDocument();
+  });
+
+  it("a client with no kids of their own gets no Kids card and no Change; the editor's Save is off on an empty list (C20)", async () => {
+    const none = vi.fn<Backend["kids"]>(async () => []);
+    const first = setup("en", <AppointmentPanel />, { getAppointment: async () => appt(), kids: none }, { panel: "appointment", panelArg: "a1" });
+    await screen.findByTestId("appt-party");
+    await waitFor(() => expect(none).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByTestId("appt-kids")).toBeNull();
+    expect(screen.queryByTestId("appt-kids-change")).toBeNull();
+    expect(screen.getByTestId("chat-open")).toBeInTheDocument(); // the rest of C3 is there
+    first.unmount();
+    // The only kid was removed in another tab between C3 and Change: nothing to save.
+    const kids = vi.fn<Backend["kids"]>().mockResolvedValueOnce([KID_ZOSIA]).mockResolvedValue([]);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => appt(), kids }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("appt-kids-change"));
+    const editor = await screen.findByTestId("appt-kids-editor");
+    expect(await within(editor).findByText(en["kids.empty"])).toBeInTheDocument();
+    expect(within(editor).getByTestId("appt-kids-save")).toBeDisabled();
+  });
+});
+
+describe("2.3 S2: deleting the profile during a ride (C2)", () => {
+  it("Delete my profile is off while a ride is on and says why — the server would refuse it; on again without one", async () => {
+    const ride = { id: "r1", status: "accepted", role: "rider" } as RideView;
+    const first = setup("en", <ProfilePanel />, { getProfile: async () => PROFILE, kids: async () => [] }, { panel: "profile", my: { ...MY, ride } });
+    expect(await screen.findByTestId("profile-delete")).toBeDisabled();
+    expect(screen.getByTestId("profile-delete-ride")).toHaveTextContent("Finish your ride first");
+    first.unmount();
+    const second = setup("pl", <ProfilePanel />, { getProfile: async () => PROFILE, kids: async () => [] }, { panel: "profile", my: { ...MY, ride: { ...ride, status: "in_progress" } } });
+    expect(await screen.findByTestId("profile-delete")).toBeDisabled();
+    expect(screen.getByTestId("profile-delete-ride")).toHaveTextContent("Najpierw zakończ kurs");
+    second.unmount();
+    setup("en", <ProfilePanel />, { getProfile: async () => PROFILE, kids: async () => [] }, { panel: "profile", my: { ...MY, ride: null } });
+    expect(await screen.findByTestId("profile-delete")).toBeEnabled();
+    expect(screen.queryByTestId("profile-delete-ride")).toBeNull();
+  });
+});
+
+describe("2.3 P1: the kids line and the chat of an item (FR-202, FR-221)", () => {
+  it("says with Zosia and Kuba, the count to a candidate, and badges the chat of an accepted item", async () => {
+    const mine = appt({ role: "provider", client: EWA, provider: TORIA, kids: [attached(KID_ZOSIA), attached(KID_KUBA)], kidCount: 2, unread: 2 });
+    const { store } = setup("en", <Planned />, { planned: async () => ({ appointments: [mine], rides: [], open: [candidate({ kidCount: 2 })] }) });
+    const item = await screen.findByTestId("planned-appointment");
+    expect(within(item).getByTestId("kids-line")).toHaveTextContent("with Zosia and Kuba");
+    expect(within(screen.getByTestId("open-request")).getByTestId("kids-line")).toHaveTextContent("2 kids");
+    expect(within(item).getByTestId("chat-unread")).toHaveTextContent("2");
+    await userEvent.click(within(item).getByTestId("chat-open"));
+    expect(store.get().panel).toBe("chat");
+    expect(store.get().panelArg).toBe("appt:a1");
+  });
+
+  it("in Polish: dzieci: Zosia i Kuba; a request still waiting has no chat yet; one kid reads 1 dziecko", async () => {
+    const waiting = appt({ status: "requested", kids: [attached(KID_ZOSIA), attached(KID_KUBA)], kidCount: 2 });
+    setup("pl", <Planned />, { planned: async () => ({ appointments: [waiting], rides: [], open: [candidate({ kidCount: 1 })] }) });
+    const item = await screen.findByTestId("planned-appointment");
+    expect(within(item).getByTestId("kids-line")).toHaveTextContent("dzieci: Zosia i Kuba");
+    expect(within(item).queryByTestId("chat-open")).toBeNull();
+    expect(within(screen.getByTestId("open-request")).getByTestId("kids-line")).toHaveTextContent("1 dziecko");
+    expect(within(screen.getByTestId("open-request")).getByTestId("kids-line")).not.toHaveTextContent("Zosia");
+  });
+
+  it("C3 of an accepted appointment has the chat with its unread count too", async () => {
+    const { store } = setup("en", <AppointmentPanel />, { getAppointment: async () => appt({ unread: 1 }) }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("chat-unread")).toHaveTextContent("1");
+    await userEvent.click(screen.getByTestId("chat-open"));
+    expect(store.get().panel).toBe("chat");
+    expect(store.get().panelArg).toBe("appt:a1");
+  });
+});
+
+describe("2.3 the chat sheet (FR-220–225)", () => {
+  const ROOM = "appt:a1" as const;
+  const msg = (over: Partial<ChatMessage>): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, ...over });
+  const thread = (over: Partial<ChatThread> = {}): ChatThread => ({
+    room: ROOM,
+    other: { nickname: "Ewa", rating: { mean: 5, count: 2 }, icon: null, photo: "data:image/jpeg;base64,/9j/EWA" },
+    messages: [msg({}), msg({ id: "m2", mine: true, text: "Coming", sentAt: Date.now() - 30_000, readAt: Date.now() - 10_000 })],
+    open: true,
+    unread: 1,
+    ...over
+  });
+
+  it("shows the thread with the other party, marks it read, sends and appends, and appends live messages once", async () => {
+    let live: ((m: ChatMessage) => void) | null = null;
+    const msgs: ChatMessage[] = [msg({}), msg({ id: "m2", mine: true, text: "Coming", sentAt: Date.now() - 30_000, readAt: Date.now() - 10_000 })];
+    const chat = vi.fn<Backend["chat"]>(async () => thread({ messages: [...msgs] }));
+    const sendMessage = vi.fn<Backend["sendMessage"]>(async (room, text) => {
+      const m = msg({ id: "m3", room, mine: true, text, sentAt: Date.now() });
+      msgs.push(m);
+      return m;
+    });
+    const onMessage = vi.fn<Backend["onMessage"]>((_room, cb) => {
+      live = cb;
+      return () => {
+        live = null;
+      };
+    });
+    const myState = vi.fn(async () => ({ ...MY, serverNow: Date.now(), unreadChats: 0 }));
+    setup("en", <ChatPanel />, { chat, sendMessage, onMessage, myState }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    await waitFor(() => expect(chat).toHaveBeenCalledWith(ROOM, true)); // in front: read
+    const other = await screen.findByTestId("chat-other");
+    expect(other).toHaveTextContent("Ewa");
+    expect(other).toHaveTextContent("★ 5.0");
+    expect(within(other).getByTestId("avatar-photo")).toHaveAttribute("src", "data:image/jpeg;base64,/9j/EWA");
+    expect(screen.getByTestId("chat-msg-theirs")).toHaveTextContent("Hi!");
+    const mine = screen.getByTestId("chat-msg-mine");
+    expect(mine).toHaveTextContent("Coming");
+    expect(within(mine).getByTestId("chat-read")).toHaveTextContent("Read");
+    expect(within(screen.getByTestId("chat-msg-theirs")).queryByTestId("chat-read")).toBeNull();
+    // Who wrote each bubble, for screen readers only (C19).
+    expect(within(mine).getByTestId("chat-sender")).toHaveTextContent("You:");
+    expect(within(mine).getByTestId("chat-sender")).toHaveClass("sr-only");
+    expect(within(screen.getByTestId("chat-msg-theirs")).getByTestId("chat-sender")).toHaveTextContent("Ewa:");
+    // My state is renewed once (the badges drop) — not again on the reload that follows.
+    await waitFor(() => expect(myState).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(myState).toHaveBeenCalledTimes(1);
+    // Send.
+    const send = screen.getByTestId("chat-send");
+    expect(send).toBeDisabled();
+    expect(screen.getByTestId("chat-input")).toHaveAttribute("maxlength", "500");
+    await userEvent.type(screen.getByTestId("chat-input"), "On my way");
+    expect(send).toBeEnabled();
+    await userEvent.click(send);
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(ROOM, "On my way"));
+    await waitFor(() => expect(screen.getAllByTestId("chat-msg-mine")).toHaveLength(2));
+    expect(screen.getByTestId("chat-input")).toHaveValue("");
+    // Live: theirs arrives → appended, marked read, the badges renewed; mine over the bus: once.
+    expect(onMessage).toHaveBeenCalledWith(ROOM, expect.any(Function));
+    const before = chat.mock.calls.length;
+    const m4 = msg({ id: "m4", text: "See you", sentAt: Date.now() });
+    msgs.push(m4);
+    act(() => live!(m4));
+    expect(screen.getAllByTestId("chat-msg-theirs")).toHaveLength(2);
+    await waitFor(() => expect(chat.mock.calls.length).toBeGreaterThan(before));
+    expect(chat).toHaveBeenLastCalledWith(ROOM, true);
+    await waitFor(() => expect(myState).toHaveBeenCalledTimes(2));
+    act(() => live!(msgs[2]));
+    expect(screen.getAllByTestId("chat-msg-mine")).toHaveLength(2);
+  });
+
+  it("a closed room is read-only, too many messages say so and keep the text, and it reads in Polish", async () => {
+    const chat = vi.fn<Backend["chat"]>(async () => thread({ open: false, unread: 0 }));
+    const first = setup("pl", <ChatPanel />, { chat, onMessage: () => () => {} }, { panel: "chat", panelArg: ROOM });
+    expect(await screen.findByTestId("chat-closed")).toHaveTextContent("Ten czat jest zamknięty");
+    expect(screen.getByTestId("chat-input")).toBeDisabled();
+    expect(screen.getByTestId("chat-send")).toBeDisabled();
+    expect(screen.getByTestId("chat-send")).toHaveTextContent("Wyślij");
+    expect(screen.getByTestId("chat-read")).toHaveTextContent("Przeczytane");
+    expect(within(screen.getByTestId("chat-msg-mine")).getByTestId("chat-sender")).toHaveTextContent("Ty:");
+    expect(screen.getByRole("dialog", { name: "Czat" })).toBeInTheDocument();
+    first.unmount();
+    const sendMessage = vi.fn<Backend["sendMessage"]>().mockRejectedValueOnce(new ServerError("too_many"));
+    const second = setup("en", <ChatPanel />, { chat: async () => thread(), sendMessage, onMessage: () => () => {} }, { panel: "chat", panelArg: ROOM });
+    await userEvent.type(await screen.findByTestId("chat-input"), "x");
+    await userEvent.click(screen.getByTestId("chat-send"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Too many messages at once — wait a moment.");
+    expect(screen.getByTestId("chat-input")).toHaveValue("x");
+    second.unmount();
+    // No messages yet; and a link that names no room of ours.
+    const third = setup("en", <ChatPanel />, { chat: async () => thread({ messages: [], unread: 0 }), onMessage: () => () => {} }, { panel: "chat", panelArg: ROOM });
+    expect(await screen.findByTestId("chat-empty")).toHaveTextContent("No messages yet.");
+    third.unmount();
+    setup("en", <ChatPanel />, {}, { panel: "chat", panelArg: "nope" });
+    expect(screen.getByTestId("chat-gone")).toBeInTheDocument();
+  });
+
+  it("heartbeat: in front, chat(room, true) every 20 s — read marks and presence — with my state renewed once, not on every beat; hidden, a plain reload (C8, C10)", async () => {
+    vi.useFakeTimers();
+    const chat = vi.fn<Backend["chat"]>(async () => thread());
+    const myState = vi.fn(async () => ({ ...MY, serverNow: Date.now(), unreadChats: 0 }));
+    const show = (state: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+    try {
+      setup("en", <ChatPanel />, { chat, onMessage: () => () => {}, myState }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      // Open: read, my state renewed once (the badges drop), which reloads the thread once — and that is all.
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(chat).toHaveBeenLastCalledWith(ROOM, true);
+      expect(myState).toHaveBeenCalledTimes(1);
+      const settled = chat.mock.calls.length;
+      for (let beat = 1; beat <= 3; beat++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(CHAT_HEARTBEAT_MS);
+        });
+        expect(chat).toHaveBeenCalledTimes(settled + beat);
+        expect(chat).toHaveBeenLastCalledWith(ROOM, true);
+      }
+      expect(myState).toHaveBeenCalledTimes(1); // no reload loop
+      expect(CHAT_HEARTBEAT_MS).toBe(20_000);
+      // Hidden: the beat only reloads — nothing is marked read, no presence.
+      show("hidden");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CHAT_HEARTBEAT_MS);
+      });
+      expect(chat).toHaveBeenCalledTimes(settled + 4);
+      expect(chat).toHaveBeenLastCalledWith(ROOM, false);
+      // Back in front: read at once and my state renewed once more (which reloads the thread once).
+      show("visible");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      expect(chat).toHaveBeenLastCalledWith(ROOM, true);
+      expect(chat.mock.calls.length).toBeGreaterThanOrEqual(settled + 5);
+      expect(chat.mock.calls.length).toBeLessThanOrEqual(settled + 6);
+      expect(myState).toHaveBeenCalledTimes(2);
+      const back = chat.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CHAT_HEARTBEAT_MS);
+      });
+      expect(chat).toHaveBeenCalledTimes(back + 1); // the next beat, nothing more
+      expect(myState).toHaveBeenCalledTimes(2);
+    } finally {
+      show("visible");
+      vi.useRealTimers();
+    }
+  });
+
+  it("the guide tells about kids, photos and the chat in the app's words (FR-153)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const [enPart, plPart] = readFileSync("public/guide.html", "utf-8").split('<section data-lang="pl">');
+    for (const k of ["kids.title", "photo.yours", "chat.title", "request.kids"] as const) {
+      expect(enPart, k).toContain(en[k]);
+      expect(plPart, k).toContain(pl[k]);
+    }
   });
 });

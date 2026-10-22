@@ -2,13 +2,14 @@
 // request within 5 s and, when the start is at least 1 h ahead and has a place, books a ride
 // there from her place (on a series: a ride template for every date). 2.1: she also takes an open
 // request for those services ("I can do it"), but only after 15 s, so a human in another tab sees
-// it first and can take it. She uses the very same Backend interface as a human provider, so one
-// tab can play the whole loop; a second tab can still play the provider (the client then picks who
-// to ask, or asks anyone).
+// it first and can take it. 2.3: she answers a chat once per room, a few seconds after the first
+// message, and attaches no kids. She uses the very same Backend interface as a human provider, so
+// one tab can play the whole loop; a second tab can still play the provider (the client then picks
+// who to ask, or asks anyone).
 
 import { destination, haversineM } from "../../core/geo";
 import { derivedPickup } from "../../core/time";
-import { ServerError, type AppointmentView, type Place } from "../../core/types";
+import { ServerError, type AppointmentView, type ChatRoom, type Place } from "../../core/types";
 import type { EngineConfig } from "../../core/engine";
 import { getRoute } from "../../services/routing";
 import { MockBackend } from "./index";
@@ -18,6 +19,14 @@ const TICK_MS = 1000;
 const THINK_MS = 1500;
 /** An open request waits this long for a human before she takes it (2.1). */
 const TAKE_MS = 15_000;
+/** A chat is answered this long after its first unread message (2.3). */
+const REPLY_MS = 3000;
+const REPLY = { en: "Thanks, I will be there on time 🙂", pl: "Dzięki, będę na czas 🙂" };
+/**
+ * The other party's language is not hers to see (Backend shows nicknames only), so she reads it off
+ * their words: Polish letters or everyday Polish words → Polish, else English.
+ */
+const PL_RE = /[ąćęłńóśźż]|\b(dzięki|dziękuję|cześć|proszę|dobrze|jutro|dzisiaj|będę|jestem|czy|witam|hej)\b/i;
 const OFFERS = ["learning", "childcare"];
 const RIDE_IF_AHEAD_MS = 3600_000;
 /** A demo played in another town: she moves near the first place she is asked to. */
@@ -29,6 +38,8 @@ export class RobotSiosia {
   private seen = new Map<string, number>();
   /** Open requests she could not take (taken by someone, or a clash): left alone from then on. */
   private passed = new Set<string>();
+  /** Rooms with something unread, and since when (she answers after REPLY_MS). */
+  private unreadSince = new Map<ChatRoom, number>();
   private busy = false;
   private stopped = false;
   private lastRepair = 0;
@@ -76,6 +87,17 @@ export class RobotSiosia {
       }
       // Requests that left her lists (taken by someone else, withdrawn) are forgotten.
       for (const id of this.seen.keys()) if (!listed.has(id)) this.seen.delete(id);
+      // 2.3: rooms with unread messages (her appointments, and rides she booked) get one answer each.
+      const rooms: ChatRoom[] = [
+        ...planned.appointments.filter((a) => a.status === "accepted" && a.unread > 0).map((a) => `appt:${a.id}` as const),
+        ...planned.rides.filter((r) => (r.unread ?? 0) > 0).map((r) => `ride:${r.id}` as const)
+      ];
+      for (const room of rooms) {
+        const since = this.unreadSince.get(room) ?? now;
+        this.unreadSince.set(room, since);
+        if (now - since >= REPLY_MS) await this.reply(room);
+      }
+      for (const room of this.unreadSince.keys()) if (!rooms.includes(room)) this.unreadSince.delete(room);
     } catch (e) {
       if (e instanceof ServerError && (e.code === "no_profile" || e.code === "not_member") && Date.now() - this.lastRepair > 10_000) {
         this.lastRepair = Date.now();
@@ -112,6 +134,18 @@ export class RobotSiosia {
     // A ride that would be too soon is simply not booked (FR-112); she then goes on her own.
     if (a.series) await this.api.setRideTemplate(a.series.id, { ...ride, leg: "there", offsetMin: Math.round((at - a.startsAt) / 60_000) }).catch(() => {});
     else await this.api.bookRide({ ...ride, scheduledFor: at, appointmentId: a.id, leg: "there" }).catch(() => {});
+  }
+
+  /**
+   * One answer per room, in the other party's language as far as their words show it. Reading the
+   * thread marks it read (they see the marks); a room she already answered in only gets read.
+   */
+  private async reply(room: ChatRoom): Promise<void> {
+    this.unreadSince.delete(room);
+    const thread = await this.api.chat(room, true).catch(() => null);
+    if (!thread || !thread.open || thread.messages.some((m) => m.mine)) return;
+    const theirs = thread.messages.filter((m) => !m.mine).map((m) => m.text).join(" ");
+    await this.api.sendMessage(room, PL_RE.test(theirs) ? REPLY.pl : REPLY.en).catch(() => {});
   }
 
   stop(): void {

@@ -3,13 +3,14 @@
 // after a reload (a new store booting on the same entry). jsdom's history is real: pushState /
 // replaceState / back, with popstate a couple of timer turns later.
 // 2.1: an open request's notification opens P1, the take panel, and the car colour in the store.
+// 2.3: a chat notification (./?chat=<room>) opens that thread as a panel, also over D1 (FR-221).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Backend } from "../../src/backend/types";
+import type { Backend, PushMessage } from "../../src/backend/types";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
 import type { MyState, OfferView, Profile, RideView, Vehicle } from "../../src/core/types";
 import { ServerError } from "../../src/core/types";
-import { AppStore } from "../../src/state/store";
+import { AppStore, PROFILE_MAX_AGE_MS } from "../../src/state/store";
 
 const PROFILE: Profile = {
   userId: "u",
@@ -27,6 +28,7 @@ const PROFILE: Profile = {
   icon: null,
   fixedFare: null,
   publicId: "pub-adam",
+  photo: null,
   offers: [],
   offersPreset: false,
   home: null
@@ -48,6 +50,7 @@ const MY: MyState = {
   openBookings: 0,
   toAnswer: 0,
   openRequests: 0,
+  unreadChats: 0,
   planned: 0,
   nextPlanned: null
 };
@@ -158,7 +161,7 @@ describe("launch on a screen other than S1 (C2)", () => {
     const store = await launch("/");
     store.go("planned");
     store.openPanel("appointment", "a1");
-    expect(history.state).toEqual({ panel: "appointment", screen: "planned" });
+    expect(history.state).toEqual({ panel: "appointment", arg: "a1", screen: "planned", depth: 1 });
     store.applyMy({ ...MY, serverNow: Date.now(), driverOnline: true, offer: { id: "o1" } as OfferView });
     expect(store.get().screen).toBe("drive");
     expect(store.get().panel).toBeNull();
@@ -253,7 +256,7 @@ describe("a reload of the app's own entry", () => {
     const driver = onlineDriver();
     let store = await launch("/", driver);
     store.openPanel("bookings");
-    expect(history.state).toEqual({ panel: "bookings", screen: "drive" });
+    expect(history.state).toEqual({ panel: "bookings", arg: null, screen: "drive", depth: 1 });
     store = await reload(store, driver);
     expect(store.get().screen).toBe("drive");
     expect(store.get().panel).toBeNull();
@@ -284,7 +287,7 @@ describe("a screen opened from a panel (C10)", () => {
     const store = await launch("/");
     store.go("catalog");
     store.openPanel("request", "childcare");
-    expect(history.state).toEqual({ panel: "request", screen: "catalog" });
+    expect(history.state).toEqual({ panel: "request", arg: "childcare", screen: "catalog", depth: 1 });
     store.goFromPanel("planned");
     expect(store.get().screen).toBe("planned");
     expect(store.get().panel).toBeNull();
@@ -362,7 +365,7 @@ describe("2.1: an open request's notification and the take panel (FR-162, FR-163
     expect(store.get().screen).toBe("planned");
     expect(store.get().my?.openRequests).toBe(1);
     store.openPanel("appointment", "take:a7");
-    expect(history.state).toEqual({ panel: "appointment", screen: "planned" });
+    expect(history.state).toEqual({ panel: "appointment", arg: "take:a7", screen: "planned", depth: 1 });
     store.closePanel();
     await settle();
     expect(store.get().panel).toBeNull();
@@ -407,5 +410,221 @@ describe("2.1: the car colour (FR-170)", () => {
     const store = await start({ getVehicle: async () => kia, setCarColour: async () => Promise.reject(new ServerError("bad_vehicle")) });
     await expect(store.setCarColour("Red", "#c62828")).rejects.toMatchObject({ code: "bad_vehicle" });
     expect(store.get().vehicle).toEqual(kia);
+  });
+});
+
+describe("2.3: a chat notification and the chat panel (FR-221, FR-222)", () => {
+  it("./?chat=<room> opens that thread as a panel over the current screen — an online driver stays on D1", async () => {
+    const driver = onlineDriver();
+    const store = await launch("/", driver);
+    store.openFromUrl("./?chat=ride%3Ar1");
+    expect(store.get().screen).toBe("drive");
+    expect(store.get().panel).toBe("chat");
+    expect(store.get().panelArg).toBe("ride:r1");
+    expect(store.get().leaveDrive).toBeNull(); // no "go offline?" — D1 stays under the thread
+    expect(history.state).toEqual({ panel: "chat", arg: "ride:r1", screen: "drive", depth: 1 });
+    store.closePanel();
+    await settle();
+    expect(store.get().panel).toBeNull();
+    expect(history.state).toEqual({ screen: "drive" });
+    // Not a room of ours: nothing happens.
+    store.openFromUrl("./?chat=bogus");
+    expect(store.get().panel).toBeNull();
+    store.openFromUrl("./?chat=appt%3A../x");
+    expect(store.get().panel).toBeNull();
+  });
+
+  it("opened from a closed app: S1 with the thread over it, the parameter gone; ← closes the thread, then leaves", async () => {
+    const store = await launch("/?chat=appt:a1");
+    expect(store.get().screen).toBe("home");
+    expect(store.get().panel).toBe("chat");
+    expect(store.get().panelArg).toBe("appt:a1");
+    expect(location.search).toBe("");
+    expect(history.state).toEqual({ panel: "chat", arg: "appt:a1", screen: "home", depth: 1 });
+    history.back(); // the phone's back gesture
+    await settle();
+    expect(store.get().panel).toBeNull();
+    expect(store.get().screen).toBe("home");
+    expect(history.state).toEqual({ screen: "home" });
+    history.back();
+    await settle();
+    expect(history.state).toEqual({ outside: true });
+  });
+
+  it("a chat_message event in front: a toast whose link opens the room — none while that thread is open", async () => {
+    const store = await launch("/");
+    const show = (store as unknown as { showPush(m: PushMessage): Promise<void> }).showPush.bind(store);
+    const hi: PushMessage = { kind: "chat_message", rideId: null, appointmentId: "a1", params: { sender: "Ewa", text: "Hi", room: "appt:a1" } };
+    await show(hi);
+    expect(store.get().pushToast?.url).toBe("./?chat=appt%3Aa1");
+    store.openFromUrl(store.get().pushToast!.url!);
+    expect(store.get().panel).toBe("chat");
+    expect(store.get().panelArg).toBe("appt:a1");
+    store.clearPushToast();
+    // The user is looking at that thread: no banner (FR-222).
+    await show(hi);
+    expect(store.get().pushToast).toBeNull();
+    // Another room still shows one; other kinds carry no link.
+    await show({ kind: "chat_message", rideId: "r1", appointmentId: null, params: { sender: "Adam", text: "Here", room: "ride:r1" } });
+    expect(store.get().pushToast?.url).toBe("./?chat=ride%3Ar1");
+    await show({ kind: "appt_accepted", rideId: null, appointmentId: "a1", params: { provider: "Ewa", service: "Childcare" } });
+    expect(store.get().pushToast?.url).toBeNull();
+  });
+});
+
+describe("2.3: the service worker's hand-off while the app is open (FR-222, V48)", () => {
+  type SwMessage = { data: unknown; ports: Array<{ postMessage(m: unknown): void }> };
+  afterEach(() => Reflect.deleteProperty(navigator, "serviceWorker"));
+
+  it("answers whether this window shows that thread — only a visible chat on that room — and refreshes on a handed-over message", async () => {
+    const listeners: Array<(ev: SwMessage) => void> = [];
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: { addEventListener: (_type: string, cb: (ev: SwMessage) => void) => listeners.push(cb) },
+      configurable: true
+    });
+    const store = await launch("/");
+    expect(listeners).toHaveLength(1);
+    const ask = (room: string): unknown => {
+      const port = { postMessage: vi.fn() };
+      listeners[0]({ data: { type: "siosia-chat-open?", room }, ports: [port] });
+      return port.postMessage.mock.calls[0]?.[0];
+    };
+    expect(ask("appt:a1")).toEqual({ open: false }); // no thread open: the worker shows the notification
+    store.openPanel("chat", "appt:a1");
+    expect(ask("appt:a1")).toEqual({ open: true }); // the user is looking at it
+    expect(ask("ride:r1")).toEqual({ open: false }); // another room
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    expect(ask("appt:a1")).toEqual({ open: false }); // a hidden tab shows nothing
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    // The message handed over instead of a notification: the state refreshes, no toast.
+    const refresh = vi.spyOn(store, "requestRefresh");
+    listeners[0]({ data: { type: "siosia-chat-message", room: "appt:a1", title: "Ewa", body: "Hi", url: "./?chat=appt:a1" }, ports: [] });
+    expect(refresh).toHaveBeenCalled();
+    expect(store.get().pushToast).toBeNull();
+    // A question without a port, and a tap's link, as before.
+    listeners[0]({ data: { type: "siosia-chat-open?", room: "appt:a1" }, ports: [] });
+    listeners[0]({ data: { type: "siosia-open", url: "./?chat=ride%3Ar1" }, ports: [] });
+    expect(store.get().panelArg).toBe("ride:r1");
+  });
+});
+
+describe("2.3: a panel opened from inside a panel — the chat from C3 or from the driver's bookings (C15)", () => {
+  it("C3 → its chat → ← lands back on C3, then on the screen; Home from the chat drops both entries", async () => {
+    const store = await launch("/");
+    store.go("planned");
+    store.openPanel("appointment", "a1");
+    expect(history.state).toEqual({ panel: "appointment", arg: "a1", screen: "planned", depth: 1 });
+    store.openPanel("chat", "appt:a1");
+    expect(store.get().panel).toBe("chat");
+    expect(store.get().panelArg).toBe("appt:a1");
+    expect(history.state).toEqual({ panel: "chat", arg: "appt:a1", screen: "planned", depth: 2 });
+    store.closePanel(); // the chat's ← / X
+    await settle();
+    expect(store.get().panel).toBe("appointment");
+    expect(store.get().panelArg).toBe("a1");
+    expect(store.get().screen).toBe("planned");
+    expect(history.state).toEqual({ panel: "appointment", arg: "a1", screen: "planned", depth: 1 });
+    history.back(); // the phone's back gesture on C3
+    await settle();
+    expect(store.get().panel).toBeNull();
+    expect(store.get().screen).toBe("planned");
+    expect(history.state).toEqual({ screen: "planned" });
+    // Home straight from the chat over C3: [S1], and one more step back leaves the app.
+    store.openPanel("appointment", "a1");
+    store.openPanel("chat", "appt:a1");
+    store.home();
+    await settle();
+    expect(store.get().screen).toBe("home");
+    expect(store.get().panel).toBeNull();
+    expect(history.state).toEqual({ screen: "home" });
+    history.back();
+    await settle();
+    expect(history.state).toEqual({ outside: true });
+  });
+
+  it("the driver's bookings on D1 → a ride's chat → ← returns to the bookings; D1 stays online", async () => {
+    const driver = onlineDriver();
+    const store = await launch("/", driver);
+    store.openPanel("bookings");
+    store.openPanel("chat", "ride:r1");
+    expect(history.state).toEqual({ panel: "chat", arg: "ride:r1", screen: "drive", depth: 2 });
+    store.closePanel();
+    await settle();
+    expect(store.get().panel).toBe("bookings");
+    expect(store.get().panelArg).toBeNull();
+    expect(store.get().screen).toBe("drive");
+    expect(store.get().leaveDrive).toBeNull();
+    expect(driver.setOnline).not.toHaveBeenCalled();
+    store.closePanel();
+    await settle();
+    expect(store.get().panel).toBeNull();
+    expect(history.state).toEqual({ screen: "drive" });
+  });
+
+  it("a screen opened from a panel over a panel: the stack is [S1, screen] — over S1 and over Planned", async () => {
+    const store = await launch("/");
+    store.openPanel("profile");
+    store.openPanel("vehicle");
+    expect(history.state).toEqual({ panel: "vehicle", arg: null, screen: "home", depth: 2 });
+    store.goFromPanel("history");
+    expect(store.get().screen).toBe("history");
+    expect(store.get().panel).toBeNull();
+    await settle();
+    expect(history.state).toEqual({ screen: "history" });
+    store.openPanel("appointment", "a1");
+    store.openPanel("chat", "appt:a1");
+    store.goFromPanel("planned");
+    await settle();
+    expect(store.get().screen).toBe("planned");
+    expect(store.get().panel).toBeNull();
+    expect(history.state).toEqual({ screen: "planned" });
+    store.home();
+    await settle();
+    expect(history.state).toEqual({ screen: "home" });
+    history.back();
+    await settle();
+    expect(history.state).toEqual({ outside: true });
+  });
+
+  it("the same panel again adds no entry; a reload with two panels open steps back over both onto S1", async () => {
+    let store = await launch("/");
+    store.go("planned");
+    store.openPanel("appointment", "a1");
+    store.openPanel("appointment", "a1");
+    expect(history.state).toEqual({ panel: "appointment", arg: "a1", screen: "planned", depth: 1 });
+    store.openPanel("chat", "appt:a1");
+    const length = history.length;
+    store = await reload(store);
+    expect(store.get().screen).toBe("home");
+    expect(store.get().panel).toBeNull();
+    expect(history.state).toEqual({ screen: "home" });
+    expect(history.length).toBe(length);
+    history.back();
+    await settle();
+    expect(history.state).toEqual({ outside: true });
+  });
+});
+
+describe("2.3: the profile's photo URL expires while the app stays open (C16)", () => {
+  it("a profile older than 50 min is fetched again on the next refresh request — once per expiry, never while fresh", async () => {
+    const getProfile = vi.fn(async () => PROFILE);
+    const store = await start({ getProfile });
+    expect(getProfile).toHaveBeenCalledTimes(1);
+    store.requestRefresh(0);
+    await settle();
+    expect(getProfile).toHaveBeenCalledTimes(1); // fresh enough
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + PROFILE_MAX_AGE_MS + 60_000);
+      getProfile.mockResolvedValue({ ...PROFILE, photo: "https://signed/new" });
+      store.requestRefresh(0); // a change event, or the app back in front (visibilitychange → requestRefresh)
+      await vi.waitFor(() => expect(getProfile).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(store.get().profile?.photo).toBe("https://signed/new"));
+      store.requestRefresh(0);
+      await settle();
+      expect(getProfile).toHaveBeenCalledTimes(2); // the new one is fresh
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

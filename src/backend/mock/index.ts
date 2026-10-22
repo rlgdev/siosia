@@ -5,7 +5,10 @@
 import { Engine, type EngineConfig } from "../../core/engine";
 import type {
   BookingInput,
+  ChatMessage,
+  ChatRoom,
   DeploymentConfig,
+  KidInput,
   Leg,
   Place,
   RideTemplateInput,
@@ -25,6 +28,22 @@ import { getBus, type MockBus } from "./bus";
 import { withDb } from "./store";
 
 const SERVER_CLIENT = "server";
+
+/** A Blob as a data URL: FileReader in the browser (and jsdom, whose Blob has no arrayBuffer()); bytes elsewhere. */
+export async function blobToDataUrl(blob: Blob): Promise<string> {
+  if (typeof FileReader !== "undefined")
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onerror = () => reject(r.error ?? new Error("read failed"));
+      r.onload = () => resolve(String(r.result));
+      r.readAsDataURL(blob);
+    });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  // In chunks: one fromCharCode(...bytes) over a 150 KB photo would exceed the argument limit.
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:${blob.type || "image/jpeg"};base64,${btoa(bin)}`;
+}
 
 export const randomKey = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
@@ -79,6 +98,8 @@ export class MockBackend implements Backend {
         for (const p of fx.push)
           this.bus.publish(`user:${p.userId}`, "push", { kind: p.kind, rideId: p.rideId, appointmentId: p.appointmentId ?? null, params: p.params }, SERVER_CLIENT);
         if (fx.pingDrivers) this.bus.publish("drivers", "ping", {}, SERVER_CLIENT);
+        // 2.3: a message reaches each party's open thread on their private topic (as Supabase does).
+        for (const c of fx.chat) this.bus.publish(`user:${c.userId}`, "chat", { room: c.room, message: c.message }, SERVER_CLIENT);
       }
     }
   }
@@ -230,7 +251,47 @@ export class MockBackend implements Backend {
     await this.call((e) => e.rateAppointment(this.uid, id, stars, comment));
   }
 
+  // ---------- 2.3: kids, photos, chat ----------
+
+  kids() {
+    return this.call((e) => e.kids(this.uid));
+  }
+  addKid(input: KidInput) {
+    return this.call((e) => e.addKid(this.uid, input));
+  }
+  updateKid(id: string, input: KidInput) {
+    return this.call((e) => e.updateKid(this.uid, id, input));
+  }
+  async removeKid(id: string) {
+    await this.call((e) => e.removeKid(this.uid, id));
+  }
+  setAppointmentKids(id: string, kidIds: string[]) {
+    return this.call((e) => e.setAppointmentKids(this.uid, id, kidIds));
+  }
+  async rateKid(appointmentId: string, kidId: string, stars: number, comment: string) {
+    await this.call((e) => e.rateKid(this.uid, appointmentId, kidId, stars, comment));
+  }
+  /** The demo's bucket is the mock database: the JPEG goes in as a data URL, which is also its "signed URL". */
+  async setPhoto(target: { kind: "profile" } | { kind: "kid"; id: string }, jpeg: Blob | null) {
+    const dataUrl = jpeg ? await blobToDataUrl(jpeg) : null;
+    return this.call((e) => e.setPhoto(this.uid, target, dataUrl));
+  }
+  chat(room: ChatRoom, markRead = false) {
+    return this.call((e) => e.chat(this.uid, room, markRead));
+  }
+  sendMessage(room: ChatRoom, text: string) {
+    return this.call((e) => e.sendMessage(this.uid, room, text));
+  }
+
   // ---------- realtime ----------
+
+  /** Live messages of one room: both directions, so a second tab of the sender sees them too. */
+  onMessage(room: ChatRoom, cb: (m: ChatMessage) => void): Unsub {
+    return this.bus.subscribe(`user:${this.uid}`, this.clientId, (event, payload) => {
+      const p = payload as { room: ChatRoom; message: ChatMessage };
+      if (event === "chat" && p.room === room) cb(p.message);
+    });
+  }
 
   onMyChanges(cb: () => void): Unsub {
     return this.bus.subscribe(`user:${this.uid}`, this.clientId, () => cb());

@@ -1574,3 +1574,149 @@ body:has(.sharing-banner) .panel-head {
   display: inline-flex;
   align-items: center;
 }
+
+/* ---------- 2.3: photos, kids, chat (FR-200–225) ---------- */
+/* A photo where the nickname is: a round picture, the icon's sizes. */
+.avatar-photo {
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  vertical-align: middle;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+.avatar-photo-sm {
+  width: 40px;
+  height: 40px;
+}
+.avatar-photo-md {
+  width: 64px;
+  height: 64px;
+}
+.avatar-photo-lg {
+  width: 96px;
+  height: 96px;
+}
+.photo-picker input[type="file"] {
+  display: none;
+}
+.photo-picker > .form-error {
+  width: 100%;
+}
+/* S2 My kids */
+.kid-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+.kid-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.kid-row {
+  align-items: flex-start;
+}
+.kid-ratings {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stars-text {
+  color: #a1640f;
+  letter-spacing: 1px;
+}
+.kid-rate {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.kid-rate:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+/* The chat: the thread scrolls, the input stays at the bottom of the panel. */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+.chat-head {
+  padding: 4px 0;
+}
+.chat-thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  overflow-y: auto;
+}
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 85%;
+}
+.chat-msg.mine {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.chat-msg.theirs {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+/* Read by screen readers only (the sender of a chat bubble, C19). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.chat-bubble {
+  padding: 8px 12px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.chat-msg.mine .chat-bubble {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+.chat-meta {
+  font-size: 0.75rem;
+  padding: 0 6px;
+}
+.chat-end {
+  height: 1px;
+}
+.chat-compose {
+  position: sticky;
+  bottom: 0;
+  padding-top: 4px;
+  background: var(--bg);
+}
+.chat-compose input {
+  flex: 1;
+  min-width: 0;
+}
+.chat-btn .badge {
+  margin-left: 4px;
+}

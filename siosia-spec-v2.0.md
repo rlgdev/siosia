@@ -685,3 +685,68 @@ Operator request of 2026-10-22.
   pops up for 5 s when tapped (a second tap, or a tap elsewhere, closes it sooner). The words are
   unchanged; one-line facts (counts, times, states) stay on the screen.
 
+## Amendment 2.3 (2026-10-22): kids, kid ratings, photos, chat
+
+Operator request of 2026-10-22. This amendment widens NFR-06 ("nickname is the only personal
+field") on purpose: a member may add their children and photos. Everything below is visible only to
+the two people involved; nothing reaches the group, the catalog or drivers.
+
+**Kids (FR-200–204)**
+
+- **FR-200**: A member MAY keep *kids' profiles* under S2 → *My kids*: a first name (1–30
+  characters), an optional photo, an optional year of birth and an optional note (≤ 200, e.g.
+  allergies) — stored only on the owner's account (`kids`); at most 8 per member. Deleting a profile
+  deletes its kids and their photos.
+- **FR-201**: On C2 and on C3 of an appointment the *client* MAY attach any of their kids to the
+  appointment (several); the attachment MUST be saved per appointment (a series: per occurrence,
+  set on request for all of them) and MAY be changed by the client until the appointment ends.
+- **FR-202**: The *provider* of an appointment MUST see the attached kids — name, photo, age, note —
+  on C3 and in P1's item and reminders ("with Zosia and Kuba"); a candidate of an open request MUST
+  see only the number of kids ("2 kids"); drivers of attached rides and other members MUST see
+  nothing.
+- **FR-203**: After an appointment is `done`, the provider MAY *rate each attached kid* once within
+  24 h (1–5 stars, comment ≤ 140) — `kid_ratings` — and the owner MUST be able to read every rating
+  of their kid (who, when, stars, comment) on the kid's card; the kid's summary (mean, count) MUST
+  show on the kid's card and to the provider of a later appointment with that kid. A kid rating
+  MUST NOT change the owner's own rating (FR-060).
+- **FR-204**: `kids` and `kid_ratings` follow the 12-month retention of their appointments
+  (ratings), and a kid is removable by its owner at any time (its past ratings go with it).
+
+**Photos (FR-210–212)**
+
+- **FR-210**: Every profile (S2) and every kid MAY carry a photo: picked from the phone's camera or
+  gallery, resized in the browser to at most 512 px on the long side and JPEG ≤ 150 KB before it
+  leaves the phone; stored in a private Storage bucket `photos` (Supabase) or as a data URL in the
+  demo. One photo per profile / per kid; replacing deletes the old one.
+- **FR-211**: A profile photo MUST be shown wherever the nickname is shown to someone who may see
+  that person (catalog chips, appointment parties, driver card, booking cards, chat) — the existing
+  icon stays as the fallback; a kid's photo only where FR-202 allows the kid.
+- **FR-212**: Photos MUST be served only through short-lived signed URLs (≤ 1 h) issued by the
+  server to a viewer allowed to see that person / kid; the bucket MUST have no public access; the
+  URL MUST never be stored in the app's tables (only the object path).
+
+**Chat (FR-220–225)**
+
+- **FR-220**: Every ride with an assigned driver and every `accepted` appointment MUST have a chat
+  between its two parties (`messages`: room, sender, text ≤ 500, sent at, read at); for a ride the
+  room is `ride:<id>` and opens when the driver is assigned; for an appointment `appt:<id>` opens on
+  acceptance (a series: one room per occurrence).
+- **FR-221**: A chat is open from the ride screens (R3, D3 — a 💬 button with an unread count) and
+  from C3 / the P1 item; messages MUST appear live on both sides (realtime) and MUST be stored so a
+  reload shows them; the thread shows the other party's nickname and photo.
+- **FR-222**: A new message MUST notify the recipient (`chat_message`: "{sender}: {text…}", tag per
+  room so later messages replace the notification, opening the chat) unless the recipient has that
+  chat open; while a ride is `in_progress` the driver MUST NOT be notified (no phone while driving)
+  — the message waits in the thread.
+- **FR-223**: Sending MUST be possible while the ride or appointment is live and up to 24 h after it
+  ended (questions about a forgotten item); after that the thread is read-only; it is deleted with
+  the ride / appointment (retention). Nobody outside the two parties can read a room (RLS + server
+  checks), including after a re-dispatch (the old driver loses the room).
+- **FR-224**: Each party MUST see which of their messages were read; the app MUST mark messages read
+  when the thread is open and visible.
+- **FR-225**: Rate limit: at most 30 messages per room per sender per 10 minutes; `too_many`
+  beyond.
+
+**Demo**: the robot Siosia attaches no kids and answers a chat message once ("Thanks, I will be
+there on time 🙂" / Polish) a few seconds after the first message in a room.
+

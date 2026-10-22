@@ -15,6 +15,11 @@ import type {
   AppointmentView,
   BookingInput,
   CatalogItem,
+  ChatMessage,
+  ChatRoom,
+  ChatThread,
+  Kid,
+  KidInput,
   DeploymentConfig,
   HistoryItem,
   Leg,
@@ -168,6 +173,25 @@ export interface Backend {
   setOffers(ids: string[]): Promise<Profile>;
   saveHome(place: Place | null): Promise<Profile>;
   rateAppointment(id: string, stars: number, comment: string): Promise<void>;
+
+  // ---------- 2.3: kids, photos, chat ----------
+
+  /** My kids (S2 → My kids), with their ratings. */
+  kids(): Promise<Kid[]>;
+  addKid(input: KidInput): Promise<Kid>;
+  updateKid(id: string, input: KidInput): Promise<Kid>;
+  removeKid(id: string): Promise<void>;
+  /** The client attaches (replaces) the kids of an appointment; a series occurrence: that one. */
+  setAppointmentKids(id: string, kidIds: string[]): Promise<AppointmentView>;
+  /** The provider rates an attached kid once after the appointment is done (24 h). */
+  rateKid(appointmentId: string, kidId: string, stars: number, comment: string): Promise<void>;
+  /** A photo (already resized by the app) for my profile or one of my kids; null clears it. */
+  setPhoto(target: { kind: "profile" } | { kind: "kid"; id: string }, jpeg: Blob | null): Promise<string | null>;
+  /** A room's thread as the viewer sees it; marks it read when `markRead`. */
+  chat(room: ChatRoom, markRead?: boolean): Promise<ChatThread>;
+  sendMessage(room: ChatRoom, text: string): Promise<ChatMessage>;
+  /** Live messages of a room (both directions) while subscribed. */
+  onMessage(room: ChatRoom, cb: (m: ChatMessage) => void): Unsub;
 
   onMyChanges(cb: () => void): Unsub;
   /** Web Push subscription of this device (notifications). */

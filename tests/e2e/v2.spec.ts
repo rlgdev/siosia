@@ -298,3 +298,99 @@ test("the car icon picks the car's colour: the Roman link → plate → Red → 
   await expect(card).toContainText("Red Porsche Taycan Cross Turismo");
   await expect(card.getByRole("img", { name: "Red Taycan Cross Turismo" }).locator('[data-part="body"]')).toHaveAttribute("fill", "#c62828");
 });
+
+// ---------- 2.3: kids, photos, chat ----------
+
+/** S2 → My kids → Add kid; returns the My kids section. */
+async function addKid(page: Page, name: string, bornYear: number) {
+  await page.getByRole("button", { name: "Profile" }).click();
+  const kids = page.getByTestId("my-kids");
+  await kids.getByTestId("kid-add").click();
+  await kids.getByTestId("kid-name").fill(name);
+  await kids.getByTestId("kid-born").selectOption(String(bornYear));
+  await kids.getByTestId("kid-save").click();
+  await expect(kids.getByTestId("kid-card-name")).toHaveText(name);
+  return kids;
+}
+
+test("kids and chat: Toria adds Zosia and asks Ewa with her attached; Ewa sees Zosia; after accepting both chat live (FR-200–202, FR-220–224)", async ({
+  context
+}) => {
+  await isolate(context);
+  const ewa = await context.newPage();
+  await onboard(ewa, "Ewa");
+  await offer(ewa, "childcare");
+
+  const toria = await context.newPage();
+  await onboard(toria, "Toria");
+  const age = 7;
+  const kids = await addKid(toria, "Zosia", new Date().getFullYear() - age);
+  await expect(kids).toContainText(`age ${age}`);
+  await toria.getByRole("dialog").getByRole("button", { name: "Back", exact: true }).click();
+
+  // C2 with Zosia ticked.
+  await toria.getByTestId("start-siosia").click();
+  await toria.getByTestId("catalog-childcare").click();
+  await expect(toria.getByTestId("request-form")).toBeVisible();
+  await toria.getByTestId("request-place-here").click();
+  await expect(toria.getByTestId("request-place-value")).not.toHaveText("—");
+  const tick = toria.getByTestId("request-kids").getByRole("checkbox");
+  await expect(tick).toHaveCount(1);
+  await tick.check();
+  await toria.getByTestId("request-send").click();
+  await expect(toria.getByTestId("planned")).toBeVisible();
+  const mine = toria.getByTestId("planned-appointment");
+  await expect(mine.getByTestId("kids-line")).toHaveText("with Zosia");
+
+  // Ewa: Zosia on her Planned item and in C3 (name, age); she accepts.
+  await ewa.getByTestId("start-planned").click();
+  const ask = ewa.getByTestId("to-answer");
+  await expect(ask).toContainText("To answer (1)", { timeout: 8000 });
+  await expect(ask.getByTestId("kids-line")).toHaveText("with Zosia");
+  await ask.getByTestId("open-appointment").click();
+  const cards = ewa.getByTestId("appt-kids");
+  await expect(cards).toContainText("Zosia");
+  await expect(cards).toContainText(`age ${age}`);
+  await expect(ewa.getByTestId("appt-kids-change")).toHaveCount(0); // the client's kids, not hers to change
+  await ewa.getByTestId("appt-accept").click();
+  await ewa.getByTestId("accept-confirm").click();
+  await expect(ewa.getByTestId("appt-status")).toHaveText("Confirmed");
+
+  // Toria writes from her Planned item's chat.
+  await expect(mine.getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 8000 });
+  await mine.getByTestId("chat-open").click();
+  await expect(toria.getByTestId("chat-other")).toContainText("Ewa");
+  await toria.getByTestId("chat-input").fill("Hi!");
+  await toria.getByTestId("chat-send").click();
+  await expect(toria.getByTestId("chat-msg-mine")).toContainText("Hi!");
+  await expect(toria.getByTestId("chat-read")).toHaveCount(0); // not read yet
+
+  // Ewa, still on C3 (over Planned, whose item badges too): the badge shows 1; she opens the thread, reads, replies.
+  const c3 = ewa.getByTestId("appointment");
+  await expect(c3.getByTestId("chat-unread")).toHaveText("1", { timeout: 8000 });
+  await c3.getByTestId("chat-open").click();
+  await expect(ewa.getByTestId("chat-msg-theirs")).toContainText("Hi!");
+  await ewa.getByTestId("chat-input").fill("See you tomorrow");
+  await ewa.getByTestId("chat-send").click();
+  await expect(ewa.getByTestId("chat-msg-mine")).toContainText("See you tomorrow");
+
+  // Toria sees the reply live, and that her Hi! was read.
+  await expect(toria.getByTestId("chat-msg-theirs")).toContainText("See you tomorrow", { timeout: 8000 });
+  await expect(toria.getByTestId("chat-read")).toBeVisible({ timeout: 8000 });
+  await expect(toria.getByTestId("chat-unread")).toHaveCount(0); // read while open: no badge
+});
+
+test("a kid's photo: picked, resized in the browser, shown on the card (FR-210)", async ({ context }) => {
+  await isolate(context);
+  const page = await context.newPage();
+  await onboard(page, "Toria");
+  const kids = await addKid(page, "Kuba", new Date().getFullYear() - 4);
+  await expect(kids.locator("img.avatar-photo")).toHaveCount(0);
+  // A 1×1 PNG; the app turns it into a small JPEG before storing it (the demo keeps a data URL).
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+  await kids.locator('input[type="file"]').setInputFiles({ name: "kuba.png", mimeType: "image/png", buffer: png });
+  const photo = kids.locator("img.avatar-photo");
+  await expect(photo).toHaveCount(1, { timeout: 8000 });
+  expect(await photo.getAttribute("src")).toMatch(/^(data:image\/jpeg|https?:|blob:)/);
+  await expect(kids.getByRole("button", { name: "Remove photo" })).toBeVisible();
+});

@@ -8,7 +8,7 @@
 // local time with the deployment's TZID (and a VTIMEZONE), so every date keeps its wall-clock time
 // across a daylight-saving change, as the series itself does (§7 wall-clock rule).
 
-import { apptStatusText, rideLineText } from "./push-text.ts";
+import { apptStatusText, kidsText, rideLineText } from "./push-text.ts";
 
 type Lang = "en" | "pl";
 
@@ -35,6 +35,9 @@ export interface IcsAppointment {
   provider: { nickname: string } | null;
   rides: { leg: string; status: string; driver: { nickname: string } | null }[];
   series: { id: string; rule: "weekly" | "biweekly"; count: number; status: string; starts: number[]; gaps: number[] } | null;
+  /** 2.3 (FR-202): the client's kids attached to this date, as the view carries them (AttachedKid);
+   *  only the provider's event names them, a candidate gets none. */
+  kids?: { name: string }[];
 }
 
 export interface IcsRide {
@@ -78,6 +81,7 @@ const W = {
     ride: (a: string, b: string) => `Ride: ${a} → ${b}`,
     withWho: (n: string) => `With ${n}`,
     forWho: (n: string) => `For ${n}`,
+    withKids: (k: string) => `With ${k}`,
     driver: (n: string) => `Driver: ${n}`,
     rider: (n: string) => `Rider: ${n}`,
     noDriver: "No driver yet",
@@ -93,6 +97,7 @@ const W = {
     ride: (a: string, b: string) => `Przejazd: ${a} → ${b}`,
     withWho: (n: string) => `Z: ${n}`,
     forWho: (n: string) => `Dla: ${n}`,
+    withKids: (k: string) => `Z: ${k}`,
     driver: (n: string) => `Kierowca: ${n}`,
     rider: (n: string) => `Pasażer: ${n}`,
     noDriver: "Jeszcze bez kierowcy",
@@ -137,6 +142,10 @@ export function appointmentDetails(a: IcsAppointment, ctx: IcsContext): string {
   const lines: string[] = [];
   if (a.role !== "client") lines.push(W[l].forWho(a.client.nickname));
   else if (!open) lines.push(W[l].withWho(other(a)));
+  // 2.3 (FR-202): the kids by name, to the provider only (the client knows their own; a candidate
+  // may see only how many).
+  const kids = a.role === "provider" ? kidsText((a.kids ?? []).map((k) => k.name), l) : "";
+  if (kids) lines.push(W[l].withKids(kids));
   if (open) lines.push(W[l].openLine);
   if (gone(a.status)) lines.push(W[l].cancelled);
   else

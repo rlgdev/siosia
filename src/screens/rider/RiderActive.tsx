@@ -1,6 +1,8 @@
 // R3 Active ride: driver, vehicle and plate (only now — FR-044), live car, ETA, status, cancel.
+// 2.3 (FR-221): the chat with the driver, with the unread count.
 
 import { BookedFor } from "../../components/BookedFor";
+import { ChatButton } from "../../components/ChatSheet";
 import { DriverIcon } from "../../components/ProfileIcon";
 import { useEffect, useState } from "react";
 import { Confirm, Money, RatingBadge, Sheet, fmtMin } from "../../components/ui";
@@ -84,6 +86,7 @@ export function RiderActive({ ride, rt, route, busy, error, onCancel }: Props) {
           )}
         </div>
       )}
+      {d && <ChatButton room={`ride:${ride.id}`} unread={ride.unread} />}
       <div className="trip-line">
         <span>{ride.pickup.label}</span>
         <span aria-hidden="true">→</span>

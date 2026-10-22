@@ -4,7 +4,7 @@
 // card says where they are; a driver profile's car icon picks the car's colour (FR-170).
 
 import { AppHint } from "../components/AppInstall";
-import { CarIconButton, ownCarIcon, ProfileIcon } from "../components/ProfileIcon";
+import { Avatar, CarIconButton, ownCarIcon } from "../components/ProfileIcon";
 import { whenText } from "../components/when";
 import { useI18n } from "../i18n";
 import { readPref } from "../services/device";
@@ -39,12 +39,18 @@ export function Home() {
       <header className="home-head">
         {car ? (
           <CarIconButton icon={car} />
-        ) : app.profile?.icon ? (
-          <ProfileIcon icon={app.profile.icon} size="md" />
         ) : (
-          <div className="logo" aria-hidden="true">
-            S
-          </div>
+          // My photo (2.3), else the profile icon, else the logo.
+          <Avatar
+            photo={app.profile?.photo}
+            icon={app.profile?.icon}
+            size="md"
+            fallback={
+              <div className="logo" aria-hidden="true">
+                S
+              </div>
+            }
+          />
         )}
         <div>
           <h1>{t("home.hello", { name: app.profile?.nickname ?? "" })}</h1>
@@ -84,6 +90,12 @@ export function Home() {
             {!!my?.planned && (
               <span className="badge" data-testid="badge-planned">
                 {my.planned}
+              </span>
+            )}
+            {/* 2.3: unread chat messages across my rooms (the threads are on the items). */}
+            {!!my?.unreadChats && (
+              <span className="badge badge-accent" data-testid="badge-chat">
+                💬 {my.unreadChats === 1 ? t("start.unreadChatsOne") : t("start.unreadChats", { n: my.unreadChats })}
               </span>
             )}
           </span>

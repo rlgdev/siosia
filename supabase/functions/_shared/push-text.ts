@@ -28,7 +28,9 @@ export type PushKind =
   | "appt_ride_added"
   | "appt_ride_taken"
   | "appt_ride_lost"
-  | "appt_ride_failed";
+  | "appt_ride_failed"
+  // 2.3: a chat message (tag per room; opens the chat)
+  | "chat_message";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -63,6 +65,15 @@ export interface PushParams {
   status?: string;
   /** 2.1: an open request (no provider yet). */
   open?: boolean;
+  /** 2.3: chat — the sender and the first words. */
+  sender?: string;
+  text?: string;
+  /** The room, for the tag and the open URL. */
+  room?: string;
+  /** The message's id: push-dispatch drops a message the recipient read before it went out (C6). */
+  messageId?: string;
+  /** 2.3: the attached kids' names, for reminders and the accept text ("with Zosia and Kuba"). */
+  kids?: string[];
   rides?: RideLine[];
   rule?: "weekly" | "biweekly";
   count?: number;
@@ -211,17 +222,19 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     driver_arrived: ["{driver} is here", "Your driver has arrived at the pickup."],
     booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
     request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
-    appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}. Answer in Siosia → Planned."],
+    appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}{kids}. Answer in Siosia → Planned."],
     appt_open: ["Can you help? {service}", "{client} asks: {service} {range}{atplace}. Open Siosia to take it."],
-    appt_accepted: ["{provider} accepted", "{service} {range} is confirmed.{clashes}"],
+    appt_accepted: ["{provider} accepted", "{service} {range} is confirmed{kids}.{clashes}"],
     appt_declined: ["{provider} can't make it", "{service} {range} was declined."],
     appt_cancelled: ["{service} {when} cancelled", "Cancelled by {who}: {service} {range}.{remaining}"],
     appt_expired: ["No answer from {provider}", "{service} {range} got no answer and expired."],
-    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}{kids}. {status}.{rides}"],
     appt_ride_added: ["{who} added a ride", "{service} {when}: ride {leg}{attime}, looking for a driver."],
     appt_ride_taken: ["Ride confirmed: {driver}", "{service} {when}: the ride {leg} has a driver."],
     appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
-    appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."]
+    appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."],
+    // 2.3 (FR-222): the sender's own words; the tag is the room, so a newer message replaces the older.
+    chat_message: ["{sender}", "{text}"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -234,19 +247,36 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     driver_arrived: ["{driver} czeka", "Kierowca jest na miejscu odbioru."],
     booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafiła do kierowców w pobliżu."],
     request_new: ["Nowe zamówienie", "Odbiór: {pickup}. Otwórz Siosię, aby je przyjąć."],
-    appt_new: ["Nowa prośba: {service} {when}", "{client} prosi o: {service}, {range}. Odpowiedz w Siosi → Zaplanowane."],
+    appt_new: ["Nowa prośba: {service} {when}", "{client} prosi o: {service}, {range}{kids}. Odpowiedz w Siosi → Zaplanowane."],
     appt_open: ["Możesz pomóc? {service}", "{client} prosi o pomoc: {service} {range}{atplace}. Otwórz Siosię, aby się tego podjąć."],
-    appt_accepted: ["{provider} potwierdza", "{service} {range} — potwierdzone.{clashes}"],
+    appt_accepted: ["{provider} potwierdza", "{service} {range} — potwierdzone{kids}.{clashes}"],
     appt_declined: ["{provider} nie może", "{service} {range} — odrzucone."],
     appt_cancelled: ["{service} {when} odwołane", "Odwołane przez: {who}. {service} {range}.{remaining}"],
     appt_expired: ["Brak odpowiedzi od {provider}", "{service} {range} — bez odpowiedzi, prośba wygasła."],
-    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}{kids}. {status}.{rides}"],
     appt_ride_added: ["{who} dodaje przejazd", "{service} {when}: przejazd {leg}{attime}, szukamy kierowcy."],
     appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowcę."],
     appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} znów bez kierowcy."],
-    appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszedł do skutku."]
+    appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszedł do skutku."],
+    chat_message: ["{sender}", "{text}"]
   }
 };
+
+/** A chat push carries at most this many characters of the message, then "…". The backends queue
+ *  the full text (up to 500 characters, C21): this is the one place that cuts. */
+export const CHAT_PUSH_CHARS = 80;
+
+/** 2.3 (FR-202): the attached kids' names in one breath — "Zosia and Kuba" / "Zosia, Kuba i Ola". */
+export function kidsText(names: readonly string[] | undefined, lang: string): string {
+  const l: Lang = lang === "pl" ? "pl" : "en";
+  const list = (names ?? []).map((n) => String(n ?? "").trim()).filter(Boolean);
+  if (list.length < 2) return list[0] ?? "";
+  return `${list.slice(0, -1).join(", ")} ${l === "pl" ? "i" : "and"} ${list[list.length - 1]}`;
+}
+
+/** ", with Zosia and Kuba" / ", z: Zosia i Kuba" — the provider's copy of a request, an accept or a
+ *  reminder; "" for the client (their own kids need no mention) and when nobody is attached (K3). */
+const WITH_KIDS: Record<Lang, (kids: string) => string> = { en: (k) => `, with ${k}`, pl: (k) => `, z: ${k}` };
 
 /** 2.1: the words of a kind that would name the provider, for an open request (nobody took it, V37). */
 const OPEN_TEXTS: Record<Lang, Partial<Record<PushKind, [string, string]>>> = {
@@ -262,6 +292,8 @@ const YOUR_OPEN: Record<Lang, string> = { en: "Your open request", pl: "Twoja ot
 /**
  * Title, body and tag of a notification. `id` is the ride (v1 kinds) or the appointment (2.0
  * kinds); the tag `<kind>:<id>` makes a newer notification replace an older one of the same kind.
+ * 2.3: a chat message is tagged `chat:<room>` (params.room), so the newest message of a room is
+ * the one notification left; the id is only a fallback (V48).
  */
 export function pushText(kind: PushKind, params: PushParams, lang: string, tz: string, id?: string | null): PushText {
   const l: Lang = lang === "pl" ? "pl" : "en";
@@ -276,7 +308,13 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   const withWho = params.other ? WITH[l](params.other) : status === "open" ? YOUR_OPEN[l] : "";
   const declined = (params.declined ?? []).map((d) => dayMonth(toMs(d), l, tz)).filter(Boolean);
   const total = (params.accepted ?? 0) + declined.length;
+  // 2.3 (K3): only the provider's copies carry kids; a client's never names their own.
+  const kids = params.role === "client" ? "" : kidsText(params.kids, l);
+  const chat = (params.text ?? "").replace(/\s+/g, " ").trim();
   const vars: Record<string, string> = {
+    sender: params.sender || SOMEONE[l],
+    text: chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}…` : chat,
+    kids: kids ? WITH_KIDS[l](kids) : "",
     when: fmt(ms, l, tz, true),
     time: fmt(toMs(params.time) ?? ms, l, tz, false),
     pickup: params.pickup ?? "",
@@ -308,13 +346,23 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
           : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.`
         : ""
   };
+  // A chat body is the sender's own words: substituted and trimmed, but never tidied like a template
+  // (their "..." or a leading "." stay as typed).
+  const tidy = (s: string) =>
+    kind === "chat_message"
+      ? s
+      : s
+          .replace(/\s+([.,])/g, "$1")
+          .replace(/\.\./g, ".")
+          .trim()
+          .replace(/^[.,·]\s*/, "");
   const fill = (s: string) =>
-    s
-      .replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? "")
-      .replace(/\s+/g, " ")
-      .replace(/\s+([.,])/g, "$1")
-      .replace(/\.\./g, ".")
-      .trim()
-      .replace(/^[.,·]\s*/, "");
-  return { title: fill(title), body: fill(body), tag: `${kind}:${id ?? ""}` };
+    tidy(
+      s
+        .replace(/\{(\w+)\}/g, (_, k: string) => vars[k] ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+    );
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : `${kind}:${id ?? ""}`;
+  return { title: fill(title), body: fill(body), tag };
 }

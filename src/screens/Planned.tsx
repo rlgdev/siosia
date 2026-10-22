@@ -2,11 +2,14 @@
 // open-bookings list), then everything coming up in both roles grouped Today / Tomorrow / date,
 // soonest first, an appointment in progress on top. Refreshes on state changes and every 30 s.
 // 2.1 (FR-161): You could help (N) — others' open requests, soonest first, with I can do it.
+// 2.3 (FR-202, FR-221): "with Zosia and Kuba" on an item with kids attached (a candidate: the
+// count), the other party's photo, and the chat of an accepted appointment with its unread count.
 
 import { useCallback, useEffect, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
-import { ProfileIcon } from "../components/ProfileIcon";
+import { apptRoom, kidsLine, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { ChatButton } from "../components/ChatSheet";
+import { Avatar } from "../components/ProfileIcon";
 import { dayText, rangeTimes, sameDay, timeText } from "../components/when";
 import { Money, Page, RatingBadge, useBusy } from "../components/ui";
 import type { AppointmentView, Planned as PlannedData, RideView } from "../core/types";
@@ -174,7 +177,7 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
           <span>{rangeTimes(a.startsAt, a.endsAt, locale)}</span>
         </span>
         <span className="row muted small">
-          <ProfileIcon icon={other?.icon} size="sm" paint={other?.paint} /> {partyText(a, t)}
+          <Avatar photo={other?.photo} icon={other?.icon} size="sm" paint={other?.paint} /> {partyText(a, t)}
           {a.price !== null && (
             <>
               {" · "}
@@ -182,6 +185,11 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
             </>
           )}
         </span>
+        {kidsLine(a, lang, t) && (
+          <span className="muted small" data-testid="kids-line">
+            {kidsLine(a, lang, t)}
+          </span>
+        )}
         {marker && (
           <span className="muted small" data-testid="series-marker">
             {marker}
@@ -199,8 +207,9 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
         </p>
       )}
       {a.status === "accepted" && !answer && (
-        <div className="row">
+        <div className="row wrap">
           <AddToCalendar appointment={a} />
+          {apptRoom(a) && <ChatButton room={apptRoom(a)!} unread={a.unread} small />}
         </div>
       )}
       {answer && (
@@ -266,9 +275,14 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
           {dayText(a.startsAt, now, locale, t)} · {rangeTimes(a.startsAt, a.endsAt, locale)} ({durationText(a.durationMin, t)})
         </span>
         <span className="row small">
-          <ProfileIcon icon={a.client.icon} size="sm" paint={a.client.paint} /> {partyText(a, t)} <RatingBadge rating={a.client.rating} />
+          <Avatar photo={a.client.photo} icon={a.client.icon} size="sm" paint={a.client.paint} /> {partyText(a, t)} <RatingBadge rating={a.client.rating} />
         </span>
         <span className="muted small">📍 {a.place ? a.place.label : t("appt.noPlace")}</span>
+        {kidsLine(a, lang, t) && (
+          <span className="muted small" data-testid="kids-line">
+            {kidsLine(a, lang, t)}
+          </span>
+        )}
         {a.note && <span className="note small">„{a.note}”</span>}
         {repeat && (
           <span className="muted small" data-testid="series-marker">

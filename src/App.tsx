@@ -5,6 +5,7 @@ import { I18nProvider, useI18n } from "./i18n";
 import { InviteScreen, Loading, NicknameScreen, Unavailable, Unsupported } from "./screens/Boot";
 import { DriverApp } from "./screens/driver/DriverApp";
 import { VehiclePanel } from "./screens/driver/VehicleForm";
+import { ChatPanel } from "./components/ChatSheet";
 import { AppointmentPanel } from "./screens/Appointment";
 import { DriverBookingsPanel } from "./screens/Bookings";
 import { Home } from "./screens/Home";
@@ -67,7 +68,7 @@ export function LeaveDriveConfirm() {
   );
 }
 
-/** A notification while the app is in front (demo backend). Tap to close. */
+/** A notification while the app is in front (demo backend). Tap to close — a chat message: to open its thread. */
 function PushToast() {
   const app = useApp();
   const store = useStore();
@@ -78,8 +79,12 @@ function PushToast() {
     return () => clearTimeout(id);
   }, [p, store]);
   if (!p) return null;
+  const tap = () => {
+    if (p.url) store.openFromUrl(p.url);
+    store.clearPushToast();
+  };
   return (
-    <div className="toast toast-wide push-toast" role="status" data-testid="push-toast" onClick={() => store.clearPushToast()}>
+    <div className="toast toast-wide push-toast" role="status" data-testid="push-toast" onClick={tap}>
       <strong>{p.title}</strong>
       <span>{p.body}</span>
     </div>
@@ -166,6 +171,7 @@ function Screens() {
       {app.phase === "ready" && app.panel === "appointment" && <AppointmentPanel />}
       {app.phase === "ready" && app.panel === "bookings" && <DriverBookingsPanel />}
       {app.phase === "ready" && app.panel === "request" && <RequestPanel />}
+      {app.phase === "ready" && app.panel === "chat" && <ChatPanel />}
     </>
   );
 }

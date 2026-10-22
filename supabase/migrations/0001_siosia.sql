@@ -1,7 +1,7 @@
 -- =============================================================================================
 -- Siosia — database schema, server rules and access policies (Supabase / Postgres 15+).
--- v1 rides plus 2.0 service catalog and appointments (siosia-spec-v2.0.md, with its Amendment 2.1:
--- open requests and the car colour).
+-- v1 rides plus 2.0 service catalog and appointments (siosia-spec-v2.0.md, with its Amendments 2.1:
+-- open requests and the car colour, 2.2: the car sets off, 2.3: kids, kid ratings, photos, chat).
 --
 -- Paste the whole file into Supabase → SQL Editor → Run. It is idempotent: re-running it upgrades
 -- functions and policies in place. Then set the invite code (see docs/SETUP.md, step 4):
@@ -442,6 +442,79 @@ alter table public.vehicles drop constraint if exists vehicles_paint_check;
 alter table public.vehicles add constraint vehicles_paint_check check (paint is null or paint ~ '^#[0-9a-f]{6}$');
 
 -- ---------------------------------------------------------------------------------------------
+-- Siosia 2.3 (Amendment 2.3): kids, kid ratings, photos, chat. Appended; every statement idempotent.
+-- ---------------------------------------------------------------------------------------------
+
+-- A kid's profile (FR-200): the owner's row only; at most 8 per member (siosia_add_kid). The photo
+-- is the object's PATH in the bucket 'photos', never a URL (FR-212); the viewer's signed URL is
+-- made by the app from it. The year of birth is checked against this year in siosia_valid_kid.
+create table if not exists public.kids (
+  id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid not null references auth.users (id) on delete cascade,
+  name       text not null check (char_length(name) between 1 and 30),
+  photo_path text,
+  born_year  int check (born_year is null or born_year between 1900 and 2100),
+  note       text not null default '' check (char_length(note) <= 200),
+  created_at timestamptz not null default now()
+);
+create index if not exists kids_owner_idx on public.kids (owner_id, created_at);
+
+-- The client's kids attached to an appointment (FR-201); they go with the appointment or the kid.
+create table if not exists public.appointment_kids (
+  appointment_id uuid not null references public.appointments (id) on delete cascade,
+  kid_id         uuid not null references public.kids (id) on delete cascade,
+  primary key (appointment_id, kid_id)
+);
+create index if not exists appointment_kids_kid_idx on public.appointment_kids (kid_id);
+
+-- The provider's rating of an attached kid, once per appointment and kid (FR-203). A table of its
+-- own: it never touches the owner's rating in ratings (FR-060).
+create table if not exists public.kid_ratings (
+  appointment_id uuid not null references public.appointments (id) on delete cascade,
+  kid_id         uuid not null references public.kids (id) on delete cascade,
+  from_user      uuid not null,
+  stars          int  not null check (stars between 1 and 5),
+  comment        text not null default '' check (char_length(comment) <= 140),
+  created_at     timestamptz not null default now(),
+  primary key (appointment_id, kid_id)
+);
+create index if not exists kid_ratings_kid_idx on public.kid_ratings (kid_id, created_at desc);
+
+-- Chat (FR-220): one room per ride with a driver ('ride:<id>') or accepted appointment
+-- ('appt:<id>'). The messages go with their ride / appointment (FR-223, 12-month retention).
+create table if not exists public.messages (
+  id             uuid primary key default gen_random_uuid(),
+  room           text not null,
+  ride_id        uuid references public.rides (id) on delete cascade,
+  appointment_id uuid references public.appointments (id) on delete cascade,
+  sender         uuid not null,
+  text           text not null check (char_length(text) between 1 and 500),
+  sent_at        timestamptz not null default now(),
+  read_at        timestamptz,
+  check ((ride_id is null) <> (appointment_id is null)),
+  -- the room names the row it hangs on
+  check (room = case when ride_id is not null then 'ride:' || ride_id::text else 'appt:' || appointment_id::text end)
+);
+create index if not exists messages_room_idx on public.messages (room, sent_at);
+create index if not exists messages_unread_idx on public.messages (room, sender) where read_at is null;
+
+-- Chat presence (FR-222, V48, V49): when a party last had a room's thread open and visible. The
+-- app marks it on every siosia_chat(room, true) — on opening and every 20 s while visible — and a
+-- message is not pushed to someone seen in that room within the last 45 s (siosia_send_message).
+create table if not exists public.chat_presence (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  room    text not null,
+  seen_at timestamptz not null default now(),
+  primary key (user_id, room)
+);
+
+-- The profile photo's object path (FR-210); null = none.
+alter table public.profiles add column if not exists photo_path text;
+-- Photo ownership is ROW-based (V49): the row that holds a path owns it. These make the lookups cheap.
+create index if not exists profiles_photo_path_idx on public.profiles (photo_path) where photo_path is not null;
+create index if not exists kids_photo_path_idx on public.kids (photo_path) where photo_path is not null;
+
+-- ---------------------------------------------------------------------------------------------
 -- Row level security: clients may only READ their own rows; all writes go through functions.
 -- ---------------------------------------------------------------------------------------------
 
@@ -461,6 +534,11 @@ alter table public.push_subscriptions enable row level security;
 alter table public.push_outbox enable row level security;
 alter table public.appointments enable row level security;
 alter table public.appointment_series enable row level security;
+alter table public.kids enable row level security;
+alter table public.appointment_kids enable row level security;
+alter table public.kid_ratings enable row level security;
+alter table public.messages enable row level security;
+alter table public.chat_presence enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -469,7 +547,8 @@ grant usage on schema public to anon, authenticated;
 revoke all on public.app_config, public.app_secrets, public.profiles, public.vehicles, public.driver_status,
               public.memberships, public.invite_failures, public.rides, public.offers, public.ratings,
               public.master_profiles, public.account_transfers, public.push_subscriptions, public.push_outbox,
-              public.appointments, public.appointment_series
+              public.appointments, public.appointment_series,
+              public.kids, public.appointment_kids, public.kid_ratings, public.messages, public.chat_presence
   from anon, authenticated;
 -- The sender (Edge Function, service role) reads the queue and the subscriptions.
 do $$
@@ -493,6 +572,10 @@ drop policy if exists siosia_offer_read   on public.offers;
 drop policy if exists siosia_rating_read  on public.ratings;
 drop policy if exists siosia_appointment_read on public.appointments;
 drop policy if exists siosia_series_read on public.appointment_series;
+drop policy if exists siosia_kids_read on public.kids;
+drop policy if exists siosia_appointment_kids_read on public.appointment_kids;
+drop policy if exists siosia_kid_ratings_read on public.kid_ratings;
+drop policy if exists siosia_messages_read on public.messages;
 
 create policy siosia_config_read  on public.app_config    for select to authenticated using (true);
 create policy siosia_profile_read on public.profiles      for select to authenticated using (user_id = auth.uid());
@@ -504,6 +587,17 @@ create policy siosia_offer_read   on public.offers        for select to authenti
 create policy siosia_rating_read  on public.ratings       for select to authenticated using (from_user = auth.uid() or to_user = auth.uid());
 create policy siosia_appointment_read on public.appointments for select to authenticated using (client_id = auth.uid() or provider_id = auth.uid());
 create policy siosia_series_read on public.appointment_series for select to authenticated using (client_id = auth.uid() or provider_id = auth.uid());
+-- 2.3: the owner's kids; attachments and messages for the two parties; a kid's ratings for its
+-- owner and the rater.
+create policy siosia_kids_read on public.kids for select to authenticated using (owner_id = auth.uid());
+create policy siosia_appointment_kids_read on public.appointment_kids for select to authenticated
+  using (exists (select 1 from public.appointments a where a.id = appointment_id and (a.client_id = auth.uid() or a.provider_id = auth.uid())));
+create policy siosia_kid_ratings_read on public.kid_ratings for select to authenticated
+  using (from_user = auth.uid() or exists (select 1 from public.kids k where k.id = kid_id and k.owner_id = auth.uid()));
+create policy siosia_messages_read on public.messages for select to authenticated
+  using (sender = auth.uid()
+         or exists (select 1 from public.rides r where r.id = ride_id and (r.rider_id = auth.uid() or r.driver_id = auth.uid()))
+         or exists (select 1 from public.appointments a where a.id = appointment_id and (a.client_id = auth.uid() or a.provider_id = auth.uid())));
 
 -- ---------------------------------------------------------------------------------------------
 -- Pure helpers
@@ -620,6 +714,118 @@ returns text[] language sql stable security definer set search_path = public as 
    where p.user_id = p_user and not p.deleted;
 $$;
 
+-- ---------------------------------------------------------------------------------------------
+-- Siosia 2.3 helpers: kids and their ratings, photos as a viewer may see them, chat counts
+-- (SQL functions referenced by the views below, so defined first)
+-- ---------------------------------------------------------------------------------------------
+
+-- This year (UTC, as the engine counts it): a kid's age, and the year-of-birth check.
+create or replace function public.siosia_year()
+returns int language sql stable as $$
+  select extract(year from now() at time zone 'UTC')::int;
+$$;
+
+-- A kid's rating summary (FR-203): the mean of every rating it got (one decimal), null without any.
+create or replace function public.siosia_kid_rating(p_kid uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'mean',  case when count(*) = 0 then null else round(avg(stars)::numeric, 1) end,
+    'count', count(*)::int)
+  from kid_ratings where kid_id = p_kid;
+$$;
+
+-- A photo's path, only for a viewer allowed to see it (FR-212): the app turns it into a signed
+-- URL (photo); the path itself never reaches a screen. Nothing otherwise.
+create or replace function public.siosia_photo_path_json(p_path text, p_allowed boolean)
+returns jsonb language sql immutable as $$
+  select case when p_path is not null and coalesce(p_allowed, false) then jsonb_build_object('photoPath', p_path)
+              else '{}'::jsonb end;
+$$;
+
+-- A kid as its owner sees it (Kid, S2 → My kids): every rating it got, with who gave it, newest first.
+create or replace function public.siosia_kid_json(k public.kids)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', k.id, 'name', k.name, 'photo', null, 'bornYear', k.born_year, 'note', k.note,
+    'rating', siosia_kid_rating(k.id),
+    'ratings', coalesce((select jsonb_agg(jsonb_build_object(
+                 'appointmentId', g.appointment_id,
+                 'by', coalesce((select nickname from profiles where user_id = g.from_user), 'Deleted user'),
+                 'stars', g.stars, 'comment', g.comment, 'at', siosia_ms(g.created_at)) order by g.created_at desc)
+               from kid_ratings g where g.kid_id = k.id), '[]'::jsonb))
+    || siosia_photo_path_json(k.photo_path, true);
+$$;
+
+-- The kids attached to an appointment as its two parties see them (AttachedKid, FR-202): name,
+-- photo, age, note, the summary, and the viewer's own rating for this appointment. Never the owner's id.
+create or replace function public.siosia_attached_kids_json(p_appt uuid, p_viewer uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(
+           jsonb_build_object(
+             'id', k.id, 'name', k.name, 'photo', null,
+             'age', case when k.born_year is null then null else siosia_year() - k.born_year end,
+             'note', k.note, 'rating', siosia_kid_rating(k.id),
+             'myRating', (select g.stars from kid_ratings g
+                           where g.appointment_id = p_appt and g.kid_id = k.id and g.from_user = p_viewer))
+           || siosia_photo_path_json(k.photo_path, true)
+           order by k.created_at, k.id), '[]'::jsonb)
+    from appointment_kids ak join kids k on k.id = ak.kid_id where ak.appointment_id = p_appt;
+$$;
+
+-- The attached kids' names, for the provider's notifications ("with Zosia and Kuba").
+create or replace function public.siosia_kid_names(p_appt uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(k.name order by k.created_at, k.id), '[]'::jsonb)
+    from appointment_kids ak join kids k on k.id = ak.kid_id where ak.appointment_id = p_appt;
+$$;
+
+-- The caller's own kids, each once; null when the list names anyone else's or an unknown one (bad_input).
+create or replace function public.siosia_own_kids(p_uid uuid, p_kids uuid[])
+returns uuid[] language sql stable security definer set search_path = public as $$
+  select case when exists (select 1 from unnest(coalesce(p_kids, '{}'::uuid[])) x
+                            where x is null or not exists (select 1 from kids k where k.id = x and k.owner_id = p_uid)) then null
+              else coalesce((select array_agg(distinct x) from unnest(coalesce(p_kids, '{}'::uuid[])) x), '{}'::uuid[]) end;
+$$;
+
+-- A person as a viewer may see them: siosia_party plus their photo's path when the viewer is
+-- allowed to see it (FR-212) — the other party of their ride or appointment, a chat partner.
+create or replace function public.siosia_party_for(p_user uuid, p_allowed boolean)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select siosia_party(p_user)
+         || siosia_photo_path_json((select p.photo_path from profiles p where p.user_id = p_user and not p.deleted), p_allowed);
+$$;
+
+-- siosia_public_party for a viewer: their photo's path when the viewer is allowed to see it (FR-212).
+create or replace function public.siosia_public_party(p_user uuid, p_allowed boolean)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select case when p_user is null then null else siosia_public_party(p_user)
+         || siosia_photo_path_json((select p.photo_path from profiles p where p.user_id = p_user and not p.deleted), p_allowed) end;
+$$;
+
+-- Chat (FR-224): the other party's messages in a room the viewer has not read yet.
+create or replace function public.siosia_unread(p_room text, p_viewer uuid)
+returns int language sql stable security definer set search_path = public as $$
+  select count(*)::int from messages m where m.room = p_room and m.sender <> p_viewer and m.read_at is null;
+$$;
+
+-- Unread messages across every room the user is a party to (MyState.unreadChats, the S1 badge).
+create or replace function public.siosia_unread_total(p_user uuid)
+returns int language sql stable security definer set search_path = public as $$
+  select count(*)::int from messages m
+    left join rides r on r.id = m.ride_id
+    left join appointments a on a.id = m.appointment_id
+   where m.read_at is null and m.sender <> p_user
+     and ((r.id is not null and r.driver_id is not null and (r.rider_id = p_user or r.driver_id = p_user))
+          or (a.id is not null and (a.client_id = p_user or a.provider_id = p_user)));
+$$;
+
+-- ChatMessage as one party sees it (FR-224: readAt tells a sender their message was read).
+create or replace function public.siosia_message_json(m public.messages, p_viewer uuid)
+returns jsonb language sql stable set search_path = public as $$
+  select jsonb_build_object('id', m.id, 'room', m.room, 'mine', m.sender = p_viewer, 'text', m.text,
+                            'sentAt', siosia_ms(m.sent_at), 'readAt', siosia_ms(m.read_at));
+$$;
+
 -- `weeks` weeks after `t`, keeping the wall-clock time in the deployment's time zone (DST-safe).
 create or replace function public.siosia_add_weeks(t timestamptz, weeks int, tz text)
 returns timestamptz language sql immutable as $$
@@ -729,14 +935,20 @@ returns jsonb language sql stable security definer set search_path = public as $
     'place', case when a.place_lat is null then null
                   else jsonb_build_object('lat', a.place_lat, 'lng', a.place_lng, 'label', a.place_label) end,
     'note', a.note, 'price', a.price, 'currency', a.currency,
-    'client', siosia_public_party(a.client_id), 'provider', siosia_public_party(a.provider_id),
+    -- 2.3 (FR-212): the two parties see each other's photo; a candidate is no party yet.
+    'client', siosia_public_party(a.client_id, v.party), 'provider', siosia_public_party(a.provider_id, v.party),
     'requestedAt', siosia_ms(a.requested_at), 'answeredAt', siosia_ms(a.answered_at), 'endedAt', siosia_ms(a.ended_at),
     'cancelledBy', a.cancelled_by, 'cancelReason', a.cancel_reason,
     'rides', case when v.party then siosia_attached_json(a.id, p_viewer, a.client_id) else '[]'::jsonb end,
     'reminders', case when v.party then to_jsonb(a.reminded) else '[]'::jsonb end,
     'myRating', case when v.party then (select g.stars from ratings g where g.appointment_id = a.id and g.from_user = p_viewer) end,
     'series', case when a.series_id is null then null else siosia_series_json(a.series_id, a.seq, p_viewer) end,
-    'calendar', jsonb_build_object('google', null, 'ics', case when v.party then siosia_ics_link('a', a.id, p_viewer) end))
+    'calendar', jsonb_build_object('google', null, 'ics', case when v.party then siosia_ics_link('a', a.id, p_viewer) end),
+    -- 2.3 (FR-202): the kids' cards for the two parties; a candidate sees how many ("2 kids").
+    'kids', case when v.party then siosia_attached_kids_json(a.id, p_viewer) else '[]'::jsonb end,
+    'kidCount', (select count(*)::int from appointment_kids ak where ak.appointment_id = a.id),
+    -- 2.3 (FR-221): unread messages in this appointment's room.
+    'unread', case when v.party then siosia_unread('appt:' || a.id::text, p_viewer) else 0 end)
   from (select r.role, r.role <> 'candidate' as party
           from (select case when a.client_id = p_viewer then 'client' when a.provider_id = p_viewer then 'provider'
                             else 'candidate' end as role) r) v;
@@ -779,7 +991,10 @@ returns jsonb language sql stable security definer set search_path = public as $
     'publicId', public_id,
     'offers', to_jsonb(siosia_offers_of(p_user)),
     'offersPreset', master_id is not null,
-    'home', coalesce(home, case when (siosia_master_of(p_user)).role = 'rider' then (siosia_master_of(p_user)).default_pickup end))
+    'home', coalesce(home, case when (siosia_master_of(p_user)).role = 'rider' then (siosia_master_of(p_user)).default_pickup end),
+    -- 2.3: my photo — the app signs the path into `photo` (FR-212).
+    'photo', null)
+    || siosia_photo_path_json(photo_path, true)
   from profiles where user_id = p_user and not deleted;
 $$;
 
@@ -807,15 +1022,19 @@ returns jsonb language sql stable security definer set search_path = public as $
                                     + make_interval(secs => (select c.request_expiry_s from app_config c where c.id = 1)),
                                     r.scheduled_for + interval '15 minutes')),
     'scheduledFor', siosia_ms(r.scheduled_for),
-    'rider', siosia_party(r.rider_id),
+    -- 2.3 (FR-212): the two parties see each other's photo; a driver browsing bookings is no party yet.
+    'rider', siosia_party_for(r.rider_id, v.party),
     'driver', case when r.driver_id is null then null
-                   else siosia_party(r.driver_id) || jsonb_build_object('vehicle', siosia_vehicle_json(r.driver_id)) end,
+                   else siosia_party_for(r.driver_id, v.party) || jsonb_build_object('vehicle', siosia_vehicle_json(r.driver_id)) end,
     'myRating', (select g.stars from ratings g where g.ride_id = r.id and g.from_user = p_viewer),
     -- 2.0: the appointment and leg are the rider's business only (FR-114); booked rides go into calendars.
     'appointmentId', case when r.rider_id = p_viewer then r.appointment_id end,
     'leg', case when r.rider_id = p_viewer then r.leg end,
     'calendar', jsonb_build_object('google', null,
-                                   'ics', case when r.scheduled_for is not null then siosia_ics_link('r', r.id, p_viewer) end));
+                                   'ics', case when r.scheduled_for is not null then siosia_ics_link('r', r.id, p_viewer) end),
+    -- 2.3 (FR-221): unread messages in this ride's room (there is one once a driver is assigned).
+    'unread', case when v.party and r.driver_id is not null then siosia_unread('ride:' || r.id::text, p_viewer) else 0 end)
+  from (select coalesce(p_viewer = r.rider_id or p_viewer = r.driver_id, false) as party) v;
 $$;
 
 create or replace function public.siosia_offer_json(o public.offers)
@@ -1284,6 +1503,8 @@ begin
                   where provider_id = p_user and status = 'requested' and starts_at > now()),
     -- 2.1 (FR-161): others' open requests I could take (a series counts once) — the S1 badge.
     'openRequests', (select count(*) from siosia_open_rows(p_user)),
+    -- 2.3 (FR-221): unread chat messages across my rooms (the S1 badge).
+    'unreadChats', siosia_unread_total(p_user),
     'planned', (select count(*) from appointments
                  where (client_id = p_user or provider_id = p_user) and status in ('requested', 'accepted')
                    and starts_at + make_interval(mins => duration_min) > now())
@@ -1489,7 +1710,7 @@ end $$;
 -- user confirmed (p_replace). Wrong codes count as failed invite attempts.
 create or replace function public.siosia_redeem_transfer(p_code text, p_device text, p_replace boolean)
 returns jsonb language plpgsql security definer set search_path = public, extensions as $$
-declare v_uid uuid := auth.uid(); t account_transfers; v_old uuid; v_via text; v_hash text;
+declare v_uid uuid := auth.uid(); t account_transfers; v_old uuid; v_via text; v_hash text; v_photo text; k kids;
 begin
   if v_uid is null then return siosia_err('forbidden'); end if;
   if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
@@ -1545,8 +1766,30 @@ begin
    where g.from_user = v_old and n.from_user = v_uid and n.appointment_id = g.appointment_id;
   update ratings set from_user = v_uid where from_user = v_old;
   update ratings set to_user = v_uid where to_user = v_old;
+  -- 2.3 (V49): the kid ratings given, the messages sent and the chat presence come along and, like
+  -- rides and ratings, a replaced profile's own rows of those merge (its presence yields to the
+  -- newer row). The kids (their attachments and ratings hang on them) come along too, but a
+  -- replaced profile is a deleted one (FR-200): its own kids go first, photos included, and the
+  -- providers who expect them hear about it. The photos follow their rows: the object folders are
+  -- keyed by the profile's public id, which moves with the profile row below, and ownership is
+  -- read from the row that holds the path (siosia_photo_owner) — nothing to rewrite.
+  for k in select * from kids where owner_id = v_uid loop
+    perform siosia_notify_kid_providers(k.id); -- while the attachments still say who expects the kid
+    if k.photo_path is not null then perform siosia_drop_photo_object(k.photo_path); end if;
+  end loop;
+  delete from kids where owner_id = v_uid;
+  update kids set owner_id = v_uid where owner_id = v_old;
+  update kid_ratings set from_user = v_uid where from_user = v_old;
+  update messages set sender = v_uid where sender = v_old;
+  delete from chat_presence o using chat_presence n where o.user_id = v_old and n.user_id = v_uid and n.room = o.room;
+  update chat_presence set user_id = v_uid where user_id = v_old;
+  -- The replaced profile's row goes, and with it its photo: that object is dropped from the bucket.
+  select photo_path into v_photo from profiles where user_id = v_uid;
   delete from profiles where user_id = v_uid;
   update profiles set user_id = v_uid where user_id = v_old;
+  if v_photo is not null and v_photo is distinct from (select photo_path from profiles where user_id = v_uid) then
+    perform siosia_drop_photo_object(v_photo);
+  end if;
   if exists (select 1 from vehicles where user_id = v_old) then
     delete from vehicles where user_id = v_uid;
     update vehicles set user_id = v_uid where user_id = v_old;
@@ -1743,7 +1986,19 @@ begin
   delete from vehicles where user_id = v_uid;
   delete from memberships where user_id = v_uid;
   delete from push_subscriptions where user_id = v_uid;
-  update profiles set nickname = 'Deleted user', deleted = true, master_id = null, offers = '{}', home = null
+  -- 2.3 (FR-200, V44, V49): the kids go with the profile — their attachments and ratings by cascade
+  -- — so do the messages sent, the chat presence and every photo object of this account: each
+  -- object a row holds (a merged account's kid may sit under a former folder), then whatever is
+  -- left under this profile's folders (the app removed the files; this drops any row left).
+  for r in select photo_path as p from kids where owner_id = v_uid and photo_path is not null
+           union all select photo_path from profiles where user_id = v_uid and photo_path is not null loop
+    perform siosia_drop_photo_object(r.p);
+  end loop;
+  perform siosia_drop_photo_objects(v_uid);
+  delete from kids where owner_id = v_uid;
+  delete from messages where sender = v_uid;
+  delete from chat_presence where user_id = v_uid;
+  update profiles set nickname = 'Deleted user', deleted = true, master_id = null, offers = '{}', home = null, photo_path = null
    where user_id = v_uid;
   return siosia_ok('true'::jsonb);
 end $$;
@@ -1925,6 +2180,8 @@ begin
   end if;
   update rides set driver_id = v_uid where id = p_ride and status = 'scheduled' and driver_id is null;
   if not found then return siosia_err('taken'); end if;
+  -- A new driver starts a fresh thread: a previous driver's words never reach them (FR-223, V47).
+  delete from messages where room = 'ride:' || p_ride::text;
   perform siosia_push(r.rider_id, 'booking_taken', r.id,
                       jsonb_build_object('at', r.scheduled_for, 'driver', siosia_nick(v_uid)));
   return siosia_ok('"won"'::jsonb);
@@ -2122,6 +2379,8 @@ begin
       update rides set status = 'accepted', driver_id = v_uid, accepted_at = now()
        where id = o.ride_id and status = 'requested' and round = o.round
       returning id into v_won;
+      -- A new driver starts a fresh thread (FR-223, V47) — as the engine's resetRoom.
+      if v_won is not null then delete from messages where room = 'ride:' || v_won::text; end if;
     exception when unique_violation then
       return siosia_err('active_trip'); -- a booking of this driver started at this very moment
     end;
@@ -2356,7 +2615,11 @@ begin
           coalesce(p_params, '{}'::jsonb)
             || case when p_params ? 'serviceId'
                     then jsonb_build_object('service', siosia_service_name(p_params ->> 'serviceId', v_lang))
-                    else '{}'::jsonb end,
+                    else '{}'::jsonb end
+            -- 2.3 (FR-202): the provider hears who comes ("with Zosia and Kuba"); the client knows their own kids.
+            || case when exists (select 1 from appointments a join appointment_kids ak on ak.appointment_id = a.id
+                                  where a.id = p_appt and a.provider_id = p_user)
+                    then jsonb_build_object('kids', siosia_kid_names(p_appt)) else '{}'::jsonb end,
           v_lang, coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
   perform siosia_kick_push();
 end $$;
@@ -2665,7 +2928,8 @@ begin
   return siosia_ok(coalesce((
     select jsonb_agg(x.e || jsonb_build_object('providers',
              case when x.e ->> 'kind' <> 'time' then '[]'::jsonb else coalesce((
-               select jsonb_agg(siosia_public_party(p.user_id) order by p.nickname)
+               -- 2.3 (FR-211): a provider's photo is shown in the catalog
+               select jsonb_agg(siosia_public_party(p.user_id, true) order by p.nickname)
                  from profiles p
                 where not p.deleted and p.user_id <> v_uid and (x.e ->> 'id') = any (siosia_offers_of(p.user_id))
                   and siosia_member_ok(p.user_id)), '[]'::jsonb) end)
@@ -2678,11 +2942,14 @@ end $$;
 -- rules, a place unless the entry allows none; optionally repeating weekly / every 2 weeks.
 -- 2.1 (FR-160, V34): no provider (p_provider null) = an open request to anyone in the group —
 -- every other rule and limit the same, only the checks of a provider skipped.
+-- 2.3 (FR-201): p_kids = the client's own kids to attach, to every occurrence of a series (the
+-- 2.0 signature below passes none; cached apps keep working).
 create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
-                                                         p_duration int, p_place jsonb, p_note text, p_repeat jsonb)
+                                                         p_duration int, p_place jsonb, p_note text, p_repeat jsonb,
+                                                         p_kids uuid[])
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
-  v_err text := siosia_guard(true); v_uid uuid := auth.uid(); c app_config; e jsonb; d jsonb; v_prov uuid;
+  v_err text := siosia_guard(true); v_uid uuid := auth.uid(); c app_config; e jsonb; d jsonb; v_prov uuid; v_kids uuid[];
   v_note text := btrim(coalesce(p_note, '')); v_price numeric; v_every int; v_count int; v_until timestamptz;
   v_starts timestamptz[] := '{}'; v_t timestamptz; k int; s appointment_series; a appointments; v_first appointments;
   v_place jsonb := case when p_place is null or jsonb_typeof(p_place) = 'null' then null else p_place end; u record;
@@ -2714,6 +2981,9 @@ begin
      or char_length(v_note) > 200 then
     return siosia_err('bad_input');
   end if;
+  -- The kids to attach are the caller's own, each once (bad_input otherwise); none = an empty list.
+  v_kids := siosia_own_kids(v_uid, p_kids);
+  if v_kids is null then return siosia_err('bad_input'); end if;
   v_price := case when jsonb_typeof(e -> 'price' -> 'perHour') = 'number'
                     then round((e -> 'price' ->> 'perHour')::numeric * p_duration / 60, 2)
                   when jsonb_typeof(e -> 'price' -> 'fixed') = 'number' then (e -> 'price' ->> 'fixed')::numeric end;
@@ -2779,6 +3049,7 @@ begin
             (v_place ->> 'lat')::float8, (v_place ->> 'lng')::float8, left(btrim(v_place ->> 'label'), 120),
             v_note, v_price, c.currency, s.id, case when s.id is null then null else k end)
     returning * into a;
+    insert into appointment_kids (appointment_id, kid_id) select a.id, x from unnest(v_kids) x;
     if k = 1 then v_first := a; end if;
   end loop;
   if v_prov is not null then
@@ -2792,6 +3063,14 @@ begin
     end loop;
   end if;
   return siosia_ok(siosia_appointment_json(v_first, v_uid));
+end $$;
+
+-- The 2.0 call (NFR-18: cached apps): the same request, no kids.
+create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
+                                                         p_duration int, p_place jsonb, p_note text, p_repeat jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  return siosia_request_service(p_service, p_provider, p_starts_at, p_duration, p_place, p_note, p_repeat, null::uuid[]);
 end $$;
 
 -- The answer itself (V5, V24), for siosia_answer_appointment and siosia_take_request: only the
@@ -3233,7 +3512,440 @@ begin
   delete from invite_failures where at < now() - interval '1 day';
   delete from push_outbox where created_at < now() - interval '2 days';
   delete from account_transfers where expires_at < now();
+  -- 2.3: presence matters for 45 s; a day-old mark is noise.
+  delete from chat_presence where seen_at < now() - interval '1 day';
 end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- Siosia 2.3: kids, kid ratings, photos, chat (siosia-spec-v2.0.md "Amendment 2.3", SPEC.md
+-- V44–V48). Twin of the Engine's 2.3 methods; the rules are the same on both sides.
+-- ---------------------------------------------------------------------------------------------
+
+-- A kid as the app sends it (FR-200): {name 1–30 (trimmed), bornYear null | 1900…this year, note ≤ 200}.
+-- Never null itself: a missing name is false (jsonb_typeof of nothing is null, not 'string').
+create or replace function public.siosia_valid_kid(p jsonb)
+returns boolean language sql stable as $$
+  select coalesce(p is not null and jsonb_typeof(p) = 'object'
+     and jsonb_typeof(p -> 'name') = 'string' and char_length(btrim(p ->> 'name')) between 1 and 30
+     and (p -> 'bornYear' is null or jsonb_typeof(p -> 'bornYear') = 'null'
+          or (jsonb_typeof(p -> 'bornYear') = 'number'
+              and (p ->> 'bornYear')::numeric = trunc((p ->> 'bornYear')::numeric)
+              and (p ->> 'bornYear')::numeric between 1900 and siosia_year()))
+     and (p -> 'note' is null or jsonb_typeof(p -> 'note') = 'null'
+          or (jsonb_typeof(p -> 'note') = 'string' and char_length(btrim(p ->> 'note')) <= 200)), false);
+$$;
+
+-- The providers of upcoming appointments a kid is attached to refetch (its card changed or went).
+create or replace function public.siosia_notify_kid_providers(p_kid uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare u record;
+begin
+  for u in select distinct a.provider_id from appointment_kids ak join appointments a on a.id = ak.appointment_id
+            where ak.kid_id = p_kid and a.provider_id is not null and a.status in ('requested', 'accepted') loop
+    perform siosia_notify(u.provider_id);
+  end loop;
+end $$;
+
+-- My kids (S2 → My kids), with every rating they got (FR-200, FR-203).
+create or replace function public.siosia_kids()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  return siosia_ok(coalesce((select jsonb_agg(siosia_kid_json(k) order by k.created_at, k.id)
+                               from kids k where k.owner_id = v_uid), '[]'::jsonb));
+end $$;
+
+-- A new kid (FR-200): valid input, at most 8 per member.
+create or replace function public.siosia_add_kid(p_kid jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k kids;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if not siosia_valid_kid(p_kid) then return siosia_err('bad_input'); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7)); -- the count below, race-free
+  if (select count(*) from kids where owner_id = v_uid) >= 8 then return siosia_err('too_many'); end if;
+  insert into kids (owner_id, name, born_year, note)
+  values (v_uid, btrim(p_kid ->> 'name'), ((p_kid ->> 'bornYear')::numeric)::int, btrim(coalesce(p_kid ->> 'note', '')))
+  returning * into k;
+  perform siosia_notify(v_uid);
+  return siosia_ok(siosia_kid_json(k));
+end $$;
+
+-- Changes one of my kids (name, year of birth, note); the photo is set with siosia_set_photo.
+create or replace function public.siosia_update_kid(p_id uuid, p_kid jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k kids;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  select * into k from kids where id = p_id and owner_id = v_uid for update;
+  if k.id is null then return siosia_err('not_found'); end if;
+  if not siosia_valid_kid(p_kid) then return siosia_err('bad_input'); end if;
+  update kids set name = btrim(p_kid ->> 'name'), born_year = ((p_kid ->> 'bornYear')::numeric)::int,
+                  note = btrim(coalesce(p_kid ->> 'note', ''))
+   where id = k.id returning * into k;
+  perform siosia_notify(v_uid);
+  perform siosia_notify_kid_providers(k.id);
+  return siosia_ok(siosia_kid_json(k));
+end $$;
+
+-- Removes one of my kids (FR-204): its attachments and ratings go by cascade, and its photo object
+-- is dropped here (V49) — nothing of the kid stays readable even if the app never gets to remove
+-- the file. Returns the photo's path (or null) so the app removes the file too.
+create or replace function public.siosia_remove_kid(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k kids;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  select * into k from kids where id = p_id and owner_id = v_uid for update;
+  if k.id is null then return siosia_err('not_found'); end if;
+  perform siosia_notify_kid_providers(k.id);
+  delete from kids where id = k.id;
+  perform siosia_drop_photo_object(k.photo_path);
+  perform siosia_notify(v_uid);
+  return siosia_ok(to_jsonb(k.photo_path));
+end $$;
+
+-- The client attaches (replaces) their kids on an appointment (FR-201): their own kids only
+-- (bad_input otherwise), while it is requested or accepted — not once it ended; the provider or
+-- anyone else may not (forbidden). A series occurrence: that one.
+create or replace function public.siosia_set_appointment_kids(p_id uuid, p_kids uuid[])
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; v_kids uuid[];
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into a from appointments where id = p_id for update;
+  if a.id is null then return siosia_err('not_found'); end if;
+  if a.client_id <> v_uid then return siosia_err('forbidden'); end if;
+  if a.status not in ('requested', 'accepted') then return siosia_err('illegal_transition'); end if;
+  -- A list, possibly empty — never null (the engine's rule: not a list → bad_input).
+  if p_kids is null then return siosia_err('bad_input'); end if;
+  v_kids := siosia_own_kids(v_uid, p_kids);
+  if v_kids is null then return siosia_err('bad_input'); end if;
+  delete from appointment_kids where appointment_id = a.id;
+  insert into appointment_kids (appointment_id, kid_id) select a.id, x from unnest(v_kids) x;
+  perform siosia_notify(a.client_id);
+  perform siosia_notify(a.provider_id);
+  return siosia_ok(siosia_appointment_json(a, v_uid));
+end $$;
+
+-- The provider rates an attached kid once, within 24 h after a done appointment (FR-203): 1–5
+-- stars, a comment kept to 140. The owner's own rating (FR-060) is another table, untouched.
+create or replace function public.siosia_rate_kid(p_id uuid, p_kid uuid, p_stars int, p_comment text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into a from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid);
+  if a.id is null then return siosia_err('not_found'); end if;
+  if a.client_id = v_uid then return siosia_err('forbidden'); end if;
+  if not exists (select 1 from appointment_kids where appointment_id = a.id and kid_id = p_kid) then return siosia_err('not_found'); end if;
+  if a.status <> 'done' then return siosia_err('illegal_transition'); end if;
+  if now() > coalesce(a.ended_at, a.starts_at + make_interval(mins => a.duration_min)) + interval '24 hours' then
+    return siosia_err('window_closed');
+  end if;
+  if p_stars is null or p_stars not between 1 and 5 then return siosia_err('bad_input'); end if;
+  insert into kid_ratings (appointment_id, kid_id, from_user, stars, comment)
+  values (a.id, p_kid, v_uid, p_stars, left(btrim(coalesce(p_comment, '')), 140));
+  perform siosia_notify(a.client_id);
+  perform siosia_notify(a.provider_id);
+  return siosia_ok('true'::jsonb);
+exception when unique_violation then
+  return siosia_err('already_rated');
+end $$;
+
+-- A photo object's path (FR-210, V49): profile/<public id>/<file>.jpg or kid/<public id>/<kid>/<file>.jpg
+-- — the folder is the owner's PUBLIC id (never the auth uid: a signed URL carries the path and the
+-- viewer sees it), the file a random name. The folder key, or null for anything else (a URL, say — V46).
+create or replace function public.siosia_photo_folder(p_path text)
+returns text language sql immutable as $$
+  select case when p_path ~ ('^(profile/' || f || '|kid/' || f || '/' || u || ')/[A-Za-z0-9_-]{1,64}\.jpg$')
+              then split_part(p_path, '/', 2) end
+    from (select '[A-Za-z0-9_-]{10,24}' as f,
+                 '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' as u) x;
+$$;
+
+-- The kid a kid/ path names (its shape only — whose kid it is, the rows say).
+create or replace function public.siosia_photo_kid(p_path text)
+returns uuid language sql immutable as $$
+  select case when p_path like 'kid/%' and siosia_photo_folder(p_path) is not null then split_part(p_path, '/', 3)::uuid end;
+$$;
+
+-- Who owns an object (V49): the ROW that holds its path — a profile's photo → that user, a kid's →
+-- the kid's owner — so an account that moved to another phone keeps every photo. An object no row
+-- holds yet or any more (just uploaded, replaced) belongs to the profile whose public id is its
+-- folder. Null for a path of another shape or nobody's.
+create or replace function public.siosia_photo_owner(p_path text)
+returns uuid language sql stable security definer set search_path = public as $$
+  select case when siosia_photo_folder(p_path) is null then null else coalesce(
+    (select p.user_id from profiles p where p.photo_path = p_path limit 1),
+    (select k.owner_id from kids k where k.photo_path = p_path limit 1),
+    (select p.user_id from profiles p where p.public_id = siosia_photo_folder(p_path) and not p.deleted)) end;
+$$;
+
+-- Stores the path of a photo the app uploaded for my profile or one of my kids — or null to clear
+-- it (FR-210, FR-212: the path, never a URL; one photo each). Returns the OLD path (or null): the
+-- app removes that object. The path must be under my public id's folder, under the right kid.
+create or replace function public.siosia_set_photo(p_kind text, p_kid uuid, p_path text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_old text; k kids;
+  -- under my public id's folder (false, never null, for a path of another shape or anyone else's folder)
+  v_mine boolean := coalesce(siosia_photo_folder(p_path) = (select public_id from profiles where user_id = auth.uid()), false);
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if p_kind = 'profile' then
+    if p_path is not null and (p_path not like 'profile/%' or not v_mine) then
+      return siosia_err('bad_input');
+    end if;
+    select photo_path into v_old from profiles where user_id = v_uid for update;
+    update profiles set photo_path = p_path where user_id = v_uid;
+  elsif p_kind = 'kid' then
+    select * into k from kids where id = p_kid and owner_id = v_uid for update;
+    if k.id is null then return siosia_err('not_found'); end if;
+    if p_path is not null and (not v_mine or siosia_photo_kid(p_path) is distinct from k.id) then
+      return siosia_err('bad_input');
+    end if;
+    v_old := k.photo_path;
+    update kids set photo_path = p_path where id = k.id;
+    perform siosia_notify_kid_providers(k.id);
+  else
+    return siosia_err('bad_input');
+  end if;
+  perform siosia_notify(v_uid);
+  -- An old object whose folder is nobody's any more (a profile replaced by a move) is beyond the
+  -- client's delete policy: the server drops it. The client still removes objects it owns.
+  if v_old is not null and v_old is distinct from p_path
+     and coalesce(siosia_photo_folder(v_old) = (select public_id from profiles where user_id = v_uid), false) = false then
+    perform siosia_drop_photo_object(v_old);
+  end if;
+  return siosia_ok(to_jsonb(v_old));
+end $$;
+
+-- The paths of my photo objects (profile and kids): the app removes them from the bucket before
+-- it deletes the profile.
+create or replace function public.siosia_my_photo_paths()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  return siosia_ok(coalesce((select jsonb_agg(x.p) from (
+    select photo_path as p from profiles where user_id = v_uid and photo_path is not null
+    union all
+    select photo_path from kids where owner_id = v_uid and photo_path is not null) x), '[]'::jsonb));
+end $$;
+
+-- Drops one photo object's row (siosia_remove_kid, a replaced profile): nothing stays readable even
+-- when the app never gets to remove the file. Skipped where there is no Storage (tests); a bucket
+-- error must never stop the deletion it is part of.
+create or replace function public.siosia_drop_photo_object(p_path text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p_path is null or to_regclass('storage.objects') is null then return; end if;
+  begin
+    execute 'delete from storage.objects where bucket_id = $1 and name = $2' using 'photos', p_path;
+  exception when others then
+    raise warning 'siosia_drop_photo_object: %', sqlerrm;
+  end;
+end $$;
+
+-- Drops every photo object row left under an account's folders (siosia_delete_profile): the folders
+-- are keyed by the profile's public id (V49; the uid-keyed shape of the first 2.3 builds is covered
+-- too). The app removed the files first; this makes sure nothing stays readable.
+create or replace function public.siosia_drop_photo_objects(p_user uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_key text;
+begin
+  if to_regclass('storage.objects') is null then return; end if;
+  begin
+    for v_key in select p_user::text union select public_id from profiles where user_id = p_user and public_id is not null loop
+      execute 'delete from storage.objects where bucket_id = $1 and (name like $2 or name like $3)'
+        using 'photos', 'profile/' || v_key || '/%', 'kid/' || v_key || '/%';
+    end loop;
+  exception when others then
+    raise warning 'siosia_drop_photo_objects: %', sqlerrm; -- the bucket must never stop a deletion
+  end;
+end $$;
+
+-- A chat room (FR-220, V47) and who may use it: 'ride:<id>' once the ride has a driver (the rider
+-- and the CURRENT driver — a re-dispatched driver is no party any more), 'appt:<id>' once accepted
+-- (client and provider: an answered one that was not declined). Open while live and for 24 h
+-- after the end (FR-223). No row for anything else.
+create or replace function public.siosia_room(p_room text)
+returns table (ride_id uuid, appointment_id uuid, party_a uuid, party_b uuid, open boolean)
+language plpgsql stable security definer set search_path = public as $$
+declare v_id uuid; r rides; a appointments;
+begin
+  -- The id in lower case only, as the rows name their room (messages.room): an upper-case spelling
+  -- is no room — not_found, as in the engine, never a check violation on insert.
+  if coalesce(p_room, '') !~ '^(ride|appt):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then return; end if;
+  v_id := substr(p_room, 6)::uuid;
+  if p_room like 'ride:%' then
+    select * into r from rides where id = v_id and driver_id is not null;
+    if r.id is null then return; end if;
+    return query select r.id, null::uuid, r.rider_id, r.driver_id,
+                        r.ended_at is null or now() <= r.ended_at + interval '24 hours';
+  else
+    select * into a from appointments
+     where id = v_id and provider_id is not null and answered_at is not null and status not in ('declined', 'expired');
+    if a.id is null then return; end if;
+    return query select null::uuid, a.id, a.client_id, a.provider_id,
+                        a.ended_at is null or now() <= a.ended_at + interval '24 hours';
+  end if;
+end $$;
+
+-- Queues a chat notification (FR-222) for a user who turned them on, tagged with the ride or
+-- appointment. The words are the push-text module's; only the params are set here.
+create or replace function public.siosia_push_chat(p_user uuid, p_ride uuid, p_appt uuid, p_params jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user)
+     or not siosia_member_ok(p_user) then
+    return;
+  end if;
+  insert into push_outbox (user_id, kind, ride_id, appointment_id, params, lang, tz)
+  values (p_user, 'chat_message', p_ride, p_appt, coalesce(p_params, '{}'::jsonb),
+          coalesce((select language from profiles where user_id = p_user), 'en'),
+          coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
+  perform siosia_kick_push();
+end $$;
+
+-- A room's thread as one of its parties sees it (FR-221, FR-224): the other party (with their
+-- photo), the messages oldest first, whether sending is still allowed, the unread count. With
+-- p_mark_read — the thread is open and visible — the other party's messages are marked read now
+-- (they refetch their read marks, the reader's other tabs drop the badge) and the reader's presence
+-- in the room is stamped (FR-222: no push to someone looking at the thread; the app re-stamps every 20 s).
+create or replace function public.siosia_chat(p_room text, p_mark_read boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); rm record; v_other uuid;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into rm from siosia_room(p_room);
+  if rm.party_a is null or (v_uid is distinct from rm.party_a and v_uid is distinct from rm.party_b) then
+    return siosia_err('not_found');
+  end if;
+  v_other := case when rm.party_a = v_uid then rm.party_b else rm.party_a end;
+  if coalesce(p_mark_read, false) then
+    insert into chat_presence (user_id, room, seen_at) values (v_uid, p_room, now())
+    on conflict (user_id, room) do update set seen_at = now();
+    update messages set read_at = now() where room = p_room and sender <> v_uid and read_at is null;
+    if found then
+      perform siosia_notify(v_other);
+      perform siosia_notify(v_uid);
+    end if;
+  end if;
+  return siosia_ok(jsonb_build_object(
+    'room', p_room,
+    'other', siosia_party_for(v_other, true),
+    'messages', coalesce((select jsonb_agg(siosia_message_json(m, v_uid) order by m.sent_at, m.id)
+                            from messages m where m.room = p_room), '[]'::jsonb),
+    'open', rm.open,
+    'unread', siosia_unread(p_room, v_uid)));
+end $$;
+
+-- Sends to the other party of a room I belong to (FR-221–225): not_found outside the room's two
+-- parties, illegal_transition once it is read-only (24 h after the end), bad_input for a blank or
+-- over-long text, too_many past 30 messages in 10 minutes. Stored; both parties' screens refetch
+-- (realtime); one notification to the other party — unless they are driving right now, or have
+-- the thread open (seen in the room within 45 s — FR-222, V48). The notification carries the whole
+-- text; the sender (push-text) cuts it to the first words.
+create or replace function public.siosia_send_message(p_room text, p_text text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); rm record; v_other uuid;
+  v_text text := btrim(coalesce(p_text, '')); m messages;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into rm from siosia_room(p_room);
+  if rm.party_a is null or (v_uid is distinct from rm.party_a and v_uid is distinct from rm.party_b) then
+    return siosia_err('not_found');
+  end if;
+  if not rm.open then return siosia_err('illegal_transition'); end if;
+  if char_length(v_text) not between 1 and 500 then return siosia_err('bad_input'); end if;
+  if (select count(*) from messages where room = p_room and sender = v_uid and sent_at > now() - interval '10 minutes') >= 30 then
+    return siosia_err('too_many');
+  end if;
+  v_other := case when rm.party_a = v_uid then rm.party_b else rm.party_a end;
+  insert into messages (room, ride_id, appointment_id, sender, text)
+  values (p_room, rm.ride_id, rm.appointment_id, v_uid, v_text) returning * into m;
+  perform siosia_notify(v_other);
+  perform siosia_notify(v_uid); -- my other tabs
+  -- No phone at the wheel: a driver with a ride under way reads it in the thread later. Someone
+  -- looking at the thread right now sees it land live and needs no notification either.
+  if not exists (select 1 from rides x where x.driver_id = v_other and x.status = 'in_progress')
+     and not exists (select 1 from chat_presence c where c.user_id = v_other and c.room = p_room
+                      and c.seen_at > now() - interval '45 seconds') then
+    perform siosia_push_chat(v_other, rm.ride_id, rm.appointment_id,
+                             jsonb_build_object('sender', siosia_nick(v_uid), 'text', v_text, 'room', p_room,
+                                                'messageId', m.id));
+  end if;
+  return siosia_ok(siosia_message_json(m, v_uid));
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- Photos in Storage (FR-212, V46): who may read an object — which is what signing its URL takes —
+-- and who may write one. Evaluated by the policies on storage.objects as the calling user.
+-- ---------------------------------------------------------------------------------------------
+
+-- May p_viewer see p_user's photo? Themselves; the other party of a ride or appointment they
+-- share (any status — history shows them too); someone who offers a service (in the catalog).
+create or replace function public.siosia_can_see_person(p_user uuid, p_viewer uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select p_user is not null and p_viewer is not null and (
+       p_user = p_viewer
+    or exists (select 1 from appointments a
+                where (a.client_id = p_user and a.provider_id = p_viewer) or (a.client_id = p_viewer and a.provider_id = p_user))
+    or exists (select 1 from rides r
+                where (r.rider_id = p_user and r.driver_id = p_viewer) or (r.rider_id = p_viewer and r.driver_id = p_user))
+    or (cardinality(coalesce(siosia_offers_of(p_user), '{}'::text[])) > 0 and siosia_member_ok(p_user)));
+$$;
+
+-- May p_viewer see a kid? Its owner, and the provider of an appointment it is attached to (FR-202).
+create or replace function public.siosia_can_see_kid(p_kid uuid, p_viewer uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select p_kid is not null and p_viewer is not null and (
+       exists (select 1 from kids k where k.id = p_kid and k.owner_id = p_viewer)
+    or exists (select 1 from appointment_kids ak join appointments a on a.id = ak.appointment_id
+                where ak.kid_id = p_kid and a.provider_id = p_viewer));
+$$;
+
+-- Read (sign) an object: its owner always (the row that holds it, else the folder's profile);
+-- anyone else only the CURRENT photo of a person or kid they may see — the row that holds the path
+-- says whose it is — so a replaced photo is dead at once. Members only; never for a path of another
+-- shape. The 2-argument form is the rule itself, for the server and the tests (never granted to
+-- clients: an oracle on anyone's photos otherwise — V49); the policies call the 1-argument form.
+create or replace function public.siosia_can_see_photo(p_path text, p_viewer uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(p_viewer is not null and siosia_member_ok(p_viewer) and siosia_photo_folder(p_path) is not null and (
+       siosia_photo_owner(p_path) = p_viewer
+    or exists (select 1 from profiles p where p.photo_path = p_path and not p.deleted and siosia_can_see_person(p.user_id, p_viewer))
+    or exists (select 1 from kids k where k.photo_path = p_path and siosia_can_see_kid(k.id, p_viewer))), false);
+$$;
+
+create or replace function public.siosia_can_see_photo(p_path text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select siosia_can_see_photo(p_path, auth.uid());
+$$;
+
+-- Write (upload, replace, remove) an object: a member, under the folder of their own public id —
+-- profile/<public id>/ or kid/<public id>/<their kid>/ — or an object a row of theirs holds (a
+-- merged account's kid under its former folder). Never null (a path of another shape has no owner).
+create or replace function public.siosia_photo_upload_ok(p_path text, p_uid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(p_uid is not null and siosia_member_ok(p_uid) and siosia_photo_folder(p_path) is not null and (
+       (exists (select 1 from profiles p where p.user_id = p_uid and not p.deleted and p.public_id = siosia_photo_folder(p_path))
+        and (p_path like 'profile/%'
+             or exists (select 1 from kids k where k.id = siosia_photo_kid(p_path) and k.owner_id = p_uid)))
+    or exists (select 1 from profiles p where p.user_id = p_uid and not p.deleted and p.photo_path = p_path)
+    or exists (select 1 from kids k where k.owner_id = p_uid and k.photo_path = p_path)), false);
+$$;
+
+create or replace function public.siosia_photo_upload_ok(p_path text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select siosia_photo_upload_ok(p_path, auth.uid());
+$$;
 
 -- ---------------------------------------------------------------------------------------------
 -- Function privileges: clients get the API above, nothing else.
@@ -3289,6 +4001,22 @@ grant execute on function public.siosia_delete_push(text) to authenticated;
 -- 2.1
 grant execute on function public.siosia_take_request(uuid) to authenticated;
 grant execute on function public.siosia_set_car_colour(text, text) to authenticated;
+-- 2.3
+grant execute on function public.siosia_request_service(text, text, timestamptz, int, jsonb, text, jsonb, uuid[]) to authenticated;
+grant execute on function public.siosia_kids() to authenticated;
+grant execute on function public.siosia_add_kid(jsonb) to authenticated;
+grant execute on function public.siosia_update_kid(uuid, jsonb) to authenticated;
+grant execute on function public.siosia_remove_kid(uuid) to authenticated;
+grant execute on function public.siosia_set_appointment_kids(uuid, uuid[]) to authenticated;
+grant execute on function public.siosia_rate_kid(uuid, uuid, int, text) to authenticated;
+grant execute on function public.siosia_set_photo(text, uuid, text) to authenticated;
+grant execute on function public.siosia_my_photo_paths() to authenticated;
+grant execute on function public.siosia_chat(text, boolean) to authenticated;
+grant execute on function public.siosia_send_message(text, text) to authenticated;
+-- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
+-- 2-argument rules stay the server's: revoked above with everything else)
+grant execute on function public.siosia_can_see_photo(text) to authenticated;
+grant execute on function public.siosia_photo_upload_ok(text) to authenticated;
 do $$
 begin
   if exists (select 1 from pg_roles where rolname = 'service_role') then
@@ -3357,6 +4085,42 @@ begin
     execute 'create policy siosia_rt_write on realtime.messages for insert to authenticated
                with check (public.siosia_rt_can_write(realtime.topic(), extension))';
   end if;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- Photos (FR-210–212, V46): the private bucket 'photos'. Objects live at profile/<public id>/<file>.jpg
+-- and kid/<public id>/<kid id>/<file>.jpg (never an account id, V49); only their owner writes them,
+-- and an object can be read — which is what signing its URL takes (the app signs for 1 h at most) —
+-- only by a viewer the app would show that person or kid to (siosia_can_see_photo). No public
+-- access, ever. Skipped where there is no Storage schema (PGlite tests).
+-- ---------------------------------------------------------------------------------------------
+
+do $$
+begin
+  if to_regclass('storage.buckets') is null or to_regclass('storage.objects') is null then
+    raise notice 'Storage not found: the photos bucket is not set up here.';
+    return;
+  end if;
+  execute $q$insert into storage.buckets (id, name, public) values ('photos', 'photos', false)
+             on conflict (id) do update set public = false$q$;
+  -- JPEG only, resized in the browser to 150 KB at most; the cap leaves a little room.
+  if exists (select 1 from information_schema.columns
+              where table_schema = 'storage' and table_name = 'buckets' and column_name = 'file_size_limit') then
+    execute $q$update storage.buckets set file_size_limit = 262144, allowed_mime_types = array['image/jpeg'] where id = 'photos'$q$;
+  end if;
+  execute 'drop policy if exists siosia_photos_read on storage.objects';
+  execute 'drop policy if exists siosia_photos_insert on storage.objects';
+  execute 'drop policy if exists siosia_photos_update on storage.objects';
+  execute 'drop policy if exists siosia_photos_delete on storage.objects';
+  execute $q$create policy siosia_photos_read on storage.objects for select to authenticated
+             using (bucket_id = 'photos' and public.siosia_can_see_photo(name))$q$;
+  execute $q$create policy siosia_photos_insert on storage.objects for insert to authenticated
+             with check (bucket_id = 'photos' and public.siosia_photo_upload_ok(name))$q$;
+  execute $q$create policy siosia_photos_update on storage.objects for update to authenticated
+             using (bucket_id = 'photos' and public.siosia_photo_upload_ok(name))
+             with check (bucket_id = 'photos' and public.siosia_photo_upload_ok(name))$q$;
+  execute $q$create policy siosia_photos_delete on storage.objects for delete to authenticated
+             using (bucket_id = 'photos' and public.siosia_photo_upload_ok(name))$q$;
 end $$;
 
 -- ---------------------------------------------------------------------------------------------

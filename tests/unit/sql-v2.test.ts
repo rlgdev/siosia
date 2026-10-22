@@ -1,9 +1,10 @@
 // @vitest-environment node
 // Siosia 2.0 backend rules against the REAL SQL migration in PGlite: the service catalog,
-// appointments (single and series), rides as part of a service, reminders, the calendar token.
-// Same cases as the engine tests (tests/unit/appointments.test.ts) — the twin rule (V19).
+// appointments (single and series), rides as part of a service, reminders, the calendar token;
+// 2.3: kids, kid ratings, photos, chat. Same cases as the engine tests
+// (tests/unit/appointments.test.ts) — the twin rule (V19).
 
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createHarness, errorOf, type Json, type SqlHarness } from "./sql-harness";
 
@@ -27,10 +28,15 @@ const pub: Record<string, string> = {};
 
 /**
  * Sends a request from `uid` to `provider` (a key of U; null = an open request to anyone, 2.1)
- * starting `startMin` minutes from now.
+ * starting `startMin` minutes from now. With `kids` (2.3) the 8-argument call attaches them.
  */
-function request(uid: string, provider: string | null, startMin: number, o: { service?: string; duration?: number; place?: unknown; note?: string; repeat?: unknown; startsAt?: number } = {}) {
-  return h.call<Json>(uid, "siosia_request_service", [
+function request(
+  uid: string,
+  provider: string | null,
+  startMin: number,
+  o: { service?: string; duration?: number; place?: unknown; note?: string; repeat?: unknown; startsAt?: number; kids?: unknown } = {}
+) {
+  const args: unknown[] = [
     o.service ?? "childcare",
     provider === null ? null : pub[provider],
     o.startsAt !== undefined ? new Date(o.startsAt).toISOString() : at(startMin),
@@ -38,7 +44,9 @@ function request(uid: string, provider: string | null, startMin: number, o: { se
     o.place === undefined ? HOME : o.place,
     o.note ?? "",
     o.repeat ?? null
-  ]);
+  ];
+  if (o.kids !== undefined) args.push(o.kids);
+  return h.call<Json>(uid, "siosia_request_service", args);
 }
 const answer = (uid: string, id: unknown, d: "accept" | "decline") => h.call<Json>(uid, "siosia_answer_appointment", [id, d]);
 const take = (uid: string, id: unknown) => h.call<Json>(uid, "siosia_take_request", [id]);
@@ -72,7 +80,11 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(async () => {
-  await h.db.exec("delete from public.ratings; delete from public.rides; delete from public.appointments; delete from public.appointment_series; delete from public.push_outbox;");
+  await h.db.exec(
+    "delete from public.ratings; delete from public.rides; delete from public.appointments; delete from public.appointment_series; delete from public.push_outbox;" +
+      // 2.3: kids (their attachments and ratings follow), messages, photos
+      "delete from public.kids; delete from public.messages; update public.profiles set photo_path = null;"
+  );
 });
 
 describe("catalog and schema (T1)", () => {
@@ -1196,5 +1208,842 @@ describe("car colour (2.1: FR-170, V38)", () => {
       await h.admin("update public.master_profiles set active = false where id = 'wozak'");
       await h.admin("update public.profiles set deleted = true where user_id = $1", [M]);
     }
+  });
+});
+
+describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () => {
+  const ZOSIA = { name: "Zosia", bornYear: 2016, note: "Nut allergy" };
+  const KUBA = { name: "Kuba", bornYear: null, note: "" };
+  const addKid = (uid: string, input: unknown) => h.call<Json>(uid, "siosia_add_kid", [input]);
+  const kidsOf = (uid: string) => h.call<Json[]>(uid, "siosia_kids");
+  const setKids = (uid: string, id: unknown, kids: unknown) => h.call<Json>(uid, "siosia_set_appointment_kids", [id, kids]);
+  const rateKid = (uid: string, id: unknown, kid: unknown, stars: number, comment = "") => h.call(uid, "siosia_rate_kid", [id, kid, stars, comment]);
+  const setPhoto = (uid: string, kind: string, kid: unknown, path: unknown) => h.call<string | null>(uid, "siosia_set_photo", [kind, kid, path]);
+  const chat = (uid: string, room: string, mark = false) => h.call<Json>(uid, "siosia_chat", [room, mark]);
+  const send = (uid: string, room: string, text: string) => h.call<Json>(uid, "siosia_send_message", [room, text]);
+  /**
+   * Object folders are keyed by the owner's PUBLIC id (V49: a signed URL carries the path, and no
+   * auth uid may reach a viewer); a user without a profile gets a folder key nobody has.
+   */
+  const pidOf: Record<string, string> = {};
+  const folder = (uid: string) => pidOf[uid] ?? "nobody-nobody";
+  const learnPid = async (uid: string) => {
+    pidOf[uid] = String((await h.call<Json>(uid, "siosia_get_profile")).publicId);
+  };
+  beforeAll(() => {
+    for (const k of ["client", "siosia", "driver", "other", "gone"] as const) pidOf[U[k]] = pub[k];
+  });
+  const prof = (uid: string) => `profile/${folder(uid)}/${randomUUID()}.jpg`;
+  const kidPath = (uid: string, kid: unknown) => `kid/${folder(uid)}/${kid}/${randomUUID()}.jpg`;
+  const changed = async () => (await h.admin("select topic from realtime.messages where event = 'changed'")).rows.map((r) => String(r.topic));
+  const pushes = async () =>
+    (await h.admin("select kind, user_id, ride_id, appointment_id, params from public.push_outbox order by id")).rows as {
+      kind: string;
+      user_id: string;
+      ride_id: string | null;
+      appointment_id: string | null;
+      params: Json;
+    }[];
+  /** Empties the notification queue and the realtime log. */
+  const quiet = () => h.db.exec("delete from public.push_outbox; delete from realtime.messages;");
+  /** Toria asks for a ride now; Roman (online, at her place) takes the card: an accepted ride. */
+  async function liveRide(): Promise<string> {
+    await h.call(U.driver, "siosia_set_online", [true]);
+    const ride = await h.call<Json>(U.client, "siosia_request_ride", [HOME, SCHOOL, 3, 8, false]);
+    const st = await h.call<Json>(U.driver, "siosia_heartbeat", [HOME.lat, HOME.lng]);
+    expect(await h.call(U.driver, "siosia_decide_offer", [(st.offer as Json).id, "accept"])).toBe("won");
+    return String(ride.id);
+  }
+
+  it("keeps kids as the owner's rows: validated, at most 8, read and changed by the owner only (K1)", async () => {
+    const year = new Date().getUTCFullYear();
+    for (const bad of [
+      { name: "", bornYear: null, note: "" },
+      { name: "   ", bornYear: null, note: "" },
+      { name: "x".repeat(31), bornYear: null, note: "" },
+      { name: "Zosia", bornYear: 1899, note: "" },
+      { name: "Zosia", bornYear: year + 1, note: "" },
+      { name: "Zosia", bornYear: 2015.5, note: "" },
+      { name: "Zosia", bornYear: "2015", note: "" },
+      { name: "Zosia", bornYear: null, note: "x".repeat(201) },
+      { bornYear: 2015, note: "" },
+      null,
+      JSON.stringify("Zosia")
+    ])
+      expect(await errorOf(addKid(U.client, bad))).toBe("bad_input");
+    const z = await addKid(U.client, { name: "  Zosia ", bornYear: 2016, note: " Nut allergy " });
+    expect(z).toEqual({ id: expect.any(String), name: "Zosia", photo: null, bornYear: 2016, note: "Nut allergy", rating: { mean: null, count: 0 }, ratings: [] });
+    const k = await addKid(U.client, KUBA);
+    expect(k).toMatchObject({ name: "Kuba", bornYear: null, note: "" });
+    for (let i = 0; i < 6; i++) await addKid(U.client, { name: `Kid ${i}`, bornYear: year, note: "" });
+    expect(await errorOf(addKid(U.client, { name: "Ninth", bornYear: null, note: "" }))).toBe("too_many");
+    expect((await kidsOf(U.client)).map((x) => x.name)).toEqual(["Zosia", "Kuba", "Kid 0", "Kid 1", "Kid 2", "Kid 3", "Kid 4", "Kid 5"]);
+    expect(await kidsOf(U.other)).toEqual([]);
+    // Only the owner changes or removes a kid; a stranger has none.
+    expect(await errorOf(h.call(U.other, "siosia_update_kid", [z.id, KUBA]))).toBe("not_found");
+    expect(await errorOf(h.call(U.other, "siosia_remove_kid", [z.id]))).toBe("not_found");
+    expect(await errorOf(h.call(U.client, "siosia_update_kid", [z.id, { name: "", bornYear: null, note: "" }]))).toBe("bad_input");
+    expect(await h.call<Json>(U.client, "siosia_update_kid", [z.id, { name: "Zofia", bornYear: 2017, note: "" }])).toMatchObject({ id: z.id, name: "Zofia", bornYear: 2017, note: "" });
+    expect(await errorOf(addKid(U.stranger, KUBA))).toBe("not_member");
+    expect(await errorOf(h.as(U.client, "select count(*) from public.kids"))).toMatch(/permission denied/);
+    // Removing gives the photo's path back (none here); the table keeps its own rules.
+    expect(await h.call(U.client, "siosia_remove_kid", [k.id])).toBeNull();
+    expect((await kidsOf(U.client)).some((x) => x.id === k.id)).toBe(false);
+    expect(await errorOf(h.admin("insert into public.kids (owner_id, name) values ($1, '')", [U.client]))).toMatch(/kids_name_check/);
+    expect(await errorOf(h.admin("insert into public.kids (owner_id, name, born_year) values ($1, 'X', 1800)", [U.client]))).toMatch(/kids_born_year_check/);
+  });
+
+  it("lets only the client attach their own kids, until the appointment ends; a series request attaches them to every occurrence (K2)", async () => {
+    const z = await addKid(U.client, ZOSIA);
+    const kb = await addKid(U.client, KUBA);
+    const ola = await addKid(U.other, { name: "Ola", bornYear: null, note: "" });
+    const a = await request(U.client, "siosia", 24 * 60);
+    expect(a).toMatchObject({ kids: [], kidCount: 0 });
+    expect(await errorOf(setKids(U.siosia, a.id, [z.id]))).toBe("forbidden");
+    expect(await errorOf(setKids(U.other, a.id, [ola.id]))).toBe("forbidden");
+    expect(await errorOf(setKids(U.client, "00000000-0000-4000-8000-00000000dead", [z.id]))).toBe("not_found");
+    expect(await errorOf(setKids(U.client, a.id, [z.id, ola.id]))).toBe("bad_input");
+    expect(await errorOf(setKids(U.client, a.id, ["00000000-0000-4000-8000-00000000dead"]))).toBe("bad_input");
+    expect(await errorOf(setKids(U.client, a.id, [z.id, null]))).toBe("bad_input");
+    expect(await errorOf(setKids(U.client, a.id, null))).toBe("bad_input"); // not a list (the engine's rule — C13)
+    const v = await setKids(U.client, a.id, [z.id, kb.id, z.id]);
+    expect(v.kidCount).toBe(2);
+    expect((v.kids as Json[]).map((k) => k.name)).toEqual(["Zosia", "Kuba"]);
+    expect((await setKids(U.client, a.id, [kb.id])).kids).toEqual([expect.objectContaining({ id: kb.id })]);
+    // Still the client's call once accepted, even under way; not once it ended.
+    await answer(U.siosia, a.id, "accept");
+    await shift(a.id, -10);
+    expect((await setKids(U.client, a.id, [z.id])).kidCount).toBe(1);
+    await shift(a.id, -181);
+    expect(await errorOf(setKids(U.client, a.id, []))).toBe("illegal_transition");
+    expect(await getAppt(U.client, a.id)).toMatchObject({ status: "done", kidCount: 1 });
+    const c = await request(U.client, "siosia", 48 * 60);
+    await cancel(U.client, c.id);
+    expect(await errorOf(setKids(U.client, c.id, [z.id]))).toBe("illegal_transition");
+    // A request with kids: someone else's kid refuses it; a series carries them on every date.
+    expect(await errorOf(request(U.client, "siosia", 72 * 60, { service: "learning", duration: 60, kids: [ola.id] }))).toBe("bad_input");
+    const s = await request(U.client, "siosia", 72 * 60, { service: "learning", duration: 60, repeat: { every: 1, count: 3 }, kids: [z.id, kb.id] });
+    expect(s).toMatchObject({ kidCount: 2, kids: [expect.objectContaining({ id: z.id }), expect.objectContaining({ id: kb.id })] });
+    const perDate = await h.admin(
+      "select a.seq, count(ak.kid_id)::int as n from public.appointments a left join public.appointment_kids ak on ak.appointment_id = a.id where a.series_id = $1 group by a.seq order by a.seq",
+      [(s.series as Json).id]
+    );
+    expect(perDate.rows).toEqual([{ seq: 1, n: 2 }, { seq: 2, n: 2 }, { seq: 3, n: 2 }]);
+    // The 2.0 call (cached apps) still works, with no kids; an empty list is the same.
+    const plain = await h.call<Json>(U.client, "siosia_request_service", ["childcare", pub.siosia, at(26 * 60), 180, HOME, "", null]);
+    expect(plain).toMatchObject({ status: "requested", kids: [], kidCount: 0 });
+    expect(await request(U.client, "siosia", 27 * 60, { kids: [] })).toMatchObject({ kids: [], kidCount: 0 });
+  });
+
+  it("shows the kids to the two parties, only a count to a candidate, nothing to drivers; the provider's notifications name them (K3)", async () => {
+    const z = await addKid(U.client, ZOSIA);
+    const kb = await addKid(U.client, KUBA);
+    const year = new Date().getUTCFullYear();
+    await quiet();
+    // An open request: candidates see "2 kids" and no names; their notification names none either.
+    const open = await request(U.client, null, 30 * 60, { kids: [z.id, kb.id] });
+    const cand = await getAppt(U.other, open.id);
+    expect(cand).toMatchObject({ role: "candidate", kids: [], kidCount: 2 });
+    expect(JSON.stringify(cand)).not.toMatch(/Zosia|Kuba|allergy/);
+    const opens = await pushes();
+    expect(opens.length).toBeGreaterThan(0);
+    expect(opens.every((o) => o.kind === "appt_open" && !("kids" in o.params))).toBe(true);
+    // Addressed: both parties get the cards (name, photo, age, note, summary); the provider's push names them.
+    await quiet();
+    const a = await request(U.client, "siosia", 25 * 60, { kids: [z.id, kb.id] });
+    const theirs = await getAppt(U.siosia, a.id);
+    expect(theirs.kids).toEqual([
+      { id: z.id, name: "Zosia", photo: null, age: year - 2016, note: "Nut allergy", rating: { mean: null, count: 0 }, myRating: null },
+      { id: kb.id, name: "Kuba", photo: null, age: null, note: "", rating: { mean: null, count: 0 }, myRating: null }
+    ]);
+    expect(theirs.kidCount).toBe(2);
+    expect(JSON.stringify(theirs)).not.toContain(U.client);
+    expect((await getAppt(U.client, a.id)).kids).toEqual(theirs.kids);
+    expect(await pushes()).toEqual([expect.objectContaining({ kind: "appt_new", user_id: U.siosia, params: expect.objectContaining({ kids: ["Zosia", "Kuba"] }) })]);
+    // The provider's reminder names them, the client's does not; the client's accept text neither.
+    await quiet();
+    await answer(U.siosia, a.id, "accept");
+    expect((await pushes()).map((o) => [o.kind, "kids" in o.params])).toEqual([["appt_accepted", false]]);
+    await quiet();
+    await shift(a.id, 24 * 60 - 1, -3 * 24 * 60);
+    await sweep();
+    const rem = (await pushes()).filter((o) => o.kind === "appt_reminder");
+    expect(rem.find((o) => o.user_id === U.siosia)!.params).toMatchObject({ kids: ["Zosia", "Kuba"] });
+    expect(rem.find((o) => o.user_id === U.client)!.params).not.toHaveProperty("kids");
+    // The driver of an attached ride sees a plain booking: no kid anywhere.
+    const ride = await book(U.client, 23 * 60, a.id, "there");
+    await h.call(U.driver, "siosia_claim_booking", [ride.id]);
+    const driverView = await h.call<Json>(U.driver, "siosia_get_ride", [ride.id]);
+    expect(JSON.stringify(driverView)).not.toMatch(/Zosia|Kuba|kid/i);
+    expect(JSON.stringify(await h.call<Json[]>(U.driver, "siosia_bookings"))).not.toMatch(/Zosia|Kuba/);
+  });
+
+  it("lets the provider rate each attached kid once within 24 h of a done appointment; the owner reads it; nobody's own rating moves (K4)", async () => {
+    const z = await addKid(U.client, ZOSIA);
+    const kb = await addKid(U.client, KUBA);
+    const stray = await addKid(U.client, { name: "Ala", bornYear: null, note: "" });
+    const a = await request(U.client, "siosia", 24 * 60, { kids: [z.id, kb.id] });
+    expect(await errorOf(rateKid(U.other, a.id, z.id, 5))).toBe("not_found"); // no party
+    expect(await errorOf(rateKid(U.client, a.id, z.id, 5))).toBe("forbidden"); // the client
+    expect(await errorOf(rateKid(U.siosia, a.id, stray.id, 5))).toBe("not_found"); // not attached
+    expect(await errorOf(rateKid(U.siosia, a.id, z.id, 5))).toBe("illegal_transition"); // requested
+    await answer(U.siosia, a.id, "accept");
+    expect(await errorOf(rateKid(U.siosia, a.id, z.id, 5))).toBe("illegal_transition"); // not done yet
+    await shift(a.id, -200);
+    expect(await getAppt(U.siosia, a.id)).toMatchObject({ status: "done" });
+    expect(await errorOf(rateKid(U.siosia, a.id, z.id, 0))).toBe("bad_input");
+    expect(await errorOf(rateKid(U.siosia, a.id, z.id, 6))).toBe("bad_input");
+    const before = (await h.call<Json>(U.client, "siosia_get_profile")).rating;
+    await rateKid(U.siosia, a.id, z.id, 5, " Lovely " + "x".repeat(200));
+    expect(await errorOf(rateKid(U.siosia, a.id, z.id, 4))).toBe("already_rated");
+    await rateKid(U.siosia, a.id, kb.id, 4);
+    // The cards: the summary for both parties, the viewer's own rating for the provider.
+    expect((await getAppt(U.siosia, a.id)).kids).toEqual([
+      expect.objectContaining({ id: z.id, rating: { mean: 5, count: 1 }, myRating: 5 }),
+      expect.objectContaining({ id: kb.id, rating: { mean: 4, count: 1 }, myRating: 4 })
+    ]);
+    expect((await getAppt(U.client, a.id)).kids).toEqual([
+      expect.objectContaining({ id: z.id, rating: { mean: 5, count: 1 }, myRating: null }),
+      expect.objectContaining({ id: kb.id, rating: { mean: 4, count: 1 }, myRating: null })
+    ]);
+    // The owner reads every rating: who, when, stars, comment (kept to 140).
+    const mine = (await kidsOf(U.client)).find((k) => k.id === z.id)!;
+    expect(mine.rating).toEqual({ mean: 5, count: 1 });
+    expect(mine.ratings).toEqual([{ appointmentId: a.id, by: "Siosia", stars: 5, comment: ("Lovely " + "x".repeat(200)).slice(0, 140), at: expect.any(Number) }]);
+    // Neither party's own rating (FR-060) is touched.
+    expect((await h.call<Json>(U.client, "siosia_get_profile")).rating).toEqual(before);
+    expect((await h.admin("select count(*)::int as n from public.ratings")).rows[0].n).toBe(0);
+    // A later appointment with Zosia: the provider sees the summary so far; the mean covers both.
+    const b = await request(U.client, "siosia", 48 * 60, { kids: [z.id] });
+    expect((await getAppt(U.siosia, b.id)).kids).toEqual([expect.objectContaining({ id: z.id, rating: { mean: 5, count: 1 }, myRating: null })]);
+    await answer(U.siosia, b.id, "accept");
+    await shift(b.id, -200);
+    await rateKid(U.siosia, b.id, z.id, 2);
+    const again = (await kidsOf(U.client)).find((k) => k.id === z.id)!;
+    expect(again.rating).toEqual({ mean: 3.5, count: 2 });
+    expect((again.ratings as Json[]).map((g) => g.stars)).toEqual([2, 5]);
+    // The window closes 24 h after the end.
+    const c = await request(U.client, "siosia", 72 * 60, { kids: [kb.id] });
+    await answer(U.siosia, c.id, "accept");
+    await shift(c.id, -200);
+    await sweep(); // done, with its end recorded
+    await h.admin("update public.appointments set ended_at = now() - interval '25 hours' where id = $1", [c.id]);
+    expect(await errorOf(rateKid(U.siosia, c.id, kb.id, 5))).toBe("window_closed");
+    // The table: one rating per appointment and kid, stars 1–5.
+    expect(await errorOf(h.admin("insert into public.kid_ratings (appointment_id, kid_id, from_user, stars) values ($1, $2, $3, 3)", [a.id, z.id, U.siosia]))).toMatch(/kid_ratings_pkey/);
+    expect(await errorOf(h.admin("insert into public.kid_ratings (appointment_id, kid_id, from_user, stars) values ($1, $2, $3, 7)", [c.id, kb.id, U.siosia]))).toMatch(/kid_ratings_stars_check/);
+  });
+
+  it("stores photo paths, never URLs, and hands a path only to a viewer allowed to see it (K5)", async () => {
+    expect(await errorOf(setPhoto(U.client, "profile", null, "https://x.supabase.co/storage/v1/object/photos/profile/a.jpg"))).toBe("bad_input");
+    expect(await errorOf(setPhoto(U.client, "profile", null, prof(U.other)))).toBe("bad_input");
+    expect(await errorOf(setPhoto(U.client, "profile", null, `profile/${U.client}/a.png`))).toBe("bad_input");
+    expect(await errorOf(setPhoto(U.client, "profile", null, `profile/${U.client}/../x.jpg`))).toBe("bad_input");
+    expect(await errorOf(setPhoto(U.client, "selfie", null, prof(U.client)))).toBe("bad_input");
+    // A folder keyed by the auth uid (the first 2.3 builds) is refused: the uid would reach every viewer in the URL (V49).
+    expect(await errorOf(setPhoto(U.client, "profile", null, `profile/${U.client}/${randomUUID()}.jpg`))).toBe("bad_input");
+    const p1 = prof(U.client);
+    expect(p1).toMatch(new RegExp(`^profile/${pub.client}/[0-9a-f-]{36}\\.jpg$`));
+    expect(p1).not.toContain(U.client);
+    expect(await setPhoto(U.client, "profile", null, p1)).toBeNull();
+    expect((await h.admin("select photo_path from public.profiles where user_id = $1", [U.client])).rows[0].photo_path).toBe(p1);
+    expect(await h.call<Json>(U.client, "siosia_get_profile")).toMatchObject({ photo: null, photoPath: p1 });
+    // Replacing gives the old path back (the app removes that object); null clears.
+    const p2 = prof(U.client);
+    expect(await setPhoto(U.client, "profile", null, p2)).toBe(p1);
+    expect(await setPhoto(U.client, "profile", null, null)).toBe(p2);
+    expect(await h.call<Json>(U.client, "siosia_get_profile")).not.toHaveProperty("photoPath");
+    await setPhoto(U.client, "profile", null, p2);
+    // A kid's photo: my kid, under its own folder.
+    const z = await addKid(U.client, ZOSIA);
+    const ola = await addKid(U.other, { name: "Ola", bornYear: null, note: "" });
+    expect(await errorOf(setPhoto(U.client, "kid", ola.id, kidPath(U.client, ola.id)))).toBe("not_found");
+    expect(await errorOf(setPhoto(U.client, "kid", z.id, kidPath(U.client, ola.id)))).toBe("bad_input");
+    expect(await errorOf(setPhoto(U.client, "kid", z.id, kidPath(U.other, z.id)))).toBe("bad_input");
+    expect(await errorOf(setPhoto(U.client, "kid", z.id, prof(U.client)))).toBe("bad_input");
+    const kp = kidPath(U.client, z.id);
+    expect(await setPhoto(U.client, "kid", z.id, kp)).toBeNull();
+    expect((await kidsOf(U.client))[0]).toMatchObject({ id: z.id, photo: null, photoPath: kp });
+    const sp = prof(U.siosia);
+    await setPhoto(U.siosia, "profile", null, sp);
+    // The catalog shows a provider's photo to every member; nothing of the client's there.
+    const cat = await h.call<Json[]>(U.other, "siosia_catalog");
+    expect((cat.find((e) => e.id === "childcare")!.providers as Json[]).find((p) => p.nickname === "Siosia")).toMatchObject({ photoPath: sp });
+    expect(JSON.stringify(cat)).not.toContain(p2);
+    // An appointment: each party sees the other's photo and the attached kid's; a candidate sees none.
+    const open = await request(U.client, null, 30 * 60, { kids: [z.id] });
+    expect(JSON.stringify(await getAppt(U.other, open.id))).not.toMatch(/photoPath/);
+    expect(JSON.stringify((await h.call<Json>(U.other, "siosia_planned")).open)).not.toMatch(/photoPath/);
+    const a = await request(U.client, "siosia", 25 * 60, { kids: [z.id] });
+    const theirs = await getAppt(U.siosia, a.id);
+    expect(theirs.client).toMatchObject({ nickname: "Toria", photoPath: p2 });
+    expect(theirs.kids).toEqual([expect.objectContaining({ id: z.id, photo: null, photoPath: kp })]);
+    expect((await getAppt(U.client, a.id)).provider).toMatchObject({ nickname: "Siosia", photoPath: sp });
+    expect(JSON.stringify(theirs)).not.toMatch(/https?:/);
+    // A ride: the driver sees the rider's photo once they took the booking, not while browsing.
+    const ride = await book(U.client, 3 * 60);
+    const browsing = await h.call<Json[]>(U.driver, "siosia_open_bookings", [HOME.lat, HOME.lng]);
+    expect(JSON.stringify(browsing.find((b) => (b.ride as Json).id === ride.id))).not.toMatch(/photoPath/);
+    await h.call(U.driver, "siosia_claim_booking", [ride.id]);
+    expect((await h.call<Json>(U.driver, "siosia_get_ride", [ride.id])).rider).toMatchObject({ nickname: "Toria", photoPath: p2 });
+    expect((await h.call<Json>(U.client, "siosia_get_ride", [ride.id])).driver).toMatchObject({ nickname: "Roman", vehicle: expect.any(Object) });
+    expect((await h.call<Json>(U.client, "siosia_get_ride", [ride.id])).driver).not.toHaveProperty("photoPath"); // Roman has none
+    // Chat partners see each other's photo.
+    expect((await chat(U.driver, `ride:${ride.id}`)).other).toMatchObject({ nickname: "Toria", photoPath: p2 });
+    // Removing the kid gives its photo's path back.
+    expect(await h.call(U.client, "siosia_remove_kid", [z.id])).toBe(kp);
+    expect(await h.call<string[]>(U.client, "siosia_my_photo_paths")).toEqual([p2]);
+  });
+
+  it("decides who may read (sign) or write a photo object the way the views do — the Storage policies (K5)", async () => {
+    const can = async (path: string, viewer: string) => (await h.admin("select public.siosia_can_see_photo($1, $2) as ok", [path, viewer])).rows[0].ok;
+    const up = async (path: string, uid: string) => (await h.admin("select public.siosia_photo_upload_ok($1, $2) as ok", [path, uid])).rows[0].ok;
+    const z = await addKid(U.client, ZOSIA);
+    const p = prof(U.client);
+    const kp = kidPath(U.client, z.id);
+    await setPhoto(U.client, "profile", null, p);
+    await setPhoto(U.client, "kid", z.id, kp);
+    // Writes: a member, under their own folders, their own kid.
+    expect(await up(p, U.client)).toBe(true);
+    expect(await up(kp, U.client)).toBe(true);
+    expect(await up(p, U.other)).toBe(false);
+    expect(await up(kidPath(U.other, z.id), U.other)).toBe(false);
+    expect(await up(prof(U.stranger), U.stranger)).toBe(false);
+    expect(await up(`profile/${pub.client}/x.png`, U.client)).toBe(false);
+    expect(await up(`profile/${U.client}/${randomUUID()}.jpg`, U.client)).toBe(false); // never a uid-keyed folder (V49)
+    // Reads: the owner; nobody else without a relation; never a stranger or an odd path.
+    expect(await can(p, U.client)).toBe(true);
+    expect(await can(kp, U.client)).toBe(true);
+    expect(await can(p, U.other)).toBe(false);
+    expect(await can(kp, U.other)).toBe(false);
+    expect(await can(p, U.stranger)).toBe(false);
+    expect(await can("https://x/y.jpg", U.client)).toBe(false);
+    // What the policies call: the 1-argument forms answer for the CALLER only; the 2-argument rules
+    // are the server's — a member cannot ask about anyone else's photos through them (C9).
+    expect(await h.as(U.client, "select public.siosia_can_see_photo($1)", [p])).toBe(true);
+    expect(await h.as(U.other, "select public.siosia_can_see_photo($1)", [p])).toBe(false);
+    expect(await h.as(U.client, "select public.siosia_photo_upload_ok($1)", [kp])).toBe(true);
+    expect(await h.as(U.other, "select public.siosia_photo_upload_ok($1)", [kp])).toBe(false);
+    expect(await errorOf(h.as(U.other, "select public.siosia_can_see_photo($1, $2)", [p, U.client]))).toMatch(/permission denied/);
+    expect(await errorOf(h.as(U.other, "select public.siosia_photo_upload_ok($1, $2)", [p, U.client]))).toMatch(/permission denied/);
+    // A provider in the catalog: any member. A candidate of an open request: not yet; its taker: yes, the kid too.
+    const sp = prof(U.siosia);
+    await setPhoto(U.siosia, "profile", null, sp);
+    expect(await can(sp, U.other)).toBe(true);
+    const open = await request(U.client, null, 30 * 60, { kids: [z.id] });
+    expect(await can(p, U.other)).toBe(false);
+    expect(await can(kp, U.other)).toBe(false);
+    await take(U.other, open.id);
+    expect(await can(p, U.other)).toBe(true);
+    expect(await can(kp, U.other)).toBe(true);
+    expect(await can(kp, U.siosia)).toBe(false); // not the provider of that kid's appointment
+    // A ride shared as rider and driver.
+    expect(await can(p, U.driver)).toBe(false);
+    const ride = await book(U.client, 3 * 60);
+    await h.call(U.driver, "siosia_claim_booking", [ride.id]);
+    expect(await can(p, U.driver)).toBe(true);
+    expect(await can(kp, U.driver)).toBe(false);
+    // Only the CURRENT photo is readable by others: a replaced one is dead at once (its owner may still remove it).
+    const p2 = prof(U.client);
+    await setPhoto(U.client, "profile", null, p2);
+    expect(await can(p, U.other)).toBe(false);
+    expect(await can(p2, U.other)).toBe(true);
+    expect(await can(p, U.client)).toBe(true);
+  });
+
+  it("opens a room with the ride's driver or on acceptance, for its two parties only: oldest first, read marks, unread counts (K6)", async () => {
+    const ride = await book(U.client, 3 * 60);
+    const rr = `ride:${ride.id}`;
+    expect(await errorOf(chat(U.client, rr))).toBe("not_found"); // no driver yet
+    expect(await errorOf(send(U.client, rr, "Hi"))).toBe("not_found");
+    await h.call(U.driver, "siosia_claim_booking", [ride.id]);
+    expect(await chat(U.client, rr)).toEqual({ room: rr, other: expect.objectContaining({ nickname: "Roman" }), messages: [], open: true, unread: 0 });
+    expect(await errorOf(chat(U.other, rr))).toBe("not_found");
+    expect(await errorOf(chat(U.client, "ride:not-a-uuid"))).toBe("not_found");
+    expect(await errorOf(chat(U.client, `room:${ride.id}`))).toBe("not_found");
+    // The room is spelled as the rows name it (lower case): another spelling is no room — not_found,
+    // as in the engine, never a check violation on the insert (C14).
+    expect(await errorOf(chat(U.client, rr.toUpperCase()))).toBe("not_found");
+    expect(await errorOf(send(U.client, `ride:${String(ride.id).toUpperCase()}`, "Hi"))).toBe("not_found");
+    expect(await errorOf(send(U.client, rr, "   "))).toBe("bad_input");
+    expect(await errorOf(send(U.client, rr, "x".repeat(501)))).toBe("bad_input");
+    const m1 = await send(U.client, rr, "  I will wait at the gate  ");
+    expect(m1).toEqual({ id: expect.any(String), room: rr, mine: true, text: "I will wait at the gate", sentAt: expect.any(Number), readAt: null });
+    const m2 = await send(U.driver, rr, "On my way");
+    // Both see the thread oldest first; `mine` follows the viewer; unread counts the other's.
+    const mine = await chat(U.client, rr);
+    expect((mine.messages as Json[]).map((m) => [m.text, m.mine])).toEqual([["I will wait at the gate", true], ["On my way", false]]);
+    expect(mine.unread).toBe(1);
+    expect((await chat(U.driver, rr)).unread).toBe(1);
+    expect((await h.call<Json>(U.client, "siosia_get_ride", [ride.id])).unread).toBe(1);
+    expect((await h.call<Json[]>(U.driver, "siosia_bookings"))[0]).toMatchObject({ id: ride.id, unread: 1 });
+    expect(await h.call<Json>(U.client, "siosia_my_state")).toMatchObject({ unreadChats: 1 });
+    // Reading marks the other's messages; they see the mark on theirs (FR-224).
+    await quiet();
+    const read = await chat(U.client, rr, true);
+    expect(read.unread).toBe(0);
+    expect((read.messages as Json[]).map((m) => m.readAt === null)).toEqual([true, false]);
+    expect((await chat(U.driver, rr)).messages).toEqual([expect.objectContaining({ id: m1.id, mine: false, readAt: null }), expect.objectContaining({ id: m2.id, mine: true, readAt: expect.any(Number) })]);
+    // The sender refetches for the marks, the reader for the badge on their other tabs (C11, as the engine).
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.driver}`, `user:${U.client}`]));
+    expect(await h.call<Json>(U.client, "siosia_my_state")).toMatchObject({ unreadChats: 0 });
+    // An appointment's room opens on acceptance; a third member never reads it.
+    const a = await request(U.client, "siosia", 24 * 60);
+    const ar = `appt:${a.id}`;
+    expect(await errorOf(chat(U.client, ar))).toBe("not_found");
+    expect(await errorOf(send(U.siosia, ar, "Hello"))).toBe("not_found");
+    await answer(U.siosia, a.id, "accept");
+    await send(U.siosia, ar, "Hello");
+    expect(await errorOf(chat(U.other, ar))).toBe("not_found");
+    expect(await getAppt(U.client, a.id)).toMatchObject({ unread: 1 });
+    expect(await getAppt(U.siosia, a.id)).toMatchObject({ unread: 0 });
+    expect((await h.call<Json>(U.client, "siosia_planned")).appointments).toEqual([expect.objectContaining({ id: a.id, unread: 1 })]);
+    expect(await h.call<Json>(U.client, "siosia_my_state")).toMatchObject({ unreadChats: 1 });
+    // A declined request never had a room; nobody reads the table directly.
+    const d = await request(U.other, "siosia", 26 * 60);
+    await answer(U.siosia, d.id, "decline");
+    expect(await errorOf(chat(U.other, `appt:${d.id}`))).toBe("not_found");
+    expect(await errorOf(h.as(U.client, "select count(*) from public.messages"))).toMatch(/permission denied/);
+    expect(await errorOf(h.admin("insert into public.messages (room, ride_id, sender, text) values ($1, $2, $3, 'x')", ["appt:" + ride.id, ride.id, U.client]))).toMatch(/messages_check|messages_room_check/);
+  });
+
+  it("keeps a thread writable while live and 24 h after the end, then read-only; 30 a sender per 10 minutes; a re-dispatched driver loses the room (K6)", async () => {
+    const ride = await book(U.client, 3 * 60);
+    const rr = `ride:${ride.id}`;
+    await h.call(U.driver, "siosia_claim_booking", [ride.id]);
+    for (let i = 0; i < 30; i++) await send(U.client, rr, `m${i}`);
+    expect(await errorOf(send(U.client, rr, "one more"))).toBe("too_many");
+    expect(await send(U.driver, rr, "fine for me")).toMatchObject({ mine: true }); // per sender
+    await h.admin("update public.messages set sent_at = sent_at - interval '11 minutes' where room = $1 and sender = $2", [rr, U.client]);
+    expect(await send(U.client, rr, "again")).toMatchObject({ text: "again" });
+    // After the end: a day for questions, then read-only (still readable).
+    await h.admin("update public.rides set status = 'completed', ended_at = now() - interval '23 hours' where id = $1", [ride.id]);
+    expect(await chat(U.client, rr)).toMatchObject({ open: true });
+    await send(U.client, rr, "Did I leave a scarf?");
+    await h.admin("update public.rides set ended_at = now() - interval '25 hours' where id = $1", [ride.id]);
+    expect(await chat(U.client, rr)).toMatchObject({ open: false });
+    expect(await errorOf(send(U.client, rr, "Hello?"))).toBe("illegal_transition");
+    expect((await chat(U.driver, rr)).messages).toHaveLength(33);
+    // An appointment cancelled after acceptance, or done, keeps its room a day.
+    const a = await request(U.client, "siosia", 24 * 60);
+    await answer(U.siosia, a.id, "accept");
+    await send(U.client, `appt:${a.id}`, "See you");
+    await cancel(U.siosia, a.id);
+    expect(await chat(U.client, `appt:${a.id}`)).toMatchObject({ open: true, messages: [expect.objectContaining({ text: "See you" })] });
+    await h.admin("update public.appointments set ended_at = now() - interval '25 hours' where id = $1", [a.id]);
+    expect(await errorOf(send(U.client, `appt:${a.id}`, "Hello?"))).toBe("illegal_transition");
+    const b = await request(U.client, "siosia", 48 * 60);
+    await answer(U.siosia, b.id, "accept");
+    await shift(b.id, -200);
+    expect(await chat(U.siosia, `appt:${b.id}`)).toMatchObject({ open: true });
+    await h.admin("update public.appointments set ended_at = now() - interval '25 hours' where id = $1", [b.id]);
+    expect(await errorOf(send(U.siosia, `appt:${b.id}`, "x"))).toBe("illegal_transition");
+    // A live ride's room follows the CURRENT driver (FR-223): none while it looks for one again.
+    const live = await liveRide();
+    const lr = `ride:${live}`;
+    await send(U.client, lr, "Where are you?");
+    await h.call(U.driver, "siosia_cancel_ride", [live, "vehicle_problem"]);
+    expect(await errorOf(chat(U.driver, lr))).toBe("not_found");
+    expect(await errorOf(chat(U.client, lr))).toBe("not_found");
+    const D2 = "00000000-0000-4000-8000-000000000112";
+    await h.admin("insert into auth.users (id) values ($1) on conflict do nothing", [D2]);
+    await h.onboard(D2, "Danka", true);
+    await h.call(D2, "siosia_set_online", [true]);
+    const st = await h.call<Json>(D2, "siosia_heartbeat", [HOME.lat, HOME.lng]);
+    expect(await h.call(D2, "siosia_decide_offer", [(st.offer as Json).id, "accept"])).toBe("won");
+    // A fresh thread for the new driver: the first driver's words never reach her, and the rider's
+    // thread with her starts empty too (the engine's resetRoom; V47 "parties only").
+    expect(await chat(D2, lr)).toMatchObject({ other: expect.objectContaining({ nickname: "Toria" }), open: true, messages: [], unread: 0 });
+    expect(await send(D2, lr, "Danka here, five minutes")).toMatchObject({ mine: true });
+    const afterSwap = await chat(U.client, lr);
+    expect(afterSwap.other).toMatchObject({ nickname: "Danka" });
+    expect((afterSwap.messages as Json[]).map((m) => m.text)).toEqual(["Danka here, five minutes"]);
+    expect(await errorOf(chat(U.driver, lr))).toBe("not_found");
+    expect(await errorOf(send(U.driver, lr, "I am back"))).toBe("not_found");
+    await h.call(U.driver, "siosia_set_online", [false]);
+  });
+
+  it("tells the other party live and once by notification, tagged with the ride or appointment — never a driver at the wheel (K7)", async () => {
+    const live = await liveRide();
+    const lr = `ride:${live}`;
+    await quiet();
+    const long = "I am at the gate, " + "x".repeat(482); // 500: the whole text is queued; push-text cuts it to the first words (C21)
+    await send(U.client, lr, long);
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.driver}`, `user:${U.client}`]));
+    expect(await pushes()).toEqual([
+      { kind: "chat_message", user_id: U.driver, ride_id: live, appointment_id: null, params: { sender: "Toria", text: long, room: lr, messageId: expect.any(String) } }
+    ]);
+    // The id is the message's: dispatch skips a message read before it goes out (V48).
+    expect((await pushes())[0].params.messageId).toBe(String((await h.admin("select id from public.messages where room = $1 and text = $2", [lr, long])).rows[0].id));
+    expect(long).toHaveLength(500);
+    await quiet();
+    await send(U.driver, lr, "Coming");
+    expect((await pushes()).map((o) => `${o.kind}>${o.user_id === U.client ? "client" : "x"}`)).toEqual(["chat_message>client"]);
+    // Under way: the driver is not notified; the message waits in the thread, which still refreshes live.
+    await h.call(U.driver, "siosia_advance", [live, "arrived", null]);
+    await h.call(U.driver, "siosia_advance", [live, "in_progress", null]);
+    await quiet();
+    await send(U.client, lr, "Please take the long way");
+    expect(await pushes()).toEqual([]);
+    expect(await changed()).toContain(`user:${U.driver}`);
+    expect((await chat(U.driver, lr)).unread).toBe(2);
+    // ... in any room of theirs: an appointment's message waits too, and comes through once the ride is over.
+    await h.call(U.driver, "siosia_set_offers", [["learning"]]);
+    try {
+      const a = await request(U.client, "driver", 24 * 60, { service: "learning", duration: 60 });
+      await answer(U.driver, a.id, "accept");
+      await quiet();
+      await send(U.client, `appt:${a.id}`, "Tomorrow then");
+      expect(await pushes()).toEqual([]);
+      await h.call(U.driver, "siosia_advance", [live, "completed", 3]);
+      await quiet();
+      await send(U.client, `appt:${a.id}`, "Bring the book");
+      expect(await pushes()).toEqual([
+        { kind: "chat_message", user_id: U.driver, ride_id: null, appointment_id: a.id, params: { sender: "Toria", text: "Bring the book", room: `appt:${a.id}`, messageId: expect.any(String) } }
+      ]);
+      // Only people who turned notifications on hear (v1 rule).
+      await h.call(U.driver, "siosia_delete_push", ["https://web.push.apple.com/driver"]);
+      await quiet();
+      await send(U.client, `appt:${a.id}`, "Still there?");
+      expect(await pushes()).toEqual([]);
+      expect(await changed()).toContain(`user:${U.driver}`);
+    } finally {
+      await h.call(U.driver, "siosia_save_push", ["https://web.push.apple.com/driver", "p".repeat(40), "a".repeat(16)]);
+      await h.call(U.driver, "siosia_set_offers", [[]]);
+      await h.call(U.driver, "siosia_set_online", [false]);
+    }
+  });
+
+  it("takes the messages, attachments and kid ratings along with their ride, appointment or kid; retention and a deleted profile cover them (K8)", async () => {
+    const z = await addKid(U.client, ZOSIA);
+    const kb = await addKid(U.client, KUBA);
+    const ride = await book(U.client, 3 * 60);
+    await h.call(U.driver, "siosia_claim_booking", [ride.id]);
+    await send(U.client, `ride:${ride.id}`, "Hi");
+    const a = await request(U.client, "siosia", 24 * 60, { kids: [z.id, kb.id] });
+    await answer(U.siosia, a.id, "accept");
+    await send(U.siosia, `appt:${a.id}`, "Hello");
+    await shift(a.id, -200);
+    await sweep();
+    await rateKid(U.siosia, a.id, z.id, 5);
+    await rateKid(U.siosia, a.id, kb.id, 4);
+    const counts = async () =>
+      (
+        await h.admin(
+          "select (select count(*) from public.messages)::int as m, (select count(*) from public.appointment_kids)::int as ak, (select count(*) from public.kid_ratings)::int as kr, (select count(*) from public.kids)::int as k"
+        )
+      ).rows[0];
+    expect(await counts()).toEqual({ m: 2, ak: 2, kr: 2, k: 2 });
+    // A removed kid takes its ratings and attachments; the appointment and its thread stay.
+    await h.call(U.client, "siosia_remove_kid", [kb.id]);
+    expect(await counts()).toEqual({ m: 2, ak: 1, kr: 1, k: 1 });
+    expect((await getAppt(U.siosia, a.id)).kids).toEqual([expect.objectContaining({ id: z.id })]);
+    // Retention: a 13-month-old ride goes with its messages, an appointment with its thread,
+    // attachments and kid ratings; the kid itself stays (its summary empties).
+    await h.admin("update public.rides set status = 'completed', ended_at = now() - interval '13 months' where id = $1", [ride.id]);
+    await h.admin("update public.appointments set ended_at = now() - interval '13 months' where id = $1", [a.id]);
+    await h.admin("select public.siosia_retention()");
+    expect(await counts()).toEqual({ m: 0, ak: 0, kr: 0, k: 1 });
+    expect((await kidsOf(U.client))[0]).toMatchObject({ id: z.id, rating: { mean: null, count: 0 }, ratings: [] });
+    // Deleting a profile deletes its kids (with their attachments and ratings) and clears the photo paths.
+    const Z = "00000000-0000-4000-8000-000000000113";
+    await h.admin("insert into auth.users (id) values ($1) on conflict do nothing", [Z]);
+    await h.onboard(Z, "Zofia");
+    await learnPid(Z);
+    const zk = await addKid(Z, ZOSIA);
+    await setPhoto(Z, "kid", zk.id, kidPath(Z, zk.id));
+    await setPhoto(Z, "profile", null, prof(Z));
+    expect(await h.call<string[]>(Z, "siosia_my_photo_paths")).toHaveLength(2);
+    const req = await request(Z, "siosia", 24 * 60, { kids: [zk.id] });
+    expect((await getAppt(U.siosia, req.id)).kidCount).toBe(1);
+    await h.call(Z, "siosia_delete_profile");
+    expect((await h.admin("select count(*)::int as n from public.kids where owner_id = $1", [Z])).rows[0].n).toBe(0);
+    expect((await h.admin("select count(*)::int as n from public.appointment_kids ak join public.appointments a on a.id = ak.appointment_id where a.client_id = $1", [Z])).rows[0].n).toBe(0);
+    expect((await h.admin("select photo_path from public.profiles where user_id = $1", [Z])).rows[0].photo_path).toBeNull();
+  });
+
+  it("does not notify someone who has the thread open: presence stamped on reading, good for 45 s, per room (FR-222, V48, C10)", async () => {
+    const a = await request(U.client, "siosia", 24 * 60);
+    await answer(U.siosia, a.id, "accept");
+    const ar = `appt:${a.id}`;
+    const presence = async () => (await h.admin("select room from public.chat_presence where user_id = $1 order by room", [U.siosia])).rows.map((r) => String(r.room));
+    // Reading without marking (a background refetch) says nothing about where Siosia looks.
+    await chat(U.siosia, ar);
+    expect(await presence()).toEqual([]);
+    // She opens the thread: marked present; what Toria writes lands live, no notification.
+    await chat(U.siosia, ar, true);
+    expect(await presence()).toEqual([ar]);
+    await quiet();
+    await send(U.client, ar, "Hello");
+    expect(await pushes()).toEqual([]);
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.siosia}`, `user:${U.client}`]));
+    expect((await chat(U.siosia, ar)).unread).toBe(1);
+    // 45 s without the heartbeat: she looked away — notified again.
+    await h.admin("update public.chat_presence set seen_at = now() - interval '46 seconds' where user_id = $1", [U.siosia]);
+    await quiet();
+    await send(U.client, ar, "Still there?");
+    expect((await pushes()).map((o) => [o.kind, o.user_id, o.params.text])).toEqual([["chat_message", U.siosia, "Still there?"]]);
+    // The heartbeat (another mark, nothing new to mark) refreshes the stamp.
+    await chat(U.siosia, ar, true);
+    await quiet();
+    await send(U.client, ar, "Good");
+    expect(await pushes()).toEqual([]);
+    // Another room is another thread: there she is absent.
+    const b = await request(U.client, "siosia", 48 * 60);
+    await answer(U.siosia, b.id, "accept");
+    await quiet();
+    await send(U.client, `appt:${b.id}`, "About Thursday");
+    expect((await pushes()).map((o) => [o.kind, o.user_id])).toEqual([["chat_message", U.siosia]]);
+    expect(await presence()).toEqual([ar]);
+    // The stamp is per user: Toria's own tabs never make Siosia present.
+    await h.admin("update public.chat_presence set seen_at = now() - interval '46 seconds' where user_id = $1", [U.siosia]);
+    await chat(U.client, ar, true);
+    await quiet();
+    await send(U.client, ar, "One more");
+    expect((await pushes()).map((o) => o.user_id)).toEqual([U.siosia]);
+    expect(await errorOf(h.as(U.client, "select count(*) from public.chat_presence"))).toMatch(/permission denied/);
+  });
+
+  it("moves kids, kid ratings, messages, presence and photos with the account to a new phone; deleting the profile removes them all, cards included (V49, C0/C1, C4/C5)", async () => {
+    // A stand-in for Storage's object table: the server-side drops find it (to_regclass) and delete from it.
+    await h.admin("create schema if not exists storage");
+    await h.admin("create table if not exists storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text not null, name text not null)");
+    const objects = async () => (await h.admin("select name from storage.objects where bucket_id = 'photos' order by name")).rows.map((r) => String(r.name));
+    const upload = (path: string) => h.admin("insert into storage.objects (bucket_id, name) values ('photos', $1)", [path]);
+    const can = async (path: string, viewer: string) => (await h.admin("select public.siosia_can_see_photo($1, $2) as ok", [path, viewer])).rows[0].ok;
+    const up = async (path: string, uid: string) => (await h.admin("select public.siosia_photo_upload_ok($1, $2) as ok", [path, uid])).rows[0].ok;
+    const MOVER = "00000000-0000-4000-8000-000000000121";
+    const PHONE = "00000000-0000-4000-8000-000000000122";
+    for (const id of [MOVER, PHONE]) await h.admin("insert into auth.users (id) values ($1) on conflict do nothing", [id]);
+    await h.onboard(MOVER, "Marta");
+    await learnPid(MOVER);
+    await h.call(MOVER, "siosia_set_offers", [["learning"]]);
+    // Marta in the browser: a kid with a photo, her own photo, an appointment with the kid and a
+    // thread she read, a kid of Toria's she rated as a provider, another appointment ahead.
+    const kid = await addKid(MOVER, { name: "Olek", bornYear: 2019, note: "Asks a lot" });
+    const kp = kidPath(MOVER, kid.id);
+    const pp = prof(MOVER);
+    await upload(kp);
+    await upload(pp);
+    await setPhoto(MOVER, "kid", kid.id, kp);
+    await setPhoto(MOVER, "profile", null, pp);
+    const a = await request(MOVER, "siosia", 24 * 60, { kids: [kid.id] });
+    await answer(U.siosia, a.id, "accept");
+    const ar = `appt:${a.id}`;
+    await send(MOVER, ar, "Olek is shy at first");
+    await send(U.siosia, ar, "No worries");
+    await chat(MOVER, ar, true);
+    const z = await addKid(U.client, ZOSIA);
+    const b = await h.call<Json>(U.client, "siosia_request_service", ["learning", pidOf[MOVER], at(25 * 60), 60, HOME, "", null, [z.id]]);
+    await answer(MOVER, b.id, "accept");
+    await shift(b.id, -200);
+    await sweep();
+    await rateKid(MOVER, b.id, z.id, 4, "Bright");
+    const c = await request(MOVER, "siosia", 48 * 60, { kids: [kid.id] });
+    await answer(U.siosia, c.id, "accept");
+    expect(await objects()).toEqual([kp, pp].sort());
+    // The move to the app on her phone.
+    const { code } = await h.call<Json>(MOVER, "siosia_create_transfer");
+    const p = await h.call<Json>(PHONE, "siosia_redeem_transfer", [code, "dev-phone", false]);
+    expect(p).toMatchObject({ userId: PHONE, nickname: "Marta", publicId: pidOf[MOVER], photoPath: pp });
+    pidOf[PHONE] = String(p.publicId); // the public id — the folder key — moved with the profile
+    // The new phone has it all: the kid and its photo, the ratings, the thread with `mine` right, the presence.
+    expect(await h.call<Json[]>(PHONE, "siosia_kids")).toEqual([expect.objectContaining({ id: kid.id, name: "Olek", photoPath: kp })]);
+    expect((await h.call<string[]>(PHONE, "siosia_my_photo_paths")).sort()).toEqual([kp, pp].sort());
+    const thread = await chat(PHONE, ar);
+    expect((thread.messages as Json[]).map((m) => [m.text, m.mine])).toEqual([
+      ["Olek is shy at first", true],
+      ["No worries", false]
+    ]);
+    expect(thread.other).toMatchObject({ nickname: "Siosia" });
+    expect(((await chat(U.siosia, ar)).messages as Json[]).map((m) => m.mine)).toEqual([false, true]);
+    expect((await h.admin("select count(*)::int as n from public.messages where sender = $1", [MOVER])).rows[0].n).toBe(0);
+    expect((await h.admin("select from_user from public.kid_ratings where kid_id = $1", [z.id])).rows).toEqual([{ from_user: PHONE }]);
+    expect((await kidsOf(U.client)).find((k) => k.id === z.id)!.ratings).toEqual([expect.objectContaining({ by: "Marta", stars: 4, comment: "Bright" })]);
+    expect((await h.admin("select user_id from public.chat_presence where room = $1", [ar])).rows).toEqual([{ user_id: PHONE }]);
+    expect((await getAppt(U.siosia, c.id)).kids).toEqual([expect.objectContaining({ id: kid.id, name: "Olek", photoPath: kp })]);
+    expect(await errorOf(h.call(MOVER, "siosia_kids"))).toBe("not_member");
+    // The photos: the phone reads, signs and writes them; the provider still sees both; the old account is nobody.
+    expect(await can(pp, PHONE)).toBe(true);
+    expect(await can(kp, PHONE)).toBe(true);
+    expect(await up(pp, PHONE)).toBe(true);
+    expect(await up(kp, PHONE)).toBe(true);
+    expect(await h.as(PHONE, "select public.siosia_can_see_photo($1)", [kp])).toBe(true);
+    expect(await can(pp, U.siosia)).toBe(true);
+    expect(await can(kp, U.siosia)).toBe(true);
+    expect(await can(pp, MOVER)).toBe(false);
+    expect(await up(pp, MOVER)).toBe(false);
+    // Replacing from the phone: a new object under the (moved) folder; the old path comes back,
+    // dead to others at once, still the owner's to remove.
+    const pp2 = prof(PHONE);
+    expect(pp2).toContain(`profile/${pidOf[MOVER]}/`);
+    await upload(pp2);
+    expect(await setPhoto(PHONE, "profile", null, pp2)).toBe(pp);
+    expect(await can(pp, U.siosia)).toBe(false);
+    expect(await can(pp2, U.siosia)).toBe(true);
+    expect(await up(pp, PHONE)).toBe(true);
+    await h.admin("delete from storage.objects where name = $1", [pp]);
+    // Removing a kid drops its object here, not only in the app (C4/C5).
+    const k2 = await addKid(PHONE, { name: "Ida", bornYear: null, note: "" });
+    const k2p = kidPath(PHONE, k2.id);
+    await upload(k2p);
+    await setPhoto(PHONE, "kid", k2.id, k2p);
+    expect(await objects()).toContain(k2p);
+    expect(await h.call(PHONE, "siosia_remove_kid", [k2.id])).toBe(k2p);
+    expect(await objects()).not.toContain(k2p);
+    // Deleting the profile: the kids with their attachments and ratings, the messages sent, the
+    // presence, the photo paths and objects — gone; the kid's card is gone from Siosia's history.
+    await shift(c.id, 365 * 24 * 60); // the newest item of her history
+    const orphan = prof(PHONE); // an upload the app never set on the row: swept with the folder
+    await upload(orphan);
+    await h.call(PHONE, "siosia_delete_profile");
+    expect(await objects()).not.toContain(orphan);
+    const left = (
+      await h.admin(
+        `select (select count(*) from public.kids where owner_id = $1)::int as kids,
+                (select count(*) from public.appointment_kids ak join public.appointments x on x.id = ak.appointment_id where x.client_id = $1)::int as attached,
+                (select count(*) from public.kid_ratings where kid_id = $2)::int as kid_ratings,
+                (select count(*) from public.messages where sender = $1)::int as messages,
+                (select count(*) from public.chat_presence where user_id = $1)::int as presence,
+                (select photo_path from public.profiles where user_id = $1) as photo`,
+        [PHONE, kid.id]
+      )
+    ).rows[0];
+    expect(left).toEqual({ kids: 0, attached: 0, kid_ratings: 0, messages: 0, presence: 0, photo: null });
+    expect((await objects()).filter((n) => n === pp2 || n === kp)).toEqual([]);
+    const history = await h.call<Json[]>(U.siosia, "siosia_timeline");
+    expect(history[0]).toMatchObject({ kind: "appointment", appointment: { id: c.id, status: "cancelled", cancelReason: "user_gone", kids: [], kidCount: 0 } });
+    expect((history[0].appointment as Json).client).toMatchObject({ nickname: "Deleted user" });
+    expect((history[0].appointment as Json).client).not.toHaveProperty("photoPath");
+    expect(await getAppt(U.siosia, a.id)).toMatchObject({ status: "cancelled", kids: [], kidCount: 0 });
+    // Siosia keeps her own words; the rating Marta gave stays with Zosia as a deleted user's.
+    expect(((await chat(U.siosia, ar)).messages as Json[]).map((m) => [m.text, m.mine])).toEqual([["No worries", true]]);
+    expect((await kidsOf(U.client)).find((k) => k.id === z.id)!.ratings).toEqual([expect.objectContaining({ by: "Deleted user", stars: 4 })]);
+  });
+
+  it("a replaced profile's kids go with it, photos included; the mover's kids and presence come over, as the engine does (V49, FR-200, C0/C1)", async () => {
+    await h.admin("create schema if not exists storage");
+    await h.admin("create table if not exists storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text not null, name text not null)");
+    const objects = async () => (await h.admin("select name from storage.objects where bucket_id = 'photos' order by name")).rows.map((r) => String(r.name));
+    const upload = (path: string) => h.admin("insert into storage.objects (bucket_id, name) values ('photos', $1)", [path]);
+    const OLD = "00000000-0000-4000-8000-000000000123";
+    const APP = "00000000-0000-4000-8000-000000000124";
+    for (const id of [OLD, APP]) await h.admin("insert into auth.users (id) values ($1) on conflict do nothing", [id]);
+    await h.onboard(OLD, "Hanna");
+    await h.onboard(APP, "Tester");
+    await learnPid(OLD);
+    await learnPid(APP);
+    // The app already has a profile with a photo and a kid; the browser's account has a kid with a photo.
+    const appPhoto = prof(APP);
+    await upload(appPhoto);
+    await setPhoto(APP, "profile", null, appPhoto);
+    const appKid = await addKid(APP, { name: "Max", bornYear: null, note: "" });
+    const appKp = kidPath(APP, appKid.id);
+    await upload(appKp);
+    await setPhoto(APP, "kid", appKid.id, appKp);
+    const oldKid = await addKid(OLD, { name: "Lena", bornYear: 2020, note: "" });
+    const oldKp = kidPath(OLD, oldKid.id);
+    await upload(oldKp);
+    await setPhoto(OLD, "kid", oldKid.id, oldKp);
+    const oldPhoto = prof(OLD);
+    await upload(oldPhoto);
+    await setPhoto(OLD, "profile", null, oldPhoto);
+    // Both parties of one room, both present in it: the newer stamp stays.
+    const a = await request(OLD, "siosia", 24 * 60);
+    await answer(U.siosia, a.id, "accept");
+    await chat(OLD, `appt:${a.id}`, true);
+    // Ewa takes Tester's open request with Max attached: her only link to the replaced profile.
+    const b = await request(APP, null, 48 * 60, { kids: [appKid.id] });
+    await take(U.other, b.id);
+    await chat(APP, `appt:${b.id}`, true);
+    const { code } = await h.call<Json>(OLD, "siosia_create_transfer");
+    await h.admin("delete from realtime.messages");
+    expect(await errorOf(h.call(APP, "siosia_redeem_transfer", [code, "dev-app", false]))).toBe("has_profile");
+    const p = await h.call<Json>(APP, "siosia_redeem_transfer", [code, "dev-app", true]);
+    expect(p).toMatchObject({ userId: APP, nickname: "Hanna", publicId: pidOf[OLD], photoPath: oldPhoto });
+    const deadFolder = pidOf[APP];
+    pidOf[APP] = pidOf[OLD];
+    // Hanna's photo and kid came with her rows; Tester's profile is a deleted one (FR-200): his
+    // objects are gone and so is Max, photo included.
+    expect(await objects()).toEqual([oldKp, oldPhoto].sort());
+    expect((await h.call<Json[]>(APP, "siosia_kids")).map((k) => [k.name, k.photoPath ?? null])).toEqual([["Lena", oldKp]]);
+    expect((await h.admin("select count(*)::int as n from public.kids where id = $1", [appKid.id])).rows[0].n).toBe(0);
+    // Ewa expected Max on b: she is told live (as the engine's deleteKid does), and b now lists no kid.
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.other}`]));
+    expect((await h.call<Json>(U.other, "siosia_get_appointment", [b.id])).kids).toEqual([]);
+    expect((await h.admin("select room from public.chat_presence where user_id = $1 order by room", [APP])).rows.map((r) => r.room).sort()).toEqual([`appt:${a.id}`, `appt:${b.id}`].sort());
+    expect((await h.admin("select count(*)::int as n from public.chat_presence where user_id = $1", [OLD])).rows[0].n).toBe(0);
+    const can = async (path: string, viewer: string) => (await h.admin("select public.siosia_can_see_photo($1, $2) as ok", [path, viewer])).rows[0].ok;
+    const up = async (path: string, uid: string) => (await h.admin("select public.siosia_photo_upload_ok($1, $2) as ok", [path, uid])).rows[0].ok;
+    expect(await can(oldKp, APP)).toBe(true);
+    expect(await up(`kid/${pidOf[OLD]}/${oldKid.id}/${randomUUID()}.jpg`, APP)).toBe(true); // uploads go under the moved folder
+    expect(await up(`kid/${deadFolder}/${oldKid.id}/${randomUUID()}.jpg`, APP)).toBe(false); // never under the dead one
+    expect(await can(oldKp, U.siosia)).toBe(false); // Lena is on no appointment of Siosia's
+    expect(await can(oldPhoto, U.siosia)).toBe(true); // Hanna is her client (a's client moved to APP)
+    // Replacing a photo: an old object under my folder is left to the app (it removes it, as before);
+    // one under a folder that is nobody's any more — beyond the app's delete policy — the server drops.
+    const lena2 = kidPath(APP, oldKid.id);
+    await upload(lena2);
+    expect(await setPhoto(APP, "kid", oldKid.id, lena2)).toBe(oldKp);
+    expect(await objects()).toEqual([lena2, oldKp, oldPhoto].sort());
+    const stray = `kid/${deadFolder}/${oldKid.id}/${randomUUID()}.jpg`;
+    await upload(stray);
+    await h.admin("update public.kids set photo_path = $1 where id = $2", [stray, oldKid.id]);
+    expect(await can(stray, APP)).toBe(true); // row-based: still hers to see
+    const lena3 = kidPath(APP, oldKid.id);
+    await upload(lena3);
+    expect(await setPhoto(APP, "kid", oldKid.id, lena3)).toBe(stray);
+    expect(await objects()).toEqual([lena2, lena3, oldKp, oldPhoto].sort()); // stray is gone, the rest untouched
+  });
+
+  it("adds the 2.3 calls next to every earlier signature, for members only, and the checks the Storage policies use (NFR-18)", async () => {
+    const sigs = (await h.admin("select p.oid::regprocedure::text as s from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'siosia\\_%'")).rows.map((r) => String(r.s));
+    const api = [
+      "siosia_request_service(text,text,timestamp with time zone,integer,jsonb,text,jsonb,uuid[])",
+      "siosia_kids()",
+      "siosia_add_kid(jsonb)",
+      "siosia_update_kid(uuid,jsonb)",
+      "siosia_remove_kid(uuid)",
+      "siosia_set_appointment_kids(uuid,uuid[])",
+      "siosia_rate_kid(uuid,uuid,integer,text)",
+      "siosia_set_photo(text,uuid,text)",
+      "siosia_my_photo_paths()",
+      "siosia_chat(text,boolean)",
+      "siosia_send_message(text,text)",
+      // the Storage policies' checks: about the caller only (1 argument — C9)
+      "siosia_can_see_photo(text)",
+      "siosia_photo_upload_ok(text)"
+    ];
+    for (const s of [...api, "siosia_request_service(text,text,timestamp with time zone,integer,jsonb,text,jsonb)", "siosia_public_party(uuid)", "siosia_public_party(uuid,boolean)", "siosia_can_see_photo(text,uuid)", "siosia_photo_upload_ok(text,uuid)", "siosia_drop_photo_object(text)"])
+      expect(sigs).toContain(s);
+    const can = async (role: string, fn: string) => (await h.admin("select has_function_privilege($1, $2, 'execute') as ok", [role, `public.${fn}`])).rows[0].ok;
+    for (const f of api) {
+      expect(await can("authenticated", f)).toBe(true);
+      expect(await can("anon", f)).toBe(false);
+    }
+    for (const internal of [
+      "siosia_room(text)",
+      "siosia_push_chat(uuid,uuid,uuid,jsonb)",
+      "siosia_own_kids(uuid,uuid[])",
+      "siosia_drop_photo_objects(uuid)",
+      "siosia_drop_photo_object(text)",
+      "siosia_can_see_person(uuid,uuid)",
+      "siosia_attached_kids_json(uuid,uuid)",
+      // the 2-argument rules would be an oracle on anyone's photos (C9)
+      "siosia_can_see_photo(text,uuid)",
+      "siosia_photo_upload_ok(text,uuid)",
+      "siosia_photo_owner(text)"
+    ])
+      expect(await can("authenticated", internal)).toBe(false);
+    // A database from before 2.3 gets the tables and the photo column on the re-run (the harness ran it twice).
+    const tables = (await h.admin("select table_name from information_schema.tables where table_schema = 'public' and table_name in ('kids', 'appointment_kids', 'kid_ratings', 'messages', 'chat_presence') order by 1")).rows;
+    expect(tables.map((r) => r.table_name)).toEqual(["appointment_kids", "chat_presence", "kid_ratings", "kids", "messages"]);
+    expect((await h.admin("select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'photo_path'")).rows).toHaveLength(1);
+    for (const t of ["kids", "appointment_kids", "kid_ratings", "messages", "chat_presence"]) {
+      expect(await errorOf(h.as(U.client, `select count(*) from public.${t}`))).toMatch(/permission denied/);
+      expect((await h.admin("select relrowsecurity as on from pg_class where oid = $1::regclass", [`public.${t}`])).rows[0]).toEqual({ on: true });
+    }
+    expect(await errorOf(h.call(U.stranger, "siosia_kids"))).toBe("not_member");
+    expect(await errorOf(h.call(U.stranger, "siosia_chat", ["ride:00000000-0000-4000-8000-00000000dead", false]))).toBe("not_member");
   });
 });

@@ -225,6 +225,22 @@ token is an HMAC with the deployment's `push_secret`, so only the two people who
 the app can open it, and each sees only their own view. The function stores and logs nothing.
 Added events are copies — they don't update by themselves.
 
+### Optional: photos — the private bucket (2 min)
+
+Profiles and kids may carry a photo (2.3). The migration creates the private Storage bucket
+`photos` with its access rules when the project's Storage schema exists; if the SQL editor shows
+a notice that it could not, create it by hand: **Storage → New bucket**, name `photos`, *Public
+bucket* **off**, then re-run the migration (it adds the object policies). Nothing else: photos are
+resized on the phone (≤ 512 px, ≤ 150 KB), uploaded by their owner only, and shown through signed
+links that expire within an hour — the bucket must stay private. Objects sit under
+`profile/<public id>/…` and `kid/<public id>/<kid id>/…` (never the account id), and a member may
+only write under their own folders; removing a kid or a profile removes its objects. The demo
+keeps photos in the browser.
+
+Chat (2.3) needs nothing new: messages live in the `messages` table and travel over the private
+realtime channels already set up; the `chat_message` notification goes out through `push-dispatch`
+(redeploy it after this upgrade, as for every release).
+
 ## 4. Authentication settings (4 min)
 
 1. **Authentication → Sign In / Providers** (sometimes *Providers*): turn **Allow anonymous
@@ -315,6 +331,7 @@ positions over the ride channel (outsider refused), lifecycle rules, receipts an
 | --- | --- |
 | See rides, offers, ratings | Supabase → **Table Editor** → `rides` (endpoints, totals, times — never live positions) |
 | See appointments | **Table Editor** → `appointments` (parties, time, place, note, status, reminders sent) and `appointment_series` (rule, count, ride templates) |
+| Kids, kid ratings, chat | `kids` (owner, name, year, note, photo path), `appointment_kids`, `kid_ratings`, `messages`, `chat_presence` (who has which thread open, so no notification interrupts a chat they are reading) — all removed with their appointment / ride / owner, and all moved with the account by a move code; photos in **Storage → photos** |
 | Change the catalog or reminders | `siosia_set_services(…)` / `update public.app_config set appt_reminder_min = …` (see *services and appointments* above) |
 | Errors and logs | Supabase → **Logs** (API, Postgres, Realtime); browser console on the phone |
 | Usage vs. free limits | Supabase → **Settings → Usage**. At the pilot ceiling (§10 of the spec) Siosia stays well inside the free tier; if realtime messages ever run hot, raise the presence cadence in `src/core/defaults.ts` |

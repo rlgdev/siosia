@@ -141,4 +141,18 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 180 | Booked ride: rider told when the car sets off; R3 "Your driver has set off" | engine "lets drivers browse and take a booking…" (depart: forbidden/not_found/once/no-op), sql "starts a taken booking…" (siosia_depart), push "driver_departed" EN/PL, components "says the driver set off once departedAt is set", e2e "a rider books a ride for later…" (GPS moves → status + toast) |
 | 181 | Directions = Google Maps on every phone | components "links directions to Google Maps on every phone, iPhone included"; e2e Navigate href |
 | 190 | Explanations behind a round i, 5 s popup | components "InfoTip" (open, 5 s, 2nd tap, tap elsewhere; round; every replaced paragraph still shown behind an icon); screens-v2 C2 open note; e2e screen-on / online hints tips |
+| 200 | Kids' profiles under S2, owner-only, ≤ 8, deleted with the profile | appt + sql2 kids CRUD / limits / delete cascade; screens "My kids" |
+| 201 | Client attaches own kids per appointment (series: every occurrence), until the end | appt + sql2 attach rules; screens C2 kid picker sends kidIds, C3 change |
+| 202 | Provider sees kids (name, photo, age, note); candidate a count; drivers nothing | appt + sql2 visibility per role; screens appt-kids / "2 kids"; push "with {kids}" |
+| 203 | Provider rates each kid once in 24 h; owner reads ratings; summary; owner's rating untouched | appt + sql2 rate-kid rules; screens rate-kid-<id>, kid card ratings |
+| 204 | Kids and kid ratings follow retention; removable by the owner | appt + sql2 remove kid / cascades |
+| 210 | One photo per profile / kid, resized ≤ 512 px / ≤ 150 KB, replace deletes old | photo.test (fit / quality steps / not_image); appt + sql2 set_photo paths; screens pickers |
+| 211 | Photo shown wherever the nickname is; kid photo only per FR-202 | components Avatar; appt + sql2 photoPath only for allowed viewers |
+| 212 | Signed URLs ≤ 1 h, private bucket, path only in tables | adapter createSignedUrl; sql2 "photoPath only for allowed viewers"; SETUP bucket private |
+| 220 | Rooms ride:<id> (driver assigned) and appt:<id> (accepted); series per occurrence | appt + sql2 chat rooms / parties / re-dispatch |
+| 221 | Chat from R3/D3/C3/P1 with unread badge; live; stored; other party's nickname + photo | screens ChatSheet (thread, live append, badges); services mock round trip; e2e2 chat |
+| 222 | chat_message push (tag per room, opens the chat) unless the thread is open; never to a driver in_progress | push "chat_message" tag/url; appt + sql2 "no push while driving"; engine |
+| 223 | Send while live + 24 h; then read-only; deleted with the ride/appointment; parties only | appt + sql2 send rules, cascades, RLS |
+| 224 | Read marks when the thread is visible | screens chat marks read; appt + sql2 readAt |
+| 225 | 30 messages per room per sender per 10 min → too_many | appt + sql2 rate limit |
 | 170 | Car icon tap → colour; vehicle colour + paint; icon drawn in the paint everywhere | appt + sql2 "sets the colour name and paint…", "shows the paint to the rider…", "carries the paint in every party…"; components car-icon / paint-<id>; e2e2 "the car icon picks the car's colour" |

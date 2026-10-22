@@ -123,6 +123,29 @@ describe(".ics (V27)", () => {
     expect(biweekly).toContain("STATUS:CANCELLED"); // every date gone
   });
 
+  it("names the attached kids to the provider only, in the words of the pushes (2.3, FR-202)", () => {
+    const kids = [
+      { id: "kid-1", name: "Zosia" },
+      { id: "kid-2", name: "Kuba" }
+    ];
+    const desc = (l: string[]) => l.find((x) => x.startsWith("DESCRIPTION:"))!;
+    const prov = lines(appointmentIcs(appt({ role: "provider", kids }), CTX));
+    expect(desc(prov)).toContain("For Toria\\nWith Zosia and Kuba\\nConfirmed");
+    expect(desc(lines(appointmentIcs(appt({ role: "provider", kids }), { ...CTX, lang: "pl" })))).toContain("Dla: Toria\\nZ: Zosia i Kuba\\nPotwierdzone");
+    expect(desc(lines(appointmentIcs(appt({ role: "provider", kids: [kids[0]] }), CTX)))).toContain("For Toria\\nWith Zosia\\nConfirmed");
+    // The client's own kids are not repeated to them; a candidate gets none (FR-202); never a kid id (NFR-20).
+    expect(appointmentIcs(appt({ kids }), CTX)).not.toContain("Zosia");
+    expect(appointmentIcs(appt({ role: "candidate", provider: null, status: "requested", kids: [] }), CTX)).not.toContain("With ");
+    expect(prov.join("\n")).not.toContain("kid-1");
+    // The series event and the Google link carry the same line.
+    const series = { id: "6f1c1d2e-0000-4000-8000-0000000000ss", rule: "weekly" as const, count: 2, status: "answered", starts: [START, START + WEEK], gaps: [] };
+    expect(desc(lines(seriesIcs(appt({ role: "provider", kids, series }), CTX)))).toContain("For Toria\\nWith Zosia and Kuba\\nConfirmed");
+    expect(new URL(appointmentGoogleLink(appt({ role: "provider", kids }), CTX)).searchParams.get("details")).toContain("For Toria\nWith Zosia and Kuba\nConfirmed");
+    // Nobody attached, or a view without the field: the 2.0 description, unchanged.
+    expect(desc(lines(appointmentIcs(appt({ role: "provider", kids: [] }), CTX)))).toContain("For Toria\\nConfirmed");
+    expect(desc(lines(appointmentIcs(appt({ role: "provider" }), CTX)))).toContain("For Toria\\nConfirmed");
+  });
+
   it("writes a booked ride with one alarm 30 min before; the rider sees the car, the driver the rider", () => {
     const l = lines(rideIcs(RIDE, CTX));
     expect(l).toContain("SUMMARY:Ride: Home → School");

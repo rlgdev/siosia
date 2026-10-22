@@ -1,8 +1,11 @@
 // D3 Active trip (FR-023/024/025): route to pickup then dropoff, rider live pin, status buttons,
 // Navigate hand-off, Cancel with reasons (No-show only 5 min after "I've arrived").
+// 2.3 (FR-221): the chat with the rider (no notification reaches a driver during the trip, FR-222;
+// the thread is still here).
 
 import { BookedFor } from "../../components/BookedFor";
-import { ProfileIcon } from "../../components/ProfileIcon";
+import { ChatButton } from "../../components/ChatSheet";
+import { Avatar } from "../../components/ProfileIcon";
 import { useState } from "react";
 import { Confirm, Money, RatingBadge, Sheet, fmtKm, fmtMin, mmss, useCountdown } from "../../components/ui";
 import { haversineM } from "../../core/geo";
@@ -60,10 +63,13 @@ export function DriverTrip({ ride, rt, route, timers, busy, error, onAdvance, on
           </strong>
         )}
       </p>
-      <p>
-        <ProfileIcon icon={ride.rider.icon} size="sm" paint={ride.rider.paint} /> <strong>{ride.rider.nickname}</strong> <RatingBadge rating={ride.rider.rating} /> ·{" "}
-        <Money amount={ride.fare} currency={ride.currency} />
-      </p>
+      <div className="row spread">
+        <p>
+          <Avatar photo={ride.rider.photo} icon={ride.rider.icon} size="sm" paint={ride.rider.paint} /> <strong>{ride.rider.nickname}</strong> <RatingBadge rating={ride.rider.rating} /> ·{" "}
+          <Money amount={ride.fare} currency={ride.currency} />
+        </p>
+        <ChatButton room={`ride:${ride.id}`} unread={ride.unread} small />
+      </div>
       <p className="muted">{s === "in_progress" ? ride.dropoff.label : ride.pickup.label}</p>
       {ride.scheduledFor !== null && s !== "in_progress" && <BookedFor at={ride.scheduledFor} />}
       {(s === "accepted" || s === "arrived") && rt.riderStopped && <p className="hint">{t("trip.riderStopped")}</p>}

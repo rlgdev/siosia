@@ -5,13 +5,18 @@
 // 2.1 (FR-163, FR-164): someone's open request (role candidate) shows its details and I can do it —
 // the take sheet is C4 with takeRequest instead of Accept; the client's own open request waits for
 // someone to take it and can be withdrawn.
+// 2.3 (FR-201–203, FR-221): the attached kids — the client changes them until the end, the
+// provider sees their cards and rates each once the appointment is done, a candidate sees only
+// how many — and the chat with the other party once accepted.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { isOpen, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { ChatButton } from "../components/ChatSheet";
 import { fromInput, toLocalInput } from "../components/datetime";
+import { AttachedKidCards, KidPicker, RateKidBox, useMyKids } from "../components/Kids";
 import { PlaceInput } from "../components/PlaceInput";
-import { ProfileIcon } from "../components/ProfileIcon";
+import { Avatar } from "../components/ProfileIcon";
 import { rangeTimes, timeText, whenText } from "../components/when";
 import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui";
 import { computeFare } from "../core/fare";
@@ -75,7 +80,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
   const dep = app.deployment!;
   const now = store.serverNow();
   const [busy, run, error] = useBusy();
-  const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | Leg>(
+  const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | "kids" | Leg>(
     accepting && a.status === "requested" && a.role === "provider" ? "accept" : taking && a.status === "requested" && a.role === "candidate" ? "take" : "view"
   );
   const other = otherOf(a);
@@ -87,7 +92,17 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
   const myTemplates = a.series?.rideTemplates.filter((x) => x.mine) ?? [];
   const canCancel = (a.status === "accepted" || (a.status === "requested" && a.role === "client")) && now < a.startsAt;
   const canAddRide = a.status === "accepted" && now < a.endsAt && !!a.place;
-  const canRate = a.status === "done" && a.myRating === null && now < (a.endedAt ?? a.endsAt) + 24 * 3600_000;
+  const rateUntil = (a.endedAt ?? a.endsAt) + 24 * 3600_000;
+  const canRate = a.status === "done" && a.myRating === null && now < rateUntil;
+  // 2.3: the kids — the client changes them until the end (FR-201), given they have kids to attach
+  // (C20); the provider rates each once it is done, within 24 h (FR-203); a candidate learns only
+  // the count (FR-202).
+  const kids = a.kids ?? [];
+  const [myKids] = useMyKids(a.role === "client");
+  const canChangeKids = a.role === "client" && (a.status === "requested" || a.status === "accepted") && now < a.endsAt && !!myKids && myKids.length > 0;
+  const showKids = kids.length > 0 || canChangeKids || (a.role === "candidate" && a.kidCount > 0);
+  const kidsToRate = a.status === "done" && a.role === "provider" ? kids.filter((k) => k.myRating !== null || now < rateUntil) : [];
+  const room = apptRoom(a);
 
   const act = (fn: () => Promise<unknown>) =>
     run(async () => {
@@ -122,7 +137,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
           </p>
         )}
         <p className="row" data-testid="appt-party">
-          <ProfileIcon icon={other?.icon} size="sm" paint={other?.paint} />
+          <Avatar photo={other?.photo} icon={other?.icon} size="sm" paint={other?.paint} />
           <span>{partyText(a, t)}</span>
           {other && <RatingBadge rating={other.rating} />}
         </p>
@@ -146,6 +161,27 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
           </p>
         )}
       </section>
+
+      {showKids && (
+        <section className="card stack" data-testid="appt-kids">
+          <div className="row spread">
+            <strong>{t("appt.kids")}</strong>
+            {canChangeKids && mode === "view" && (
+              <button type="button" className="btn btn-link btn-small" disabled={busy} onClick={() => setMode("kids")} data-testid="appt-kids-change">
+                {t("appt.kidsChange")}
+              </button>
+            )}
+          </div>
+          {a.role === "candidate" ? (
+            <p data-testid="appt-kid-count">{kidCountText(a.kidCount, t)}</p>
+          ) : kids.length === 0 ? (
+            <p className="muted small">{t("appt.kidsNone")}</p>
+          ) : (
+            <AttachedKidCards kids={kids} />
+          )}
+        </section>
+      )}
+      {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
       {(lines.length > 0 || myTemplates.length > 0) && (
         <section className="card stack" data-testid="appt-rides">
@@ -226,9 +262,21 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
                 ))}
             </div>
           )}
+          {room && (
+            <div className="row">
+              <ChatButton room={room} unread={a.unread} />
+            </div>
+          )}
           {a.status === "accepted" && <AddToCalendar appointment={a} />}
           {a.status === "accepted" && a.series && a.series.remaining > 0 && <AddToCalendar appointment={a} wholeSeries />}
           {canRate && <RateBox a={a} onRated={reload} />}
+          {kidsToRate.length > 0 && (
+            <section className="card stack" data-testid="appt-rate-kids">
+              {kidsToRate.map((k) => (
+                <RateKidBox key={k.id} appointmentId={a.id} kid={k} onRated={reload} />
+              ))}
+            </section>
+          )}
           {canCancel && (
             <button type="button" className="btn btn-danger-outline" onClick={() => setMode("cancel")} data-testid="appt-cancel">
               {t(a.status === "accepted" ? "appt.cancel" : "appt.withdraw")}
@@ -237,6 +285,43 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
         </section>
       )}
     </div>
+  );
+}
+
+/** The client picks which of their kids come to this appointment (FR-201); Save replaces the set. */
+function KidsEditor({ a, onDone, reload }: { a: AppointmentView; onDone: () => void; reload: () => void }) {
+  const { t } = useI18n();
+  const store = useStore();
+  const [kids] = useMyKids();
+  const [selected, setSelected] = useState<string[]>(() => (a.kids ?? []).map((k) => k.id));
+  const [busy, run, error] = useBusy();
+  const save = () =>
+    run(async () => {
+      try {
+        await store.api.setAppointmentKids(a.id, selected);
+        onDone();
+      } finally {
+        reload();
+      }
+    });
+  return (
+    <section className="card stack" data-testid="appt-kids-editor">
+      <strong>{t("appt.kids")}</strong>
+      {!kids ? <p className="muted">{t("common.loading")}</p> : kids.length === 0 ? <p className="muted small">{t("kids.empty")}</p> : <KidPicker kids={kids} selected={selected} onChange={setSelected} disabled={busy} />}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="row">
+        <button type="button" className="btn btn-primary grow" disabled={busy || !kids || kids.length === 0} onClick={() => void save()} data-testid="appt-kids-save">
+          {t("appt.kidsSave")}
+        </button>
+        <button type="button" className="btn btn-secondary" onClick={onDone}>
+          {t("common.cancel")}
+        </button>
+      </div>
+    </section>
   );
 }
 

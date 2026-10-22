@@ -240,6 +240,20 @@ and R3 reads "Your driver has set off". Repeats are no-ops, so a reload simply m
 Directions open Google Maps on every phone (`navigationUrl`). Explanations live behind a round *i*
 (`src/components/InfoTip.tsx`: 5 s popup, closes on a second tap or a tap elsewhere).
 
+**2.3: kids, kid ratings, photos, chat** (2026-10-22, "Amendment 2.3", SPEC.md V44–V48). This
+widens the 1.x "nickname is the only personal field" rule on purpose, member by member: `kids`
+rows belong to their owner and reach only the provider of an appointment they are attached to
+(`appointment_kids`; a candidate of an open request sees a count, drivers nothing); the provider
+rates each attached kid once after the appointment (`kid_ratings`, never touching the owner's own
+rating). Photos are resized on the phone (`src/components/photo.ts`) and uploaded by their owner to
+the private bucket `photos`; tables keep only the object path, and every view that may show a
+person or a kid turns the path into a signed URL (≤ 1 h) in the adapter — the mock keeps data URLs.
+Chat rooms are `ride:<id>` (rider + current driver; a re-dispatch drops the old driver) and
+`appt:<id>` (client + provider): `messages` rows written through `siosia_send_message` (party
+check, 24 h after the end, 30 per 10 min), delivered live over the existing private per-user
+channel and pushed as `chat_message` (tag per room) unless the recipient is driving an
+`in_progress` ride. Read marks are set when the thread is visible.
+
 ### 2.0 deviations, on purpose
 
 - **A series in the calendar is written in local time** (spec V27 said UTC): `DTSTART`, `DTEND`

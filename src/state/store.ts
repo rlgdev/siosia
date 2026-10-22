@@ -5,8 +5,9 @@
 // Navigation (2.0, FR-080–084): a screen stack rooted at S1 Home. Siosia (catalog), Planned and
 // History open from S1; Ride (R1…) and Drive (D1…) from the catalog. The screen follows an active
 // ride or an online driver (V1); nothing else is remembered between launches. The browser history
-// mirrors it: [S1] or [S1, screen], plus one entry while a panel is open — so ← (a step back)
-// always lands on the app's own S1, never outside the app.
+// mirrors it: [S1] or [S1, screen], plus one entry per open panel (a panel opened from inside
+// another — the chat from C3 — is a second one, so ← returns to C3) — so ← (a step back) always
+// lands on the app's own S1, never outside the app.
 
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { createBackend } from "../backend";
@@ -15,7 +16,7 @@ import { pushText } from "../../supabase/functions/_shared/push-text";
 import { showLocal } from "../services/push";
 import { loadConfig, type AppConfig } from "../config";
 import { CADENCE } from "../core/defaults";
-import type { DeploymentConfig, Lang, Mode, MyState, Profile, Vehicle } from "../core/types";
+import type { ChatRoom, DeploymentConfig, Lang, Mode, MyState, Profile, Vehicle } from "../core/types";
 import { ServerError } from "../core/types";
 import { browserLang } from "../i18n";
 import { setGeocodeUrl } from "../services/geocode";
@@ -34,12 +35,20 @@ export type LinkNotice =
   | "active_trip"
   | "active_ride"
   | "link_failed";
-export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | null;
+/** 2.3: "chat" shows one room's thread (panelArg = the room). */
+export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | null;
+/** A chat room as a link or a notification names it: ride:<id> | appt:<id>, nothing else (FR-220). */
+export const chatRoomOf = (s: string | null | undefined): ChatRoom | null => (s && /^(ride|appt):[\w-]+$/.test(s) ? (s as ChatRoom) : null);
 /** S1 Home, C1 Catalog ("Siosia"), P1 Planned, H1 History, the v1 rider (R) and driver (D) screens. */
 export type Screen = "home" | "catalog" | "planned" | "history" | "ride" | "drive";
 const modeOf = (s: Screen): Mode | null => (s === "ride" ? "ride" : s === "drive" ? "drive" : null);
-/** What this app keeps in a history entry: the screen, and the panel open over it. */
-type NavState = { screen?: Screen; panel?: Panel } | null;
+/**
+ * What this app keeps in a history entry: the screen, and the panel open over it with its argument
+ * and how many panel entries sit on the screen's (1 = the first panel, 2 = a panel over a panel).
+ */
+type NavState = { screen?: Screen; panel?: Panel; arg?: string | null; depth?: number } | null;
+/** A signed photo URL lives an hour (FR-212): a profile older than this is fetched again (C16). */
+export const PROFILE_MAX_AGE_MS = 50 * 60_000;
 
 export interface AppSnapshot {
   phase: Phase;
@@ -73,8 +82,8 @@ export interface AppSnapshot {
   masterConfirm: string | null;
   /** A move code waiting for the user to confirm merging it into the profile already here. */
   moveConfirm: string | null;
-  /** A notification shown inside the app while it is in front (demo backend). */
-  pushToast: { title: string; body: string } | null;
+  /** A notification shown inside the app while it is in front (demo backend); a tap opens `url`. */
+  pushToast: { title: string; body: string; url: string | null } | null;
 }
 
 const INITIAL: AppSnapshot = {
@@ -144,6 +153,10 @@ export class AppStore {
   private refreshAgain = false;
   /** navigate() stepped back over a panel's entry: the entry it lands on becomes this screen. */
   private afterPop: Screen | null = null;
+  /** A chat notification opened the app (./?chat=<room>): that room opens once the screen is up. */
+  private launchChat: ChatRoom | null = null;
+  /** When the profile in the snapshot was fetched: its photo URL expires (C16). */
+  private profileAt = Date.now();
 
   constructor(private readonly factory: (cfg: AppConfig) => Promise<Backend> = createBackend) {
     if (typeof window !== "undefined") {
@@ -159,11 +172,13 @@ export class AppStore {
           this.afterPop = null;
           return;
         }
+        const st = ev.state as NavState;
         if (this.snap.panel) {
-          this.patch({ panel: null, panelArg: null });
+          // ← from a panel: back to the panel under it (C3 from its chat), else to the screen.
+          this.patch(st?.panel ? { panel: st.panel, panelArg: st.arg ?? null } : { panel: null, panelArg: null });
           return;
         }
-        const target = ((ev.state as NavState)?.screen ?? "home") as Screen;
+        const target = (st?.screen ?? "home") as Screen;
         const pin = this.pinned();
         if (pin && target !== pin) {
           // An active ride or an online driver keeps its screen (V1); offer to go offline.
@@ -173,10 +188,17 @@ export class AppStore {
         }
         this.patch({ screen: target, mode: modeOf(target) });
       });
-      // A notification tapped while the app is open (the service worker posts its link).
+      // The service worker's messages: a notification tapped while the app is open (its link); its
+      // question whether this window shows a chat room, answered on the port it sent (FR-222, V48: a
+      // thread in front gets no notification); a message handed over instead of one (refresh).
       navigator.serviceWorker?.addEventListener?.("message", (ev: MessageEvent) => {
-        const d = ev.data as { type?: string; url?: string } | null;
+        const d = ev.data as { type?: string; url?: string; room?: string } | null;
         if (d?.type === "siosia-open" && d.url) this.openFromUrl(d.url);
+        else if (d?.type === "siosia-chat-open?") {
+          const open =
+            document.visibilityState === "visible" && this.snap.phase === "ready" && this.snap.panel === "chat" && this.snap.panelArg === d.room;
+          ev.ports?.[0]?.postMessage({ open });
+        } else if (d?.type === "siosia-chat-message") this.requestRefresh();
       });
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible" && this.snap.phase === "ready") this.requestRefresh();
@@ -196,6 +218,7 @@ export class AppStore {
   };
 
   private patch(p: Partial<AppSnapshot>): void {
+    if (p.profile && p.profile !== this.snap.profile) this.profileAt = Date.now();
     this.snap = { ...this.snap, ...p };
     this.listeners.forEach((l) => l());
   }
@@ -338,6 +361,10 @@ export class AppStore {
     this.listen();
     await this.refresh();
     this.land(this.initialScreen());
+    // A chat notification tapped while the app was closed: the thread over the screen it opened.
+    const room = this.launchChat;
+    this.launchChat = null;
+    if (room) this.openPanel("chat", room);
   }
 
   /**
@@ -398,9 +425,12 @@ export class AppStore {
         else if (open === "siosia") screen = "catalog";
         else if (open === "planned" || open === "history") screen = open;
       }
-      if (url.searchParams.has("mode") || url.searchParams.has("open")) {
+      // ./?chat=<room> (2.3): the thread opens as a panel over whatever screen applies.
+      this.launchChat = chatRoomOf(url.searchParams.get("chat"));
+      if (url.searchParams.has("mode") || url.searchParams.has("open") || url.searchParams.has("chat")) {
         url.searchParams.delete("mode");
         url.searchParams.delete("open");
+        url.searchParams.delete("chat");
         history.replaceState(history.state, "", url);
       }
     }
@@ -440,20 +470,22 @@ export class AppStore {
 
   /**
    * Moves the history to `target` keeping it at [S1] or [S1, target]: from S1 a new entry, between
-   * sub-screens the entry is replaced, S1 is a step back. A panel's entry is dropped on the way,
-   * else ← from the new screen would step back to the screen under the panel (C2 → C3 → Planned).
+   * sub-screens the entry is replaced, S1 is a step back. The panels' entries are dropped on the
+   * way, else ← from the new screen would step back to the screen under the panel (C2 → C3 → Planned).
    */
   private step(target: Screen): void {
     const st = history.state as NavState;
     if (st?.panel) {
       const below = st.screen ?? "home";
-      if (target === below) history.back();
-      else if (target === "home") history.go(-2);
-      else if (below === "home") history.replaceState({ screen: target }, "");
+      const depth = st.depth ?? 1;
+      if (target === below) history.go(-depth);
+      else if (target === "home") history.go(-(depth + 1));
+      else if (below === "home" && depth === 1) history.replaceState({ screen: target }, "");
       else {
-        // [S1, screen, panel]: back over the panel, then that screen's entry becomes the target.
+        // [S1, screen, panel…]: back over the panels, then that screen's entry becomes the target;
+        // [S1, panel, panel…]: back to the first panel's entry, which becomes the target's.
         this.afterPop = target;
-        history.back();
+        history.go(below === "home" ? -(depth - 1) : -depth);
       }
     } else if (target === "home") {
       // A screen's entry always sits right on S1's (land), so S1 is one step back.
@@ -468,10 +500,17 @@ export class AppStore {
     this.go("home");
   }
 
-  /** A link inside the app (notification tap): ./?open=planned and friends. */
+  /** A link inside the app (notification tap): ./?open=planned and friends; ./?chat=<room> opens that thread. */
   openFromUrl(href: string): void {
     try {
-      const open = new URL(href, typeof location !== "undefined" ? location.href : "http://x/").searchParams.get("open");
+      const params = new URL(href, typeof location !== "undefined" ? location.href : "http://x/").searchParams;
+      const room = chatRoomOf(params.get("chat"));
+      // A panel over the current screen: an online driver keeps D1 and still reads the message.
+      if (room) {
+        this.openPanel("chat", room);
+        return;
+      }
+      const open = params.get("open");
       if (open === "siosia") this.go("catalog");
       else if (open === "planned" || open === "history") this.go(open);
     } catch {
@@ -517,8 +556,17 @@ export class AppStore {
     this.go(mode === "ride" ? "ride" : mode === "drive" ? "drive" : "home");
   }
 
+  /**
+   * Opens a panel over the screen — or over the open panel (the chat from C3, the vehicle form from
+   * S2): one history entry per panel, so ← / X from the chat lands on C3, not on the screen (C15).
+   * The same panel with the same argument adds nothing.
+   */
   openPanel(panel: Panel, arg: string | null = null): void {
-    if (panel && !this.snap.panel && typeof history !== "undefined") history.pushState({ panel, screen: this.snap.screen }, "");
+    if (panel && typeof history !== "undefined" && (panel !== this.snap.panel || arg !== this.snap.panelArg)) {
+      const st = history.state as NavState;
+      const depth = (st?.panel ? st.depth ?? 1 : 0) + 1;
+      history.pushState({ panel, arg, screen: this.snap.screen, depth }, "");
+    }
     this.patch({ panel, panelArg: arg });
   }
 
@@ -577,8 +625,12 @@ export class AppStore {
 
   /** Demo backend: a notification event — a banner in the app, or a system one in the background. */
   private async showPush(m: PushMessage): Promise<void> {
+    const room = m.kind === "chat_message" ? chatRoomOf(m.params.room) : null;
+    const inFront = typeof document !== "undefined" && document.visibilityState === "visible";
+    // A message in the thread the user is looking at needs no banner (FR-222).
+    if (room && inFront && this.snap.panel === "chat" && this.snap.panelArg === room) return;
     const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.appointmentId ?? m.rideId);
-    if (typeof document !== "undefined" && document.visibilityState === "visible") this.patch({ pushToast: { title: text.title, body: text.body } });
+    if (inFront) this.patch({ pushToast: { title: text.title, body: text.body, url: room ? `./?chat=${encodeURIComponent(room)}` : null } });
     else await showLocal(text.title, text.body, text.tag);
   }
 
@@ -586,8 +638,15 @@ export class AppStore {
     if (this.snap.pushToast) this.patch({ pushToast: null });
   }
 
-  /** Coalesces bursts of realtime events into one fetch. */
+  /**
+   * Coalesces bursts of realtime events into one fetch. Also the moment to renew a profile fetched
+   * long ago: its photo URL is signed for an hour, and a PWA stays open for days (C16).
+   */
   requestRefresh(delay = 120): void {
+    if (this.snap.profile && this.snap.phase === "ready" && Date.now() - this.profileAt > PROFILE_MAX_AGE_MS) {
+      this.profileAt = Date.now(); // once per expiry, whatever the reload does
+      void this.reloadProfile().catch(() => {});
+    }
     if (this.refreshTimer) return;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
@@ -682,5 +741,7 @@ export function useApp(): AppSnapshot {
 export function useListsKey(): string {
   const app = useApp();
   const my = app.my;
-  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.openRequests, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings].join("|");
+  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.openRequests, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings, my?.unreadChats].join(
+    "|"
+  );
 }

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
 import { Engine, emptyDb, type DbState, type EngineConfig } from "../../src/core/engine";
 import { destination } from "../../src/core/geo";
-import { ServerError, type LatLng, type MyState, type RideView } from "../../src/core/types";
+import { ServerError, type ChatRoom, type LatLng, type MyState, type RideView } from "../../src/core/types";
 
 const CFG: EngineConfig = { ...DEFAULT_CONFIG, inviteCode: "PILOT" };
 const PICKUP = { lat: 52.2297, lng: 21.0122, label: "Centrum" };
@@ -810,7 +810,17 @@ describe("moving a profile into the app (iOS Home Screen apps have their own sto
     request("rider2");
     expect(code_(() => at((e) => e.redeemTransfer("rider2", code, "dev-r2", true)))).toBe("active_ride");
     at((e) => e.cancelRide("rider2", Object.values(db.rides)[0].id));
-    expect(at((e) => e.redeemTransfer("rider2", code, "dev-r2", true))).toMatchObject({ userId: "rider2", nickname: "Ola" });
+    // 2.3: the replaced profile's photo goes with its row, and so do its kids — a replaced profile is a
+    // deleted one (FR-200); the mover's kids come over (V49).
+    const JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHR8eHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z";
+    at((e) => e.setPhoto("rider2", { kind: "profile" }, JPEG));
+    const mia = at((e) => e.addKid("rider2", { name: "Mia", bornYear: null, note: "" }));
+    at((e) => e.setPhoto("rider2", { kind: "kid", id: mia.id }, JPEG));
+    at((e) => e.addKid("rider", { name: "Ola jr", bornYear: null, note: "" }));
+    expect(Object.keys(db.photos!)).toHaveLength(2);
+    expect(at((e) => e.redeemTransfer("rider2", code, "dev-r2", true))).toMatchObject({ userId: "rider2", nickname: "Ola", photo: null });
+    expect(db.photos).toEqual({}); // Mia's photo went with her, the profile's with its row
+    expect(at((e) => e.kids("rider2")).map((k) => k.name)).toEqual(["Ola jr"]);
     for (let i = 0; i < 10; i++) code_(() => at((e) => e.redeemTransfer("x", "AAAA-AAAA", "dev-x")));
     const next = at((e) => e.createTransfer("rider2")).code;
     expect(code_(() => at((e) => e.redeemTransfer("x", next, "dev-x")))).toBe("rate_limited");
@@ -912,13 +922,13 @@ describe("guards and privacy (FR-005, FR-007, FR-043, FR-044)", () => {
     at((e) => e.decideOffer("d1", online("d1", near(1)).offer!.id, "accept"));
     const seen = at((e) => e.getRide("rider", ride.id));
     expect(seen.driver).toMatchObject({ nickname: "D1", paint: "#c0392b", vehicle: { paint: "#c0392b" } });
-    expect(seen.rider).toEqual({ nickname: "Ola", rating: { mean: null, count: 0 }, icon: null, paint: null });
+    expect(seen.rider).toEqual({ nickname: "Ola", rating: { mean: null, count: 0 }, icon: null, paint: null, photo: null });
     expect(at((e) => e.getRide("d1", ride.id)).driver!.paint).toBe("#c0392b");
     // A driver riding: the driver who is offered the ride sees the rider's paint, never the car itself.
     const ride2 = request("d2");
     const o = online("d3", near(1)).offer!;
     expect(o.rideId).toBe(ride2.id);
-    expect(o.rider).toEqual({ nickname: "D2", rating: { mean: null, count: 0 }, icon: null, paint: "#1e5aa8" });
+    expect(o.rider).toEqual({ nickname: "D2", rating: { mean: null, count: 0 }, icon: null, paint: "#1e5aa8", photo: null });
     expect(JSON.stringify(o)).not.toMatch(/WX D2|Blue|Yaris|Toyota/);
     at((e) => e.decideOffer("d3", o.id, "accept"));
     expect(at((e) => e.getRide("d3", ride2.id))).toMatchObject({ rider: { paint: "#1e5aa8" }, driver: { nickname: "D3", paint: null } });
@@ -946,5 +956,134 @@ describe("guards and privacy (FR-005, FR-007, FR-043, FR-044)", () => {
     at((e) => e.deleteProfile("rider"));
     expect(at((e) => e.getProfile("rider"))).toBeNull();
     expect(db.users.rider.nickname).toBe("Deleted user");
+  });
+});
+
+describe("chat and photos on a ride (2.3: FR-212, FR-220–223, V46–V48)", () => {
+  const MIN = 60_000;
+  const JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHR8eHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z";
+  const chat = (uid: string, room: ChatRoom, markRead = false) => at((e) => e.chat(uid, room, markRead));
+  /** A call with everything it caused: the result, pushes, who refetches, the live messages. */
+  const ev = <T>(fn: (e: Engine) => T) => {
+    const e = new Engine(db, CFG, now);
+    const out = fn(e);
+    return { out, push: e.effects.push, notify: [...e.effects.notify].sort(), chat: e.effects.chat };
+  };
+
+  it("opens the room when a driver accepts, counts unread on the ride, drops the old driver on re-dispatch, keeps quiet while the driver drives", () => {
+    const ride = request();
+    const room: ChatRoom = `ride:${ride.id}`;
+    expect(code(() => chat("rider", room))).toBe("not_found"); // no driver yet
+    expect(at((e) => e.getRide("rider", ride.id)).unread).toBe(0);
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    expect(chat("rider", room)).toMatchObject({ other: expect.objectContaining({ nickname: "D1" }), open: true, unread: 0, messages: [] });
+    const r1 = ev((e) => e.sendMessage("d1", room, "On my way"));
+    expect(r1.out).toMatchObject({ room, mine: true, text: "On my way", sentAt: now, readAt: null });
+    expect(r1.notify).toEqual(["d1", "rider"]);
+    expect(r1.push).toEqual([{ userId: "rider", kind: "chat_message", rideId: ride.id, appointmentId: null, params: { sender: "D1", text: "On my way", room, messageId: r1.out.id } }]);
+    expect(r1.chat.map((c) => [c.userId, c.message.mine, c.message.id])).toEqual([
+      ["rider", false, r1.out.id],
+      ["d1", true, r1.out.id]
+    ]);
+    expect(at((e) => e.getRide("rider", ride.id)).unread).toBe(1);
+    expect(at((e) => e.myState("rider"))).toMatchObject({ unreadChats: 1, ride: expect.objectContaining({ unread: 1 }) });
+    expect(at((e) => e.getRide("d1", ride.id)).unread).toBe(0);
+    expect(code(() => chat("d2", room))).toBe("not_found");
+    expect(code(() => at((e) => e.sendMessage("d2", room, "Me too")))).toBe("not_found");
+    // The rider reads: the driver sees the mark.
+    now += MIN;
+    at((e) => e.heartbeat("d1", null));
+    expect(chat("rider", room, true).messages[0].readAt).toBe(now);
+    expect(chat("d1", room).messages[0]).toMatchObject({ mine: true, readAt: now });
+    expect(at((e) => e.myState("rider")).unreadChats).toBe(0);
+    // The driver cancels: re-dispatched without a driver → no room; the old driver is out for good.
+    at((e) => e.cancelRide("d1", ride.id, "vehicle_problem"));
+    expect(db.rides[ride.id]).toMatchObject({ status: "requested", driverId: null, round: 2 });
+    expect(code(() => chat("rider", room))).toBe("not_found");
+    expect(code(() => chat("d1", room))).toBe("not_found");
+    expect(at((e) => e.getRide("rider", ride.id)).unread).toBe(0);
+    const o2 = online("d2", near(2)).offer!;
+    at((e) => e.decideOffer("d2", o2.id, "accept"));
+    expect(chat("rider", room)).toMatchObject({ other: expect.objectContaining({ nickname: "D2" }), messages: [] }); // a fresh thread
+    expect(chat("d2", room).messages).toEqual([]);
+    expect(db.messages).toEqual([]);
+    expect(code(() => chat("d1", room))).toBe("not_found");
+    expect(code(() => at((e) => e.sendMessage("d1", room, "Sorry about that")))).toBe("not_found");
+    // No phone while driving: a message to the driver of a trip in progress is stored and shown live, not pushed.
+    now += MIN;
+    at((e) => e.heartbeat("d2", null));
+    at((e) => e.advance("d2", ride.id, "arrived"));
+    at((e) => e.advance("d2", ride.id, "in_progress"));
+    const r2 = ev((e) => e.sendMessage("rider", room, "Left at the lights, please"));
+    expect(r2.push).toEqual([]);
+    expect(r2.notify).toEqual(["d2", "rider"]);
+    expect(r2.chat.map((c) => c.userId)).toEqual(["rider", "d2"]);
+    expect(at((e) => e.getRide("d2", ride.id)).unread).toBe(1);
+    expect(at((e) => e.myState("d2"))).toMatchObject({ unreadChats: 1, ride: expect.objectContaining({ unread: 1 }) });
+    // Completed: pushed again, open for 24 h, then read-only but still there.
+    at((e) => e.advance("d2", ride.id, "completed", 3));
+    const r3 = ev((e) => e.sendMessage("rider", room, "Thanks!"));
+    expect(r3.push.map((p) => `${p.kind}>${p.userId}`)).toEqual(["chat_message>d2"]);
+    now += 24 * 3600_000;
+    expect(code(() => at((e) => e.sendMessage("d2", room, "You're welcome")))).toBe("ok");
+    now += 1;
+    expect(code(() => at((e) => e.sendMessage("d2", room, "…")))).toBe("illegal_transition");
+    expect(chat("rider", room)).toMatchObject({ open: false, unread: 1 });
+    expect(chat("rider", room).messages.map((m) => m.mine)).toEqual([true, true, false]);
+    expect(at((e) => e.history("d2"))[0]).toMatchObject({ id: ride.id, unread: 2 });
+    expect(code(() => at((e) => e.sendMessage("d1", room, "…")))).toBe("not_found");
+  });
+
+  it("keeps quiet for a rider who has the thread open — for 45 s after their last mark — and queues the whole text otherwise (FR-222, V48)", () => {
+    const ride = request();
+    const room: ChatRoom = `ride:${ride.id}`;
+    const o = online("d1", near(1)).offer!;
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    chat("rider", room, true);
+    expect(db.chatPresence).toEqual({ rider: { [room]: now } });
+    expect(ev((e) => e.sendMessage("d1", room, "Two minutes")).push).toEqual([]);
+    now += 45_000 - 1;
+    expect(ev((e) => e.sendMessage("d1", room, "Parking")).push).toEqual([]);
+    now += 1;
+    const long = "Here, " + "x".repeat(494);
+    expect(ev((e) => e.sendMessage("d1", room, long)).push).toEqual([{ userId: "rider", kind: "chat_message", rideId: ride.id, appointmentId: null, params: { sender: "D1", text: long, room, messageId: expect.any(String) } }]);
+    // The driver's own mark covers the driver, not the rider.
+    chat("d1", room, true);
+    expect(ev((e) => e.sendMessage("d1", room, "Still here")).push.map((p) => p.userId)).toEqual(["rider"]);
+    expect(ev((e) => e.sendMessage("rider", room, "Coming")).push).toEqual([]);
+  });
+
+  it("shows the parties' photos on the ride, none on the offer card or to a driver browsing bookings (FR-212, V46)", () => {
+    expect(at((e) => e.setPhoto("rider", { kind: "profile" }, JPEG))).toBe(JPEG);
+    at((e) => e.setPhoto("d1", { kind: "profile" }, JPEG));
+    expect(at((e) => e.getProfile("rider"))!.photo).toBe(JPEG);
+    expect(db.users.rider.photoPath).toMatch(/^profiles\//);
+    const ride = request();
+    const o = online("d1", near(1)).offer!;
+    expect(o.rider.photo).toBeNull(); // the card shows who asks, not their photo
+    expect(at((e) => e.getRide("rider", ride.id)).rider.photo).toBe(JPEG); // my own
+    at((e) => e.decideOffer("d1", o.id, "accept"));
+    expect(at((e) => e.getRide("rider", ride.id)).driver).toMatchObject({ nickname: "D1", photo: JPEG });
+    expect(at((e) => e.getRide("d1", ride.id)).rider.photo).toBe(JPEG);
+    expect(chat("d1", `ride:${ride.id}`).other.photo).toBe(JPEG);
+    expect(JSON.stringify(db.rides)).not.toContain("data:"); // rows never hold a photo or a URL
+    const trip = { pickup: PICKUP, dropoff: DROPOFF, estKm: 3.42, estMin: 8.6, fareIsEstimate: false };
+    const b = at((e) => e.bookRide("rider2", { ...trip, scheduledFor: now + 180 * MIN }));
+    at((e) => e.setPhoto("rider2", { kind: "profile" }, JPEG));
+    expect(at((e) => e.openBookings("d2", null))[0].ride.rider.photo).toBeNull();
+    at((e) => e.claimBooking("d2", b.id));
+    expect(at((e) => e.bookings("d2"))[0].rider.photo).toBe(JPEG);
+    expect(at((e) => e.bookings("rider2"))[0].driver).toMatchObject({ nickname: "D2", photo: null }); // D2 has none
+    // The photo moves with the profile into the app; a deleted profile loses it.
+    const { code: move } = at((e) => e.createTransfer("rider2"));
+    at((e) => e.cancelRide("rider2", b.id));
+    at((e) => e.redeemTransfer("app", move, "dev-app"));
+    expect(at((e) => e.getProfile("app"))!.photo).toBe(JPEG);
+    at((e) => e.cancelRide("rider", ride.id));
+    at((e) => e.deleteProfile("rider"));
+    expect(db.users.rider.photoPath).toBeNull();
+    expect(Object.keys(db.photos!)).toHaveLength(2); // D1's and the moved one
+    expect(at((e) => e.history("d1"))[0].rider).toMatchObject({ nickname: "Deleted user", photo: null });
   });
 });

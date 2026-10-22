@@ -1,6 +1,8 @@
 // Profile icon (master profiles) and the "master profile" chip shown to its riders.
 // 2.1 (FR-170, V38): a car icon is drawn in the vehicle's paint; the user's own car icon is a
 // button that opens the car colours, and riders see the driver's car in its paint.
+// 2.3 (FR-211): a photo, when the viewer may see it, goes wherever the nickname is shown; the
+// icon stays as the fallback (Avatar).
 
 import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -27,6 +29,42 @@ export function ProfileIcon({ icon, size = "md", paint }: { icon: string | null 
       data-paint={def.car ? (normalPaint(paint) ?? DEFAULT_PAINT) : undefined}
       dangerouslySetInnerHTML={{ __html: iconSvg(def, paint) }}
     />
+  );
+}
+
+/**
+ * A person or a kid next to their name (FR-211): the photo (a signed URL the server issued to this
+ * viewer) first, else the profile icon in its paint, else `fallback` (an initial, or nothing).
+ * The image has no alt: the name sits right next to it. A photo that does not load — its signed
+ * URL expired while the app stayed open (C16) — gives way to the icon until a fresh URL arrives.
+ */
+export function Avatar({
+  photo,
+  icon,
+  paint,
+  size = "sm",
+  fallback = null,
+  testId = "avatar-photo"
+}: {
+  photo?: string | null;
+  icon?: string | null;
+  paint?: string | null;
+  size?: Size;
+  fallback?: ReactNode;
+  testId?: string;
+}) {
+  const [broken, setBroken] = useState<string | null>(null);
+  if (photo && broken !== photo) return <img className={`avatar-photo avatar-photo-${size}`} src={photo} alt="" onError={() => setBroken(photo)} data-testid={testId} />;
+  if (profileIcon(icon)) return <ProfileIcon icon={icon} size={size} paint={paint} />;
+  return <>{fallback}</>;
+}
+
+/** The first letter of a name in a round badge: the placeholder of the v1 driver card. */
+export function Initial({ name }: { name: string }) {
+  return (
+    <div className="avatar" aria-hidden="true">
+      {name.slice(0, 1).toUpperCase()}
+    </div>
   );
 }
 
@@ -121,19 +159,20 @@ export function CarColourSheet({ onClose }: { onClose: () => void }) {
 }
 
 /**
- * A driver as riders see them (driver card, booking card): the profile icon, or a plain car once
- * the car has a paint, drawn in that paint — the party's paint (sent with every party), else the
- * assigned vehicle's; `fallback` otherwise.
+ * A driver as riders see them (driver card, booking card): their photo (2.3), else the profile
+ * icon, or a plain car once the car has a paint, drawn in that paint — the party's paint (sent
+ * with every party), else the assigned vehicle's; `fallback` otherwise.
  */
 export function DriverIcon({
   driver,
   size = "sm",
   fallback = null
 }: {
-  driver: { icon?: string | null; paint?: string | null; vehicle?: Vehicle | null };
+  driver: { icon?: string | null; paint?: string | null; photo?: string | null; vehicle?: Vehicle | null };
   size?: Size;
   fallback?: ReactNode;
 }) {
+  if (driver.photo) return <Avatar photo={driver.photo} size={size} />;
   const paint = normalPaint(driver.paint) ?? normalPaint(driver.vehicle?.paint);
   const icon = profileIcon(driver.icon) ? driver.icon : paint ? PLAIN_CAR : null;
   if (!icon) return <>{fallback}</>;

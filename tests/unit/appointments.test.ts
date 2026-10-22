@@ -1,12 +1,12 @@
 // Siosia 2.0 server rules in the engine (the SQL twin is tests/unit/sql-v2.test.ts — same cases,
 // V19): catalog and offers, the appointment lifecycle and limits, overlap, rides as part of a
 // service, reminders with a faked clock, series with clashes / cancel scopes / templates; 2.1 open
-// requests (V34–V37) and the car colour (V38).
+// requests (V34–V37) and the car colour (V38); 2.3 kids, kid ratings, photos and chat (V44–V48).
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
 import { Engine, emptyDb, type DbState, type EngineConfig, type PushEvent, type StoredTemplate } from "../../src/core/engine";
-import { ServerError, type AppointmentView, type Place, type RepeatInput, type RideTemplateInput } from "../../src/core/types";
+import { ServerError, type AppointmentView, type ChatRoom, type KidInput, type Place, type RepeatInput, type RideTemplateInput } from "../../src/core/types";
 
 const MIN = 60_000;
 const HOME: Place = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
@@ -47,8 +47,13 @@ function user(uid: string, nick: string, vehicle = false) {
   if (vehicle) at((e) => e.saveVehicle(uid, { make: "Porsche", model: "Taycan", colour: "Zielony", plate: `W ${uid}`, seats: 4 }));
 }
 
-/** A request to `provider`, or (null) an open request to anyone in the group (2.1). */
-function request(uid: string, provider: string | null, startMin: number, o: { service?: string; duration?: number; place?: Place | null; note?: string; repeat?: RepeatInput; startsAt?: number } = {}): AppointmentView {
+/** A request to `provider`, or (null) an open request to anyone in the group (2.1); 2.3: with kids. */
+function request(
+  uid: string,
+  provider: string | null,
+  startMin: number,
+  o: { service?: string; duration?: number; place?: Place | null; note?: string; repeat?: RepeatInput; startsAt?: number; kidIds?: string[] } = {}
+): AppointmentView {
   return at((e) =>
     e.requestService(uid, {
       serviceId: o.service ?? "childcare",
@@ -57,7 +62,8 @@ function request(uid: string, provider: string | null, startMin: number, o: { se
       durationMin: o.duration ?? 180,
       place: o.place === undefined ? HOME : o.place,
       note: o.note ?? "",
-      repeat: o.repeat
+      repeat: o.repeat,
+      kidIds: o.kidIds
     })
   );
 }
@@ -823,7 +829,7 @@ describe("car colour (2.1: FR-170, V38)", () => {
   });
 
   it("draws a person's car in their paint in provider chips and appointment parties — the paint only (PublicParty.paint)", () => {
-    const KEYS = ["icon", "nickname", "paint", "publicId", "rating"];
+    const KEYS = ["icon", "nickname", "paint", "photo", "publicId", "rating"];
     paint("driver", "Zielony", "#1F7A3D");
     at((e) => e.setOffers("driver", ["learning"]));
     const chips = at((e) => e.catalog("client")).find((x) => x.id === "learning")!.providers;
@@ -848,5 +854,559 @@ describe("car colour (2.1: FR-170, V38)", () => {
     expect(getAppt("client", a.id).provider!.paint).toBe("#c0392b");
     at((e) => e.deleteProfile("driver"));
     expect(getAppt("client", a.id).provider).toMatchObject({ paint: null });
+  });
+});
+
+describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () => {
+  /** Tiny JPEG data URLs (the app resizes real photos before they get here). */
+  const JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHR8eHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z";
+  const JPEG2 = JPEG.slice(0, -4) + "AAA=";
+  const USERS = ["client", "siosia", "driver", "other", "gone"];
+  const kid = (uid: string, name: string, o: Partial<KidInput> = {}) => at((e) => e.addKid(uid, { name, bornYear: o.bornYear ?? null, note: o.note ?? "" }));
+  const kids = (uid: string) => at((e) => e.kids(uid));
+  const attach = (uid: string, id: string, ids: string[]) => at((e) => e.setAppointmentKids(uid, id, ids));
+  const rateKid = (uid: string, aid: string, kidId: string, stars: number, comment = "") => at((e) => e.rateKid(uid, aid, kidId, stars, comment));
+  const photo = (uid: string, target: { kind: "profile" } | { kind: "kid"; id: string }, dataUrl: string | null) => at((e) => e.setPhoto(uid, target, dataUrl));
+  const chat = (uid: string, room: ChatRoom, markRead = false) => at((e) => e.chat(uid, room, markRead));
+  const send = (uid: string, room: ChatRoom, text: string) => at((e) => e.sendMessage(uid, room, text));
+  const sent = () => pushes.map((p) => `${p.kind}>${p.userId}`);
+
+  it("keeps up to 8 kids per member — name 1–30, year of birth, note ≤ 200 — for their owner only (FR-200, V44)", () => {
+    expect(kids("client")).toEqual([]);
+    for (const bad of [{ name: "" }, { name: "   " }, { name: "x".repeat(31) }, { name: "Zosia", bornYear: 1899 }, { name: "Zosia", bornYear: 2027 }, { name: "Zosia", bornYear: 2018.5 }, { name: "Zosia", note: "x".repeat(201) }])
+      expect(code(() => kid("client", bad.name, bad)), JSON.stringify(bad)).toBe("bad_input");
+    const z = kid("client", "  Zosia ", { bornYear: 2018, note: "  Nut allergy " });
+    expect(z).toEqual({ id: expect.any(String), name: "Zosia", photo: null, bornYear: 2018, note: "Nut allergy", rating: { mean: null, count: 0 }, ratings: [] });
+    expect(changed).toEqual(["client"]);
+    const k = kid("client", "Kuba", { bornYear: 2026 }); // born this year
+    expect(kids("client").map((x) => x.name)).toEqual(["Zosia", "Kuba"]);
+    expect(kids("siosia")).toEqual([]);
+    expect(db.kids![z.id]).toEqual({ id: z.id, ownerId: "client", name: "Zosia", photoPath: null, bornYear: 2018, note: "Nut allergy", createdAt: now });
+    // The owner only.
+    const edit = { name: "Zuzia", bornYear: null, note: "" };
+    expect(code(() => at((e) => e.updateKid("siosia", z.id, edit)))).toBe("not_found");
+    expect(code(() => at((e) => e.removeKid("siosia", z.id)))).toBe("not_found");
+    expect(code(() => at((e) => e.updateKid("client", "k-none", edit)))).toBe("not_found");
+    expect(code(() => at((e) => e.updateKid("client", z.id, { ...edit, name: "" })))).toBe("bad_input");
+    expect(at((e) => e.updateKid("client", z.id, edit))).toMatchObject({ id: z.id, name: "Zuzia", bornYear: null, note: "" });
+    for (let i = 0; i < 6; i++) kid("client", `K${i}`);
+    expect(code(() => kid("client", "Ninth"))).toBe("too_many");
+    at((e) => e.removeKid("client", k.id));
+    expect(kids("client")).toHaveLength(7);
+    expect(code(() => kid("client", "Eighth"))).toBe("ok");
+    expect(code(() => kid("stranger", "X"))).toBe("not_member");
+    at((e) => e.join("newbie", "pilot", "dev-newbie"));
+    expect(code(() => kid("newbie", "X"))).toBe("no_profile");
+  });
+
+  it("lets the client attach their own kids to a requested or accepted appointment until it ends; a series: every occurrence (FR-201)", () => {
+    const z = kid("client", "Zosia", { bornYear: 2018 });
+    const k = kid("client", "Kuba");
+    const ewas = kid("other", "Ewa jr");
+    expect(code(() => request("client", "siosia", 25 * 60, { kidIds: [ewas.id] }))).toBe("bad_input");
+    expect(code(() => request("client", "siosia", 25 * 60, { kidIds: ["k-none"] }))).toBe("bad_input");
+    const a = request("client", "siosia", 25 * 60, { kidIds: [z.id, z.id] });
+    expect(a.kids.map((x) => x.id)).toEqual([z.id]); // each once
+    expect(a.kidCount).toBe(1);
+    expect(db.appointmentKids![a.id]).toEqual([z.id]);
+    // The client, with a subset of their own kids.
+    expect(code(() => attach("siosia", a.id, [z.id]))).toBe("forbidden");
+    expect(code(() => attach("other", a.id, [ewas.id]))).toBe("forbidden");
+    expect(code(() => attach("client", "a-none", [z.id]))).toBe("not_found");
+    expect(code(() => attach("client", a.id, [z.id, ewas.id]))).toBe("bad_input");
+    expect(code(() => attach("client", a.id, "zosia" as unknown as string[]))).toBe("bad_input");
+    expect(code(() => attach("client", a.id, null as unknown as string[]))).toBe("bad_input"); // not a list (C13, both twins)
+    expect(attach("client", a.id, [k.id, z.id]).kids.map((x) => x.name)).toEqual(["Kuba", "Zosia"]);
+    expect(changed).toEqual(["client", "siosia"]);
+    answer("siosia", a.id, "accept");
+    expect(attach("client", a.id, []).kids).toEqual([]);
+    expect(attach("client", a.id, [z.id]).kidCount).toBe(1);
+    // Still while it runs; not once it ended.
+    now = a.startsAt + 10 * MIN;
+    expect(code(() => attach("client", a.id, [k.id]))).toBe("ok");
+    now = a.endsAt + 1;
+    expect(code(() => attach("client", a.id, [z.id]))).toBe("illegal_transition");
+    expect(getAppt("siosia", a.id)).toMatchObject({ status: "done", kids: [expect.objectContaining({ name: "Kuba" })], kidCount: 1 });
+    // A cancelled one has ended too.
+    const b = request("client", "siosia", 48 * 60);
+    answer("siosia", b.id, "accept");
+    cancel("client", b.id);
+    expect(code(() => attach("client", b.id, [z.id]))).toBe("illegal_transition");
+    // A series takes the kids on every occurrence; one occurrence changes alone.
+    const s = request("client", "siosia", 72 * 60, { service: "learning", duration: 60, repeat: { every: 1, count: 3 }, kidIds: [z.id] });
+    const occ = Object.values(db.appointments!)
+      .filter((x) => x.seriesId === s.series!.id)
+      .sort((x, y) => x.seq! - y.seq!);
+    expect(occ.map((x) => db.appointmentKids![x.id])).toEqual([[z.id], [z.id], [z.id]]);
+    attach("client", occ[1].id, []);
+    expect(occ.map((x) => db.appointmentKids![x.id])).toEqual([[z.id], [], [z.id]]);
+    expect(getAppt("siosia", occ[2].id).kids.map((x) => x.name)).toEqual(["Zosia"]);
+  });
+
+  it("shows the kids' cards to both parties, a count to a candidate, nothing to drivers or others — never a user id (FR-202, V44)", () => {
+    photo("client", { kind: "profile" }, JPEG);
+    const z = kid("client", "Zosia", { bornYear: 2018, note: "Nut allergy" });
+    photo("client", { kind: "kid", id: z.id }, JPEG2);
+    const k = kid("client", "Kuba", { bornYear: 2021 });
+    const open = request("client", null, 25 * 60, { kidIds: [z.id, k.id] });
+    const cand = at((e) => e.planned("other")).open[0];
+    expect(cand).toMatchObject({ id: open.id, role: "candidate", kids: [], kidCount: 2, unread: 0 });
+    expect(getAppt("driver", open.id)).toMatchObject({ kids: [], kidCount: 2 });
+    expect(JSON.stringify(cand)).not.toMatch(/Zosia|Kuba|allergy|2018|data:image/);
+    // Taken: the provider sees the cards (name, photo, age, note, rating), the client their own.
+    const v = at((e) => e.takeRequest("other", open.id));
+    expect(v.kids).toEqual([
+      { id: z.id, name: "Zosia", photo: JPEG2, age: 8, note: "Nut allergy", rating: { mean: null, count: 0 }, myRating: null },
+      { id: k.id, name: "Kuba", photo: null, age: 5, note: "", rating: { mean: null, count: 0 }, myRating: null }
+    ]);
+    expect(v.kidCount).toBe(2);
+    expect(getAppt("client", open.id).kids).toEqual(v.kids);
+    for (const uid of USERS) expect(JSON.stringify(v.kids)).not.toContain(`"${uid}"`);
+    // The driver of an attached ride sees a plain booking.
+    const ride = book("client", 24 * 60, open.id, "there");
+    at((e) => e.claimBooking("driver", ride.id));
+    const dv = at((e) => e.bookings("driver"))[0];
+    expect(dv).toMatchObject({ id: ride.id, appointmentId: null });
+    expect(JSON.stringify(dv)).not.toMatch(/Zosia|Kuba|kid/i);
+    // The request and the reminders tell the provider who comes; the client's copies do not.
+    const a = request("client", "siosia", 26 * 60, { kidIds: [z.id] });
+    expect(pushes.at(-1)).toMatchObject({ kind: "appt_new", userId: "siosia", params: { kids: ["Zosia"] } });
+    answer("siosia", a.id, "accept");
+    expect(pushes.at(-1)).toMatchObject({ kind: "appt_accepted", userId: "client" });
+    expect(pushes.at(-1)!.params).not.toHaveProperty("kids");
+    pushes = [];
+    now = a.startsAt - 24 * 60 * MIN + 1;
+    sweep();
+    const rem = pushes.filter((p) => p.kind === "appt_reminder" && p.appointmentId === a.id);
+    expect(rem.map((p) => p.userId).sort()).toEqual(["client", "siosia"]);
+    expect(rem.find((p) => p.userId === "siosia")!.params.kids).toEqual(["Zosia"]);
+    expect(rem.find((p) => p.userId === "client")!.params).not.toHaveProperty("kids");
+    // A renamed kid shows its new name (the providers refetch); a removed one leaves every appointment.
+    at((e) => e.updateKid("client", z.id, { name: "Zuzia", bornYear: 2018, note: "" }));
+    expect(changed).toEqual(["client", "other", "siosia"]);
+    expect(getAppt("siosia", a.id).kids.map((x) => [x.name, x.note])).toEqual([["Zuzia", ""]]);
+    // A new photo is a changed card too: the same providers refetch (C12, as siosia_set_photo).
+    photo("client", { kind: "kid", id: z.id }, JPEG);
+    expect(changed).toEqual(["client", "other", "siosia"]);
+    expect(getAppt("siosia", a.id).kids[0].photo).toBe(JPEG);
+    photo("client", { kind: "profile" }, JPEG2);
+    expect(changed).toEqual(["client"]); // my own photo: my tabs only
+    at((e) => e.removeKid("client", z.id));
+    expect(changed).toEqual(["client", "other", "siosia"]);
+    expect(getAppt("siosia", a.id)).toMatchObject({ kids: [], kidCount: 0 });
+    expect(getAppt("other", open.id).kids.map((x) => x.name)).toEqual(["Kuba"]);
+    expect(db.appointmentKids![open.id]).toEqual([k.id]);
+  });
+
+  it("lets the provider rate each attached kid once within 24 h of a done appointment; the owner reads them; their own rating stays (FR-203, V45)", () => {
+    const z = kid("client", "Zosia");
+    const k = kid("client", "Kuba");
+    const home = kid("client", "Stayed home");
+    const a = request("client", "siosia", 25 * 60, { kidIds: [z.id, k.id] });
+    answer("siosia", a.id, "accept");
+    expect(code(() => rateKid("siosia", a.id, z.id, 5))).toBe("illegal_transition");
+    now = a.endsAt + MIN;
+    expect(getAppt("client", a.id).status).toBe("done");
+    expect(code(() => rateKid("client", a.id, z.id, 5))).toBe("forbidden");
+    expect(code(() => rateKid("other", a.id, z.id, 5))).toBe("not_found");
+    expect(code(() => rateKid("siosia", a.id, home.id, 5))).toBe("not_found");
+    expect(code(() => rateKid("siosia", "a-none", z.id, 5))).toBe("not_found");
+    for (const s of [0, 6, NaN]) expect(code(() => rateKid("siosia", a.id, z.id, s))).toBe("bad_input");
+    const before = at((e) => e.getProfile("client"))!.rating;
+    pushes = [];
+    rateKid("siosia", a.id, z.id, 5, " Lovely " + "x".repeat(200));
+    expect(changed).toEqual(["client", "siosia"]);
+    expect(pushes).toEqual([]);
+    expect(code(() => rateKid("siosia", a.id, z.id, 4))).toBe("already_rated");
+    rateKid("siosia", a.id, k.id, 4);
+    expect(getAppt("siosia", a.id).kids.map((x) => [x.name, x.myRating, x.rating])).toEqual([
+      ["Zosia", 5, { mean: 5, count: 1 }],
+      ["Kuba", 4, { mean: 4, count: 1 }]
+    ]);
+    expect(getAppt("client", a.id).kids.map((x) => x.myRating)).toEqual([null, null]);
+    // The owner reads who, when, how (comment cut to 140); the owner's own rating (FR-060) is untouched.
+    const mine = kids("client").find((x) => x.id === z.id)!;
+    expect(mine.rating).toEqual({ mean: 5, count: 1 });
+    expect(mine.ratings).toEqual([{ appointmentId: a.id, by: "Siosia", stars: 5, comment: "Lovely " + "x".repeat(133), at: now }]);
+    expect(at((e) => e.getProfile("client"))!.rating).toEqual(before);
+    expect(db.ratings.filter((g) => g.appointmentId === a.id)).toEqual([]);
+    expect(db.kidRatings).toEqual([
+      { appointmentId: a.id, kidId: z.id, fromUser: "siosia", stars: 5, comment: expect.any(String), createdAt: now },
+      { appointmentId: a.id, kidId: k.id, fromUser: "siosia", stars: 4, comment: "", createdAt: now }
+    ]);
+    // A later appointment with Zosia shows her summary (the mean of all, one decimal) to its provider.
+    at((e) => e.setOffers("other", ["childcare"]));
+    const b = request("client", "other", 25 * 60, { kidIds: [z.id] });
+    answer("other", b.id, "accept");
+    expect(getAppt("other", b.id).kids[0]).toMatchObject({ rating: { mean: 5, count: 1 }, myRating: null });
+    now = b.endsAt + MIN;
+    rateKid("other", b.id, z.id, 4);
+    expect(getAppt("other", b.id).kids[0]).toMatchObject({ rating: { mean: 4.5, count: 2 }, myRating: 4 });
+    expect(kids("client").find((x) => x.id === z.id)!.ratings.map((g) => g.by)).toEqual(["Ewa", "Siosia"]); // newest first
+    // 24 h after the end the window closes.
+    const c = request("client", "siosia", 25 * 60, { kidIds: [k.id] });
+    answer("siosia", c.id, "accept");
+    now = c.endsAt + 24 * 60 * MIN;
+    expect(code(() => rateKid("siosia", c.id, k.id, 5))).toBe("ok");
+    const d = request("client", "siosia", 25 * 60, { kidIds: [k.id] });
+    answer("siosia", d.id, "accept");
+    now = d.endsAt + 24 * 60 * MIN + 1;
+    expect(code(() => rateKid("siosia", d.id, k.id, 5))).toBe("window_closed");
+    // A removed kid takes its ratings along; the appointments keep nothing of it.
+    at((e) => e.removeKid("client", z.id));
+    expect(db.kidRatings!.map((g) => g.kidId)).toEqual([k.id, k.id]);
+    expect(getAppt("other", b.id).kids).toEqual([]);
+    expect(getAppt("siosia", a.id).kids.map((x) => x.name)).toEqual(["Kuba"]);
+  });
+
+  it("stores photos as object paths and serves them as signed URLs to allowed viewers only; replacing and clearing delete the object (FR-210–212, V46)", () => {
+    expect(at((e) => e.getProfile("client"))!.photo).toBeNull();
+    for (const bad of ["", "data:image/png;base64,AAAA", "https://x/y.jpg", "data:image/jpeg;base64,", "data:image/jpeg;base64,!!", "data:image/jpeg;base64," + "A".repeat(220_001)])
+      expect(code(() => photo("client", { kind: "profile" }, bad)), bad.slice(0, 40)).toBe("bad_input");
+    expect(photo("client", { kind: "profile" }, JPEG)).toBe(JPEG);
+    expect(changed).toEqual(["client"]);
+    const path = db.users.client.photoPath!;
+    expect(path).toMatch(/^profiles\/.+\.jpg$/);
+    expect(db.photos).toEqual({ [path]: JPEG });
+    expect(JSON.stringify(db.users)).not.toContain("data:"); // rows hold the path, never the content or a URL
+    expect(at((e) => e.getProfile("client"))!.photo).toBe(JPEG);
+    // Replacing deletes the old object; clearing too.
+    expect(photo("client", { kind: "profile" }, JPEG2)).toBe(JPEG2);
+    expect(Object.keys(db.photos!)).toHaveLength(1);
+    expect(db.photos![path]).toBeUndefined();
+    expect(photo("client", { kind: "profile" }, null)).toBeNull();
+    expect(db.photos).toEqual({});
+    expect(db.users.client.photoPath).toBeNull();
+    // A kid's photo: the owner's kid only.
+    const z = kid("client", "Zosia");
+    expect(code(() => photo("siosia", { kind: "kid", id: z.id }, JPEG))).toBe("not_found");
+    expect(code(() => photo("client", { kind: "kid", id: "k-none" }, JPEG))).toBe("not_found");
+    expect(code(() => photo("client", { kind: "car" } as unknown as { kind: "profile" }, JPEG))).toBe("bad_input");
+    expect(photo("client", { kind: "kid", id: z.id }, JPEG)).toBe(JPEG);
+    expect(kids("client")[0].photo).toBe(JPEG);
+    expect(db.kids![z.id].photoPath).toMatch(/^kids\/.+\.jpg$/);
+    // Removing a kid removes its object (C4/C5; the SQL twin drops it server-side too).
+    const tymek = kid("client", "Tymek");
+    photo("client", { kind: "kid", id: tymek.id }, JPEG2);
+    const tp = db.kids![tymek.id].photoPath!;
+    expect(db.photos![tp]).toBe(JPEG2);
+    at((e) => e.removeKid("client", tymek.id));
+    expect(db.photos![tp]).toBeUndefined();
+    expect(Object.keys(db.photos!)).toEqual([db.kids![z.id].photoPath]);
+    // Who sees whose photo…
+    photo("client", { kind: "profile" }, JPEG2);
+    photo("siosia", { kind: "profile" }, JPEG);
+    photo("driver", { kind: "profile" }, JPEG);
+    // …the catalog: the providers' photos, to anyone browsing;
+    expect(at((e) => e.catalog("other")).find((x) => x.id === "childcare")!.providers[0]).toMatchObject({ nickname: "Siosia", photo: JPEG });
+    // …an open request: a candidate is no party yet and sees none (nor the kid's);
+    const open = request("client", null, 25 * 60, { kidIds: [z.id] });
+    expect(at((e) => e.planned("other")).open[0].client.photo).toBeNull();
+    expect(JSON.stringify([at((e) => e.planned("other")), getAppt("driver", open.id)])).not.toContain("data:image");
+    // …an appointment: the parties see each other, the provider the kid;
+    const a = request("client", "siosia", 26 * 60, { kidIds: [z.id] });
+    expect(a.provider!.photo).toBe(JPEG);
+    expect(a.client.photo).toBe(JPEG2);
+    expect(getAppt("siosia", a.id)).toMatchObject({ client: { photo: JPEG2 }, provider: { photo: JPEG }, kids: [{ photo: JPEG }] });
+    at((e) => e.takeRequest("other", open.id));
+    expect(getAppt("other", open.id)).toMatchObject({ client: { photo: JPEG2 }, kids: [{ photo: JPEG }] });
+    // …a booking: the parties once a driver took it; a driver browsing sees none.
+    const ride = book("client", 3 * 60);
+    expect(at((e) => e.openBookings("driver", null))[0].ride.rider.photo).toBeNull();
+    at((e) => e.claimBooking("driver", ride.id));
+    expect(at((e) => e.getRide("client", ride.id)).driver!.photo).toBe(JPEG);
+    expect(at((e) => e.getRide("driver", ride.id)).rider.photo).toBe(JPEG2);
+    expect(at((e) => e.bookings("driver"))[0].rider.photo).toBe(JPEG2);
+    // Deleting the profile deletes its photo and the kids with theirs.
+    at((e) => e.cancelRide("client", ride.id));
+    at((e) => e.deleteProfile("client"));
+    expect(db.photos).toEqual({ [db.users.siosia.photoPath!]: JPEG, [db.users.driver.photoPath!]: JPEG });
+    expect(db.kids).toEqual({});
+    expect(db.users.client.photoPath).toBeNull();
+    expect(getAppt("siosia", a.id)).toMatchObject({ client: { nickname: "Deleted user", photo: null }, kids: [], kidCount: 0 });
+  });
+
+  it("opens a room per accepted appointment for its two parties: sending while live and 24 h after, read marks, unread counts, one push (FR-220–224, V47, V48)", () => {
+    photo("siosia", { kind: "profile" }, JPEG);
+    const a = request("client", "siosia", 25 * 60);
+    const room: ChatRoom = `appt:${a.id}`;
+    expect(code(() => chat("client", room))).toBe("not_found"); // not accepted yet
+    expect(code(() => send("client", room, "Hi"))).toBe("not_found");
+    answer("siosia", a.id, "accept");
+    expect(code(() => chat("other", room))).toBe("not_found");
+    expect(code(() => send("other", room, "Hi"))).toBe("not_found");
+    expect(code(() => chat("client", "appt:a-none"))).toBe("not_found");
+    expect(code(() => chat("client", "nonsense" as ChatRoom))).toBe("not_found");
+    expect(code(() => chat("client", `ride:${a.id}`))).toBe("not_found");
+    expect(code(() => chat("client", room.toUpperCase() as ChatRoom))).toBe("not_found"); // spelled as the rows name it (C14, both twins)
+    expect(code(() => send("client", `appt:${a.id.toUpperCase()}`, "Hi"))).toBe("not_found");
+    expect(chat("client", room)).toEqual({ room, other: expect.objectContaining({ nickname: "Siosia", photo: JPEG }), messages: [], open: true, unread: 0 });
+    for (const bad of ["", "   ", "x".repeat(501)]) expect(code(() => send("client", room, bad))).toBe("bad_input");
+    pushes = [];
+    const m1 = send("client", room, "  Zosia has a nut allergy  ");
+    expect(m1).toEqual({ id: expect.any(String), room, mine: true, text: "Zosia has a nut allergy", sentAt: now, readAt: null });
+    expect(changed).toEqual(["client", "siosia"]); // both threads refresh live
+    expect(db.messages).toEqual([{ id: m1.id, room, sender: "client", text: "Zosia has a nut allergy", sentAt: now, readAt: null }]);
+    // One push to the other party: the sender, the first words, the room, the message (dispatch skips one
+    // read by then, V48); tagged with the appointment.
+    expect(pushes).toEqual([{ userId: "siosia", kind: "chat_message", rideId: null, appointmentId: a.id, params: { sender: "Toria", text: "Zosia has a nut allergy", room, messageId: m1.id } }]);
+    now += MIN;
+    send("client", room, "x".repeat(500));
+    expect(pushes.at(-1)!.params.text).toBe("x".repeat(500)); // the whole text is queued; push-text cuts it to the first words (C21)
+    // Each side's view: mine / theirs, oldest first; unread for the reader only.
+    expect(getAppt("siosia", a.id).unread).toBe(2);
+    expect(getAppt("client", a.id).unread).toBe(0);
+    expect(at((e) => e.myState("siosia")).unreadChats).toBe(2);
+    expect(at((e) => e.myState("client")).unreadChats).toBe(0);
+    expect(at((e) => e.planned("siosia")).appointments[0].unread).toBe(2);
+    const theirs = chat("siosia", room);
+    expect(theirs).toMatchObject({ other: expect.objectContaining({ nickname: "Toria", photo: null }), open: true, unread: 2 });
+    expect(theirs.messages.map((m) => [m.mine, m.text.length, m.readAt])).toEqual([
+      [false, 23, null],
+      [false, 500, null]
+    ]);
+    expect(changed).toEqual([]); // reading without marking changes nothing
+    // Marking read: the sender sees the marks and is told to refetch.
+    now += MIN;
+    const read = chat("siosia", room, true);
+    expect(read.unread).toBe(0);
+    expect(read.messages.map((m) => m.readAt)).toEqual([now, now]);
+    expect(changed).toEqual(["client", "siosia"]);
+    expect(chat("client", room).messages.map((m) => [m.mine, m.readAt])).toEqual([
+      [true, now],
+      [true, now]
+    ]);
+    expect(at((e) => e.myState("siosia")).unreadChats).toBe(0);
+    chat("siosia", room, true);
+    expect(changed).toEqual([]); // nothing left to mark
+    send("siosia", room, "Noted 🙂");
+    expect(pushes.at(-1)).toMatchObject({ userId: "client", kind: "chat_message", appointmentId: a.id, params: { sender: "Siosia", text: "Noted 🙂", room } });
+    expect(at((e) => e.myState("client")).unreadChats).toBe(1);
+    expect(chat("client", room).messages.map((m) => m.mine)).toEqual([true, true, false]);
+    // Open up to 24 h after the end, then read-only; the thread stays readable.
+    now = a.endsAt + 24 * 60 * MIN;
+    expect(getAppt("client", a.id).status).toBe("done");
+    expect(code(() => send("client", room, "Did she forget a jacket?"))).toBe("ok");
+    expect(chat("client", room).open).toBe(true);
+    now += 1;
+    expect(code(() => send("client", room, "Still there?"))).toBe("illegal_transition");
+    expect(chat("siosia", room)).toMatchObject({ open: false, unread: 1 });
+    expect(chat("siosia", room).messages).toHaveLength(4);
+    expect(at((e) => e.timeline("siosia"))[0]).toMatchObject({ kind: "appointment", appointment: { id: a.id, unread: 1 } });
+    // Cancelled after acceptance: the room stays 24 h; declined or withdrawn: there never was one.
+    const b = request("client", "siosia", 48 * 60);
+    answer("siosia", b.id, "accept");
+    cancel("client", b.id);
+    expect(code(() => send("siosia", `appt:${b.id}`, "Pity"))).toBe("ok");
+    now += 24 * 60 * MIN + 1;
+    expect(code(() => send("siosia", `appt:${b.id}`, "Pity"))).toBe("illegal_transition");
+    const c = request("client", "siosia", 48 * 60);
+    answer("siosia", c.id, "decline");
+    expect(code(() => chat("client", `appt:${c.id}`))).toBe("not_found");
+    const d = request("client", "siosia", 48 * 60);
+    cancel("client", d.id);
+    expect(code(() => chat("client", `appt:${d.id}`))).toBe("not_found");
+    // An open request has a room once someone took it — for the client and the taker.
+    const o = request("client", null, 48 * 60);
+    expect(code(() => chat("other", `appt:${o.id}`))).toBe("not_found");
+    at((e) => e.takeRequest("other", o.id));
+    expect(chat("other", `appt:${o.id}`).other.nickname).toBe("Toria");
+    expect(chat("client", `appt:${o.id}`).other.nickname).toBe("Ewa");
+    expect(code(() => chat("driver", `appt:${o.id}`))).toBe("not_found");
+    for (const uid of USERS) expect(JSON.stringify(chat("other", `appt:${o.id}`))).not.toContain(`:"${uid}"`); // as a value ("other" is a key)
+  });
+
+  it("opens a booking's room with its driver and closes it for a driver who gave it back; the next driver starts afresh (FR-220, FR-223)", () => {
+    const ride = book("client", 3 * 60);
+    const room: ChatRoom = `ride:${ride.id}`;
+    expect(code(() => chat("client", room))).toBe("not_found"); // no driver yet
+    at((e) => e.claimBooking("driver", ride.id));
+    expect(chat("driver", room)).toMatchObject({ other: expect.objectContaining({ nickname: "Toria" }), open: true, messages: [] });
+    pushes = [];
+    send("driver", room, "I will be 5 min early");
+    expect(pushes).toEqual([{ userId: "client", kind: "chat_message", rideId: ride.id, appointmentId: null, params: { sender: "Roman", text: "I will be 5 min early", room, messageId: expect.any(String) } }]);
+    expect(at((e) => e.bookings("client"))[0].unread).toBe(1);
+    expect(at((e) => e.myState("client")).unreadChats).toBe(1);
+    expect(code(() => chat("siosia", room))).toBe("not_found");
+    // Given back: no driver, no room — and no badge for the rider.
+    at((e) => e.releaseBooking("driver", ride.id));
+    expect(code(() => chat("driver", room))).toBe("not_found");
+    expect(code(() => chat("client", room))).toBe("not_found");
+    expect(at((e) => e.bookings("client"))[0].unread).toBe(0);
+    expect(at((e) => e.myState("client")).unreadChats).toBe(0);
+    // Another driver takes it: a fresh thread for the two of them; the first driver stays out.
+    user("d2", "Daria", true);
+    at((e) => e.claimBooking("d2", ride.id));
+    expect(chat("d2", room)).toMatchObject({ other: expect.objectContaining({ nickname: "Toria" }), messages: [] });
+    expect(chat("client", room)).toMatchObject({ other: expect.objectContaining({ nickname: "Daria" }), messages: [] });
+    expect(db.messages).toEqual([]);
+    expect(code(() => send("driver", room, "Hello?"))).toBe("not_found");
+    expect(code(() => chat("driver", room))).toBe("not_found");
+  });
+
+  it("allows 30 messages per room per sender in 10 minutes (FR-225)", () => {
+    const a = request("client", "siosia", 25 * 60);
+    answer("siosia", a.id, "accept");
+    const room: ChatRoom = `appt:${a.id}`;
+    for (let i = 0; i < 30; i++) send("client", room, `m${i}`);
+    expect(code(() => send("client", room, "one more"))).toBe("too_many");
+    expect(code(() => send("siosia", room, "her own count"))).toBe("ok");
+    const b = request("client", "siosia", 48 * 60);
+    answer("siosia", b.id, "accept");
+    expect(code(() => send("client", `appt:${b.id}`, "another room"))).toBe("ok");
+    now += 10 * MIN - 1;
+    expect(code(() => send("client", room, "still"))).toBe("too_many");
+    now += 1;
+    expect(code(() => send("client", room, "free again"))).toBe("ok");
+    expect(chat("siosia", room).messages).toHaveLength(32);
+  });
+
+  it("does not notify a driver on a trip — in any room; the message waits in the thread (FR-222, V48)", () => {
+    at((e) => e.setOffers("driver", ["learning"]));
+    const lesson = request("siosia", "driver", 25 * 60, { service: "learning", duration: 60 });
+    answer("driver", lesson.id, "accept");
+    const ride = book("client", 3 * 60);
+    at((e) => e.claimBooking("driver", ride.id));
+    now = ride.scheduledFor! - 30 * MIN;
+    sweep(); // the booking starts: accepted, the driver on duty
+    at((e) => e.advance("driver", ride.id, "arrived"));
+    at((e) => e.advance("driver", ride.id, "in_progress"));
+    pushes = [];
+    const room: ChatRoom = `ride:${ride.id}`;
+    send("client", room, "Please stop at the pharmacy");
+    expect(changed).toEqual(["client", "driver"]); // the thread still refreshes live
+    send("siosia", `appt:${lesson.id}`, "Bring the book, please");
+    expect(pushes).toEqual([]);
+    expect(at((e) => e.getRide("driver", ride.id)).unread).toBe(1);
+    expect(at((e) => e.myState("driver"))).toMatchObject({ unreadChats: 2, ride: expect.objectContaining({ unread: 1 }) });
+    // The trip over, the next messages are pushed again.
+    at((e) => e.advance("driver", ride.id, "completed", 3));
+    send("client", room, "Thanks!");
+    send("siosia", `appt:${lesson.id}`, "See you");
+    expect(sent()).toEqual(["chat_message>driver", "chat_message>driver"]);
+    expect(pushes.map((p) => [p.rideId, p.appointmentId])).toEqual([
+      [ride.id, null],
+      [null, lesson.id]
+    ]);
+  });
+
+  it("does not notify someone who has the thread open: presence stamped on reading, good for 45 s, per room (FR-222, V48, C10)", () => {
+    const a = request("client", "siosia", 25 * 60);
+    answer("siosia", a.id, "accept");
+    const room: ChatRoom = `appt:${a.id}`;
+    chat("siosia", room); // a background refetch says nothing about where Siosia looks
+    expect(db.chatPresence).toEqual({});
+    chat("siosia", room, true); // the thread open and visible: present
+    expect(db.chatPresence).toEqual({ siosia: { [room]: now } });
+    pushes = [];
+    send("client", room, "Hello");
+    expect(pushes).toEqual([]);
+    expect(changed).toEqual(["client", "siosia"]); // it lands live all the same
+    expect(chat("siosia", room).unread).toBe(1);
+    // 45 s without the heartbeat: she looked away — notified again, with the whole text.
+    now += 45_000 - 1;
+    send("client", room, "Still there?");
+    expect(pushes).toEqual([]);
+    now += 1;
+    send("client", room, "Hello?");
+    expect(sent()).toEqual(["chat_message>siosia"]);
+    expect(pushes[0].params).toEqual({ sender: "Toria", text: "Hello?", room, messageId: expect.any(String) });
+    // The heartbeat (a mark with nothing new to mark) refreshes the stamp.
+    pushes = [];
+    chat("siosia", room, true);
+    now += 30_000;
+    chat("siosia", room, true);
+    expect(changed).toEqual([]);
+    now += 30_000;
+    send("client", room, "Good");
+    expect(pushes).toEqual([]);
+    // Another room is another thread: there she is absent.
+    const b = request("client", "siosia", 48 * 60);
+    answer("siosia", b.id, "accept");
+    pushes = [];
+    send("client", `appt:${b.id}`, "About Thursday");
+    expect(sent()).toEqual(["chat_message>siosia"]);
+    expect(db.chatPresence).toEqual({ siosia: { [room]: now - 30_000 } });
+    // The stamp is per user: Toria's own tabs never make Siosia present.
+    pushes = [];
+    now += 60_000;
+    chat("client", room, true);
+    send("client", room, "One more");
+    expect(sent()).toEqual(["chat_message>siosia"]);
+  });
+
+  it("moves kids, kid ratings, messages, presence and photos with a profile into the app; deleting it removes them all, cards included (V49); a database saved before 2.3 works without the new keys", () => {
+    const z = kid("client", "Zosia");
+    photo("client", { kind: "profile" }, JPEG);
+    photo("client", { kind: "kid", id: z.id }, JPEG2);
+    const a = request("client", "siosia", 25 * 60, { kidIds: [z.id] });
+    answer("siosia", a.id, "accept");
+    const room: ChatRoom = `appt:${a.id}`;
+    send("client", room, "Hi");
+    send("siosia", room, "Hello");
+    chat("client", room, true); // read: present in the room
+    // Toria also rates a kid as a provider (the rating she GAVE moves with her).
+    at((e) => e.setOffers("client", ["learning"]));
+    const ewa = kid("other", "Ewa jr");
+    const b = request("other", "client", 48 * 60, { service: "learning", duration: 60, kidIds: [ewa.id] });
+    answer("client", b.id, "accept");
+    now = a.endsAt + MIN;
+    rateKid("siosia", a.id, z.id, 5);
+    now = b.endsAt + MIN;
+    rateKid("client", b.id, ewa.id, 4, "Bright");
+    const { code: move } = at((e) => e.createTransfer("client"));
+    at((e) => e.join("app", "pilot", "dev-app"));
+    at((e) => e.redeemTransfer("app", move, "dev-app"));
+    // The app has it all: the kid with its photo and rating, my photo, the thread with `mine` right, the presence, the rating given.
+    expect(kids("app")).toEqual([expect.objectContaining({ id: z.id, name: "Zosia", photo: JPEG2, rating: { mean: 5, count: 1 } })]);
+    expect(at((e) => e.getProfile("app"))!.photo).toBe(JPEG);
+    expect(chat("app", room).messages.map((m) => [m.text, m.mine])).toEqual([
+      ["Hi", true],
+      ["Hello", false]
+    ]);
+    expect(chat("siosia", room).messages.map((m) => m.mine)).toEqual([false, true]);
+    expect(db.messages!.filter((m) => m.sender === "client")).toEqual([]);
+    expect(db.chatPresence).toEqual({ app: { [room]: expect.any(Number) } });
+    expect(db.kidRatings!.find((g) => g.kidId === ewa.id)).toMatchObject({ fromUser: "app", stars: 4 });
+    expect(kids("other")[0].ratings).toEqual([expect.objectContaining({ by: "Toria", stars: 4, comment: "Bright" })]);
+    expect(code(() => kids("client"))).toBe("not_member");
+    const snapshot = structuredClone(db);
+    // Deleting the profile: kids with attachments and ratings, messages sent, presence, photos — gone;
+    // the provider's history shows no card of the kid (V44, V49). The rating given stays as a deleted user's.
+    const c = request("app", "siosia", 25 * 60, { kidIds: [z.id] });
+    answer("siosia", c.id, "accept");
+    expect(getAppt("siosia", c.id).kids.map((k) => k.name)).toEqual(["Zosia"]);
+    at((e) => e.deleteProfile("app"));
+    expect(Object.values(db.kids!).map((k) => [k.name, k.ownerId])).toEqual([["Ewa jr", "other"]]); // Ewa's kid stays
+    expect(db.appointmentKids![c.id]).toEqual([]);
+    expect(db.kidRatings!.map((g) => g.kidId)).toEqual([ewa.id]);
+    expect(db.messages!.filter((m) => m.sender === "app")).toEqual([]);
+    expect(db.messages!.map((m) => m.text)).toEqual(["Hello"]);
+    expect(db.chatPresence).toEqual({});
+    expect(db.photos).toEqual({});
+    expect(db.users.app.photoPath).toBeNull();
+    expect(at((e) => e.timeline("siosia"))[0]).toMatchObject({
+      kind: "appointment",
+      appointment: { id: c.id, status: "cancelled", cancelReason: "user_gone", kids: [], kidCount: 0, client: { nickname: "Deleted user", photo: null } }
+    });
+    expect(chat("siosia", room).messages.map((m) => [m.text, m.mine])).toEqual([["Hello", true]]);
+    expect(kids("other")[0].ratings).toEqual([expect.objectContaining({ by: "Deleted user", stars: 4 })]);
+    // Before 2.3 none of the new keys existed.
+    const old = snapshot as Partial<DbState>;
+    delete old.kids;
+    delete old.appointmentKids;
+    delete old.kidRatings;
+    delete old.messages;
+    delete old.photos;
+    delete old.chatPresence;
+    db = old as DbState;
+    expect(at((e) => e.myState("siosia"))).toMatchObject({ unreadChats: 0 });
+    expect(getAppt("siosia", a.id)).toMatchObject({ kids: [], kidCount: 0, unread: 0, client: { photo: null } });
+    expect(kids("app")).toEqual([]);
+    expect(code(() => kid("app", "Kuba"))).toBe("ok");
+    expect(code(() => send("app", room, "Hello again"))).toBe("ok");
+    expect(code(() => chat("app", room, true))).toBe("ok");
+    expect(code(() => photo("app", { kind: "profile" }, JPEG))).toBe("ok");
+    expect(code(() => at((e) => e.deleteProfile("app")))).toBe("ok");
   });
 });

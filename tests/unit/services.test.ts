@@ -1,11 +1,15 @@
 // Routing fallback (FR-031/032), the mock backend through the Backend interface with its realtime
 // bus (FR-070), presence expiry of a killed tab (FR-042), and i18n completeness (FR-073, NFR-11).
+// 2.3: a live chat over the bus, a photo from a Blob, the robot's one chat answer.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONFIG, DEFAULT_SERVICES } from "../../src/core/defaults";
 import { destination } from "../../src/core/geo";
+import type { ChatMessage, ChatRoom } from "../../src/core/types";
+import type { PushMessage } from "../../src/backend/types";
 import { MockBackend } from "../../src/backend/mock/index";
 import { MockBus } from "../../src/backend/mock/bus";
+import { SupabaseBackend } from "../../src/backend/supabase/index";
 import { RobotSiosia } from "../../src/backend/mock/siosiaRobot";
 import { resetMockDb } from "../../src/backend/mock/store";
 import { en } from "../../src/i18n/en";
@@ -297,6 +301,142 @@ describe("mock backend (FR-070)", () => {
     }
   });
 
+  it("runs a 2.3 round trip: a photo from a Blob, kids on a request, a live chat over the bus with read marks", async () => {
+    resetMockDb();
+    const bus = new MockBus("test-bus-" + Math.random());
+    const cfg = { ...DEFAULT_CONFIG, inviteCode: null };
+    const client = new MockBackend("c1", cfg, { bus, sweep: false });
+    const siosia = new MockBackend("s1", cfg, { bus, sweep: false });
+    const other = new MockBackend("o1", cfg, { bus, sweep: false });
+    await client.saveProfile("Toria", "en");
+    await siosia.saveProfile("Siosia", "pl");
+    await other.saveProfile("Ewa", "pl");
+    await siosia.setOffers(["childcare"]);
+    // A photo from a Blob: stored as a data URL (the demo's bucket), served back as the "signed URL"; null clears it.
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+    const url = await client.setPhoto({ kind: "profile" }, new Blob([bytes], { type: "image/jpeg" }));
+    expect(url).toBe("data:image/jpeg;base64," + btoa(String.fromCharCode(...bytes)));
+    expect((await client.getProfile())!.photo).toBe(url);
+    await expect(client.setPhoto({ kind: "profile" }, new Blob(["<svg/>"], { type: "image/svg+xml" }))).rejects.toMatchObject({ code: "bad_input" });
+    const zosia = await client.addKid({ name: "Zosia", bornYear: 2018, note: "Nut allergy" });
+    expect(await client.setPhoto({ kind: "kid", id: zosia.id }, new Blob([bytes], { type: "image/jpeg" }))).toBe(url);
+    expect((await client.kids())[0]).toMatchObject({ name: "Zosia", photo: url });
+    expect(await client.setPhoto({ kind: "profile" }, null)).toBeNull();
+    expect((await client.getProfile())!.photo).toBeNull();
+    // Her request with Zosia; the catalog shows Siosia's photo to whoever browses.
+    await siosia.setPhoto({ kind: "profile" }, new Blob([bytes], { type: "image/jpeg" }));
+    const entry = (await client.catalog()).find((e) => e.id === "childcare")!;
+    expect(entry.providers[0]).toMatchObject({ nickname: "Siosia", photo: url });
+    const heard = new Promise<PushMessage>((resolve) => siosia.onPush((m) => resolve(m)));
+    const a = await client.requestService({ serviceId: "childcare", providerId: entry.providers[0].publicId!, kidIds: [zosia.id], startsAt: Date.now() + 26 * 3600_000, durationMin: 180, place: { ...A, label: "Dom" }, note: "" });
+    expect(await heard).toMatchObject({ kind: "appt_new", appointmentId: a.id, params: { kids: ["Zosia"] } });
+    const room: ChatRoom = `appt:${a.id}`;
+    await expect(client.chat(room)).rejects.toMatchObject({ code: "not_found" }); // no room before acceptance
+    await siosia.answerAppointment(a.id, "accept");
+    expect((await siosia.getAppointment(a.id)).kids).toEqual([expect.objectContaining({ name: "Zosia", photo: url, note: "Nut allergy", age: new Date().getUTCFullYear() - 2018 })]);
+    // Messages arrive live on both sides (and in the sender's own tabs); other rooms and other people hear nothing.
+    const toSiosia: ChatMessage[] = [];
+    const toClient: ChatMessage[] = [];
+    const stray = vi.fn();
+    const unsubS = siosia.onMessage(room, (m) => toSiosia.push(m));
+    const unsubC = client.onMessage(room, (m) => toClient.push(m));
+    const unsubX = client.onMessage("appt:elsewhere", stray);
+    const unsubO = other.onMessage(room, stray);
+    const pushed = new Promise<PushMessage>((resolve) => siosia.onPush((m) => resolve(m)));
+    const sent = await client.sendMessage(room, "Zosia has a nut allergy");
+    expect(sent).toMatchObject({ room, mine: true, text: "Zosia has a nut allergy", readAt: null });
+    await vi.waitFor(() => expect(toSiosia).toHaveLength(1));
+    expect(toSiosia[0]).toEqual({ ...sent, mine: false });
+    await vi.waitFor(() => expect(toClient).toHaveLength(1));
+    expect(toClient[0]).toEqual(sent);
+    expect(await pushed).toMatchObject({ kind: "chat_message", appointmentId: a.id, rideId: null, params: { sender: "Toria", text: "Zosia has a nut allergy", room } });
+    expect((await siosia.myState()).unreadChats).toBe(1);
+    expect((await siosia.planned()).appointments[0].unread).toBe(1);
+    await expect(other.chat(room)).rejects.toMatchObject({ code: "not_found" });
+    await expect(other.sendMessage(room, "Hi")).rejects.toMatchObject({ code: "not_found" });
+    // Reading marks it; the sender sees the mark on the next read.
+    const clientChanged = vi.fn();
+    client.onMyChanges(clientChanged);
+    const thread = await siosia.chat(room, true);
+    expect(thread).toMatchObject({ room, other: expect.objectContaining({ nickname: "Toria", photo: null }), open: true, unread: 0 });
+    expect(thread.messages[0].readAt).toEqual(expect.any(Number));
+    await vi.waitFor(() => expect(clientChanged).toHaveBeenCalled());
+    expect((await client.chat(room)).messages[0].readAt).toBe(thread.messages[0].readAt);
+    expect((await siosia.myState()).unreadChats).toBe(0);
+    await siosia.sendMessage(room, "Noted 🙂");
+    await vi.waitFor(() => expect(toClient).toHaveLength(2));
+    expect(toClient[1]).toMatchObject({ mine: false, text: "Noted 🙂", readAt: null });
+    expect(stray).not.toHaveBeenCalled();
+    unsubS();
+    unsubC();
+    unsubX();
+    unsubO();
+    // Stored: a reload shows the thread.
+    expect((await client.chat(room)).messages.map((m) => [m.mine, m.text])).toEqual([
+      [true, "Zosia has a nut allergy"],
+      [false, "Noted 🙂"]
+    ]);
+    await client.removeKid(zosia.id);
+    expect((await siosia.getAppointment(a.id)).kids).toEqual([]);
+    client.dispose();
+    siosia.dispose();
+    other.dispose();
+  });
+
+  it("demo: the robot Siosia answers a chat once per room, ~3 s after the first message, in the other side's language (2.3)", async () => {
+    resetMockDb();
+    resetRoutingState();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("offline"); // the straight-line route fallback
+      })
+    );
+    try {
+      const cfg = { ...DEFAULT_CONFIG, inviteCode: null };
+      const robot = new RobotSiosia(cfg, { ...destination(A, 210, 1.2), label: "Siosia" });
+      await robot.init();
+      const client = new MockBackend("c1", cfg, { sweep: false });
+      await client.saveProfile("Toria", "pl");
+      const providerId = (await client.catalog()).find((e) => e.id === "childcare")!.providers[0].publicId!;
+      const q = (ms: number) => Math.ceil(ms / 900_000) * 900_000;
+      const ask = (startsAt: number) => client.requestService({ serviceId: "childcare", providerId, startsAt, durationMin: 120, place: { ...A, label: "Dom" }, note: "" });
+      const a = await ask(q(Date.now() + 3 * 3600_000));
+      const b = await ask(q(Date.now() + 26 * 3600_000));
+      const t0 = Date.now();
+      await robot.tick(t0);
+      await robot.tick(t0 + 2000); // both accepted; she attaches no kids
+      expect(await client.getAppointment(a.id)).toMatchObject({ status: "accepted", kids: [], kidCount: 0 });
+      const roomA: ChatRoom = `appt:${a.id}`;
+      const roomB: ChatRoom = `appt:${b.id}`;
+      await client.sendMessage(roomA, "Dzięki, do zobaczenia!");
+      await client.sendMessage(roomB, "See you tomorrow");
+      const t1 = t0 + 10_000;
+      await robot.tick(t1); // she notices…
+      await robot.tick(t1 + 2000);
+      expect((await client.chat(roomA)).messages).toHaveLength(1); // …and takes her time
+      await robot.tick(t1 + 3000);
+      const ta = await client.chat(roomA);
+      expect(ta.messages.map((m) => [m.mine, m.text])).toEqual([
+        [true, "Dzięki, do zobaczenia!"],
+        [false, "Dzięki, będę na czas 🙂"]
+      ]);
+      expect(ta.messages[0].readAt).toEqual(expect.any(Number)); // she read it
+      expect((await client.chat(roomB)).messages.map((m) => m.text)).toEqual(["See you tomorrow", "Thanks, I will be there on time 🙂"]);
+      // Once per room: later messages are read, not answered.
+      await client.sendMessage(roomA, "Super");
+      await robot.tick(t1 + 10_000);
+      await robot.tick(t1 + 20_000);
+      const again = await client.chat(roomA);
+      expect(again.messages).toHaveLength(3);
+      expect(again.messages[2]).toMatchObject({ mine: true, text: "Super", readAt: expect.any(Number) });
+      robot.stop();
+      client.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("publishes driver presence under a random key, never the user id", () => {
     const bus = new MockBus("test-bus-" + Math.random());
     const driver = new MockBackend("driver-uid", { ...DEFAULT_CONFIG, inviteCode: null }, { bus, sweep: false });
@@ -312,6 +452,83 @@ describe("mock backend (FR-070)", () => {
     expect(key2).not.toBe(key1); // a new idle period cannot be linked to the previous one
     h2.close();
     driver.dispose();
+  });
+});
+
+describe("SupabaseBackend adapter: photos (2.3, C2, C17)", () => {
+  const UID = "11111111-2222-3333-4444-555555555555";
+  /** The adapter over a fake supabase-js client: rpc answers from `answer`, a recording Storage API. */
+  function adapter(answer: (fn: string, args: Record<string, unknown>) => unknown) {
+    const calls: [string, Record<string, unknown>][] = [];
+    const storage = {
+      upload: vi.fn(async () => ({ error: null })),
+      remove: vi.fn(async () => ({ error: null })),
+      createSignedUrls: vi.fn(async (paths: string[]) => ({ data: paths.map((p) => ({ path: p, signedUrl: `https://signed/${p}` })) }))
+    };
+    const sb = {
+      rpc: vi.fn(async (fn: string, args: Record<string, unknown> = {}) => {
+        calls.push([fn, args]);
+        return { data: answer(fn, args), error: null };
+      }),
+      storage: { from: () => storage }
+    };
+    const b = new SupabaseBackend("https://example.supabase.co", "publishable-key");
+    (b as unknown as { sb: unknown }).sb = sb;
+    (b as unknown as { uid: string }).uid = UID;
+    return { b, storage, calls, names: () => calls.map(([f]) => f) };
+  }
+  const state = (ride: unknown) => ({ ok: { serverNow: Date.now(), ride, offer: null, hasProfile: true } });
+
+  it("deleteProfile asks the server about an active ride before any photo object goes; without one the objects go, then the profile (C2)", async () => {
+    let ride: unknown = { id: "r1", status: "accepted", role: "rider" };
+    const { b, storage, names } = adapter((fn) => {
+      if (fn === "siosia_my_state") return state(ride);
+      if (fn === "siosia_my_photo_paths") return { ok: ["profile/pub-1/a.jpg", "kid/pub-1/k1/b.jpg"] };
+      return { ok: true };
+    });
+    await expect(b.deleteProfile()).rejects.toMatchObject({ code: "active_ride" });
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(names()).toEqual(["siosia_my_state"]); // nothing else was touched
+    ride = { id: "r1", status: "in_progress", role: "driver" };
+    await expect(b.deleteProfile()).rejects.toMatchObject({ code: "active_ride" });
+    expect(storage.remove).not.toHaveBeenCalled();
+    ride = null;
+    await b.deleteProfile();
+    expect(storage.remove).toHaveBeenCalledTimes(1);
+    expect(storage.remove).toHaveBeenCalledWith(["profile/pub-1/a.jpg", "kid/pub-1/k1/b.jpg"]);
+    expect(names().slice(2)).toEqual(["siosia_my_state", "siosia_my_photo_paths", "siosia_delete_profile"]);
+  });
+
+  it("setPhoto keys the object on the profile's public id — never the auth uid, which the signed URL would show the other party (C17)", async () => {
+    const { b, storage, calls } = adapter((fn) => {
+      if (fn === "siosia_get_profile") return { ok: { userId: UID, nickname: "Toria", language: "en", publicId: "pub-Ab12_-", photoPath: null } };
+      return { ok: null };
+    });
+    const jpeg = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])], { type: "image/jpeg" });
+    const url = await b.setPhoto({ kind: "profile" }, jpeg);
+    expect(storage.upload).toHaveBeenCalledTimes(1);
+    const [path, blob, opts] = storage.upload.mock.calls[0] as unknown as [string, Blob, { contentType: string }];
+    expect(path).toMatch(/^profile\/pub-Ab12_-\/[A-Za-z0-9_-]+\.jpg$/);
+    expect(path).not.toContain(UID);
+    expect(blob).toBe(jpeg);
+    expect(opts.contentType).toBe("image/jpeg");
+    expect(calls.find(([f]) => f === "siosia_set_photo")![1]).toEqual({ p_kind: "profile", p_kid: null, p_path: path });
+    expect(url).toBe(`https://signed/${path}`);
+    // A kid's photo: under the kid's id in my folder.
+    await b.setPhoto({ kind: "kid", id: "k1" }, jpeg);
+    const kidPath = (storage.upload.mock.calls[1] as unknown as [string])[0];
+    expect(kidPath).toMatch(/^kid\/pub-Ab12_-\/k1\/[A-Za-z0-9_-]+\.jpg$/);
+    expect(kidPath).not.toContain(UID);
+    expect(calls.filter(([f]) => f === "siosia_get_profile")).toHaveLength(1); // the folder is fetched once
+    // Clearing uploads nothing and removes the old object the function returns.
+    expect(await b.setPhoto({ kind: "profile" }, null)).toBeNull();
+    expect(storage.upload).toHaveBeenCalledTimes(2);
+  });
+
+  it("setPhoto refuses to upload for an account without a profile (no folder to put it in)", async () => {
+    const { b, storage } = adapter((fn) => ({ ok: fn === "siosia_get_profile" ? null : true }));
+    await expect(b.setPhoto({ kind: "profile" }, new Blob(["x"], { type: "image/jpeg" }))).rejects.toMatchObject({ code: "no_profile" });
+    expect(storage.upload).not.toHaveBeenCalled();
   });
 });
 

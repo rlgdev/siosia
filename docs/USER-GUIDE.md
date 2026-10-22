@@ -186,6 +186,28 @@ The event has the place, the other person, the rides you may see and reminders (
 before). A repeating series is one repeating event without the cancelled dates. The calendar entry
 is a copy: **it doesn't update by itself** — open the link again after a change.
 
+## Your kids
+
+☰ → **My kids**: add a child's first name, optionally a photo, year of birth and a note (allergies,
+what helps). Only you see this list. When you ask for *Childcare* (or any help), tick the kids it
+is about; the person who takes it sees their names, photos, ages and notes — nobody else does
+(someone deciding whether to take an open request sees only "2 kids", and a driver sees nothing).
+After the appointment, the person who helped can give each kid 1–5 stars with a few words; you see
+every rating on the kid's card, and the next person who looks after that kid sees the stars.
+
+## Photos
+
+☰ → tap the circle next to your nickname to add a photo from the camera or the gallery; the same
+on each kid's card. Photos are shrunk on your phone before they leave it, are shown only to the
+people you ride or plan with, and can be removed any time.
+
+## Chat
+
+Once a driver has taken your ride, or an appointment is confirmed, a 💬 button appears on it: write
+to the other person, see when they read it, and get a notification when they write (not while they
+are driving — the message waits in the thread). The chat stays open until a day after the ride or
+appointment ends, then becomes read-only, and is deleted with it.
+
 ## The round *i*
 
 Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
@@ -409,6 +431,28 @@ Przy potwierdzonym terminie, całej serii i zarezerwowanym przejeździe: **Dodaj
 aplikacji kalendarza). Wydarzenie ma miejsce, drugą osobę, przejazdy, które możesz widzieć, i
 przypomnienia (przejazd: 30 minut przed). Seria to jedno powtarzane wydarzenie bez odwołanych
 terminów. Wpis w kalendarzu to kopia: **sam się nie aktualizuje** — po zmianie otwórz link ponownie.
+
+## Twoje dzieci
+
+☰ → **Moje dzieci**: dodaj imię dziecka, opcjonalnie zdjęcie, rok urodzenia i notatkę (alergie, co
+pomaga). Listę widzisz tylko Ty. Prosząc o *Opiekę nad dziećmi* (lub inną pomoc), zaznacz, których
+dzieci dotyczy; osoba, która się podejmie, zobaczy ich imiona, zdjęcia, wiek i notatki — nikt
+inny (ktoś, kto rozważa otwartą prośbę, widzi tylko „2 dzieci”, a kierowca nic). Po terminie osoba,
+która pomogła, może dać każdemu dziecku 1–5 gwiazdek z kilkoma słowami; każdą ocenę widzisz na
+karcie dziecka, a kolejna osoba opiekująca się tym dzieckiem widzi gwiazdki.
+
+## Zdjęcia
+
+☰ → dotknij kółka obok pseudonimu, by dodać zdjęcie z aparatu lub galerii; tak samo na karcie
+każdego dziecka. Zdjęcia są zmniejszane w telefonie, zanim go opuszczą, widzą je tylko osoby, z
+którymi jedziesz lub planujesz, i można je usunąć w każdej chwili.
+
+## Czat
+
+Gdy kierowca weźmie Twój kurs albo termin zostanie potwierdzony, pojawia się przy nim przycisk 💬:
+napisz do drugiej osoby, zobacz, kiedy przeczyta, i dostań powiadomienie, gdy odpisze (nie w
+trakcie jazdy — wiadomość czeka w wątku). Czat jest otwarty do dnia po zakończeniu kursu lub
+terminu, potem można go tylko czytać, a znika razem z nim.
 
 ## Okrągłe *i*
 

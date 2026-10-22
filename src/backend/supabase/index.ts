@@ -2,16 +2,25 @@
 // SQL functions (supabase/migrations/0001_siosia.sql) that enforce the lifecycle, the atomic claim
 // and the access rules; tables are not readable or writable directly. Realtime uses PRIVATE
 // channels authorised by policies on realtime.messages. Only the publishable key reaches the browser.
+// 2.3: photos live in the private bucket "photos"; the functions return an object's PATH only to a
+// viewer allowed to see it, and this adapter turns every path into a signed URL (≤ 1 h) before the
+// UI sees the result (FR-212). Chat rides on the user channel: a "changed" event refetches the thread.
 
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import { DEFAULT_CONFIG } from "../../core/defaults";
 import {
+  ACTIVE_STATUSES,
   ServerError,
   type AppointmentView,
   type BookingInput,
   type CatalogItem,
+  type ChatMessage,
+  type ChatRoom,
+  type ChatThread,
   type DeploymentConfig,
   type HistoryItem,
+  type Kid,
+  type KidInput,
   type Leg,
   type Place,
   type Planned,
@@ -51,12 +60,44 @@ const randomKey = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 const PING_TIMEOUT_MS = 5000;
 const REBUILD_DELAY_MS = 2000;
+const PHOTOS_BUCKET = "photos";
+/** A signed photo URL lives an hour (FR-212); one is reused for 50 minutes, then signed again. */
+const SIGNED_URL_S = 3600;
+const SIGNED_CACHE_MS = 50 * 60_000;
 
-// A database not upgraded to 2.1 yet (the migration is re-run on release) leaves out the 2.1
-// fields: no open requests, no paint.
-const withOpen = (a: AppointmentView): AppointmentView => ({ ...a, open: a.open ?? false });
-const withOpenCount = (s: MyState): MyState => ({ ...s, openRequests: s.openRequests ?? 0 });
+// A database not upgraded to 2.1 / 2.3 yet (the migration is re-run on release) leaves out the
+// newer fields: no open requests, no paint, no kids or chat counts, no photo.
+const withOpen = (a: AppointmentView): AppointmentView => ({ ...a, open: a.open ?? false, kids: a.kids ?? [], kidCount: a.kidCount ?? 0, unread: a.unread ?? 0 });
+const withOpenCount = (s: MyState): MyState => ({ ...s, openRequests: s.openRequests ?? 0, unreadChats: s.unreadChats ?? 0 });
 const withPaint = (v: Vehicle): Vehicle => ({ ...v, paint: v.paint ?? null });
+const withPhoto = (p: Profile): Profile => ({ ...p, photo: p.photo ?? null });
+
+/** Every `photoPath` in a result — the server puts one only where this viewer may see that photo (V46). */
+function photoPaths(v: unknown, out: Set<string>): void {
+  if (Array.isArray(v)) {
+    for (const x of v) photoPaths(x, out);
+  } else if (v && typeof v === "object") {
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+      if (k === "photoPath" && typeof x === "string") out.add(x);
+      else photoPaths(x, out);
+    }
+  }
+}
+
+/** Replaces each `photoPath` with `photo` — the signed URL, or null — so no path reaches the UI. */
+function placePhotos(v: unknown, urls: Map<string, string>): void {
+  if (Array.isArray(v)) {
+    for (const x of v) placePhotos(x, urls);
+  } else if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if ("photoPath" in o) {
+      const p = o.photoPath;
+      delete o.photoPath;
+      o.photo = typeof p === "string" ? (urls.get(p) ?? null) : null;
+    }
+    for (const x of Object.values(o)) placePhotos(x, urls);
+  }
+}
 
 /** Maps GoTrue errors to messages the user can act on (instead of a generic "unavailable"). */
 function authError(e: { status?: number; code?: string; message: string }): ServerError {
@@ -112,6 +153,16 @@ export class SupabaseBackend implements Backend {
   private readonly sb: SupabaseClient;
   private uid = "";
   private drivers: DriversChannel | null = null;
+  private user: UserChannel | null = null;
+  /** Signed photo URLs by object path, reused until shortly before they expire. */
+  private readonly signed = new Map<string, { url: string; until: number }>();
+  /**
+   * My profile's public id: the folder my photo objects live in (profile/<publicId>/…). Never the
+   * auth uid — a signed URL is shown to the other party, who must not learn it (C17).
+   */
+  private publicId: string | null = null;
+  /** Open chat threads (onMessage): the ids each has delivered, so a message is emitted once. */
+  private readonly chatSubs = new Set<{ room: string; seen: Set<string> }>();
 
   constructor(url: string, key: string) {
     this.sb = createClient(url, key, {
@@ -125,7 +176,66 @@ export class SupabaseBackend implements Backend {
     if (error) throw new ServerError("unavailable", error.message);
     const res = data as RpcResult<T> | null;
     if (res && typeof res === "object" && "error" in res && res.error) throw new ServerError(res.error);
-    return (res && typeof res === "object" && "ok" in res ? res.ok : res) as T;
+    return this.withPhotos((res && typeof res === "object" && "ok" in res ? res.ok : res) as T);
+  }
+
+  /** Every profile the server returns: its photo field, and its public id (the photo folder). */
+  private profile(p: Profile): Profile;
+  private profile(p: Profile | null): Profile | null;
+  private profile(p: Profile | null): Profile | null {
+    if (!p) return null;
+    this.publicId = p.publicId ?? null;
+    return withPhoto(p);
+  }
+
+  /** The folder of my photo objects: the profile's public id, fetched once when no profile passed yet. */
+  private async photoFolder(): Promise<string> {
+    if (!this.publicId) this.profile(await this.rpc<Profile | null>("siosia_get_profile"));
+    if (!this.publicId) throw new ServerError("no_profile");
+    return this.publicId;
+  }
+
+  /** Signs every photo path of a result (one Storage call for all of them) — see placePhotos. */
+  private async withPhotos<T>(value: T): Promise<T> {
+    const paths = new Set<string>();
+    photoPaths(value, paths);
+    if (paths.size) placePhotos(value, await this.signPhotos([...paths]));
+    return value;
+  }
+
+  private async signPhotos(paths: string[]): Promise<Map<string, string>> {
+    const now = Date.now();
+    const urls = new Map<string, string>();
+    const todo: string[] = [];
+    for (const p of paths) {
+      const c = this.signed.get(p);
+      if (c && c.until > now) urls.set(p, c.url);
+      else todo.push(p);
+    }
+    if (todo.length) {
+      try {
+        const { data } = await this.sb.storage.from(PHOTOS_BUCKET).createSignedUrls(todo, SIGNED_URL_S);
+        for (const d of data ?? []) {
+          if (d.path && d.signedUrl) {
+            urls.set(d.path, d.signedUrl);
+            this.signed.set(d.path, { url: d.signedUrl, until: now + SIGNED_CACHE_MS });
+          }
+        }
+      } catch {
+        // No URL: the icon stands in for the photo until the next fetch.
+      }
+    }
+    return urls;
+  }
+
+  /** Removes photo objects this account no longer needs (best effort: a leftover is unreadable anyway). */
+  private async removePhotos(paths: string[]): Promise<void> {
+    for (const p of paths) this.signed.delete(p);
+    try {
+      await this.sb.storage.from(PHOTOS_BUCKET).remove(paths);
+    } catch {
+      // The row's path moved on already; the object is dead to every reader.
+    }
   }
 
   async start(): Promise<string> {
@@ -226,17 +336,17 @@ export class SupabaseBackend implements Backend {
   createTransfer() {
     return this.rpc<{ code: string; expiresAt: number }>("siosia_create_transfer");
   }
-  redeemTransfer(code: string, deviceId: string, replace = false) {
-    return this.rpc<Profile>("siosia_redeem_transfer", { p_code: code, p_device: deviceId, p_replace: replace });
+  async redeemTransfer(code: string, deviceId: string, replace = false) {
+    return this.profile(await this.rpc<Profile>("siosia_redeem_transfer", { p_code: code, p_device: deviceId, p_replace: replace }));
   }
-  joinMaster(token: string, deviceId: string, language: Lang, replace = false) {
-    return this.rpc<Profile>("siosia_join_master", { p_token: token, p_device: deviceId, p_language: language, p_replace: replace });
+  async joinMaster(token: string, deviceId: string, language: Lang, replace = false) {
+    return this.profile(await this.rpc<Profile>("siosia_join_master", { p_token: token, p_device: deviceId, p_language: language, p_replace: replace }));
   }
-  getProfile() {
-    return this.rpc<Profile | null>("siosia_get_profile");
+  async getProfile() {
+    return this.profile(await this.rpc<Profile | null>("siosia_get_profile"));
   }
-  saveProfile(nickname: string, language: Lang) {
-    return this.rpc<Profile>("siosia_save_profile", { p_nickname: nickname, p_language: language });
+  async saveProfile(nickname: string, language: Lang) {
+    return this.profile(await this.rpc<Profile>("siosia_save_profile", { p_nickname: nickname, p_language: language }));
   }
   async getVehicle() {
     const v = await this.rpc<Vehicle | null>("siosia_get_vehicle");
@@ -257,7 +367,16 @@ export class SupabaseBackend implements Backend {
     return withPaint(await this.rpc<Vehicle>("siosia_set_car_colour", { p_colour: colour, p_paint: paint }));
   }
   async deleteProfile() {
+    // The function refuses a deletion during an active ride (active_ride): ask the server first, so
+    // a refused deletion leaves the photos as they are (C2). Then the photo objects go, through the
+    // Storage API (that removes the files); the function then deletes the kids and drops any object
+    // row left (FR-200) — the backstop for a leftover. An older database has no paths.
+    const my = await this.myState();
+    if (my.ride && ACTIVE_STATUSES.includes(my.ride.status)) throw new ServerError("active_ride");
+    const paths = await this.rpc<string[]>("siosia_my_photo_paths").catch(() => [] as string[]);
+    if (paths.length) await this.removePhotos(paths);
     await this.rpc("siosia_delete_profile");
+    this.publicId = null;
   }
   async myState() {
     return withOpenCount(await this.rpc<MyState>("siosia_my_state"));
@@ -318,8 +437,8 @@ export class SupabaseBackend implements Backend {
   catalog() {
     return this.rpc<CatalogItem[]>("siosia_catalog");
   }
-  requestService(input: ServiceRequestInput) {
-    return this.rpc<AppointmentView>("siosia_request_service", {
+  async requestService(input: ServiceRequestInput) {
+    const args: Record<string, unknown> = {
       p_service: input.serviceId,
       // null = an open request to anyone in the group (2.1)
       p_provider: input.providerId ?? null,
@@ -328,7 +447,10 @@ export class SupabaseBackend implements Backend {
       p_place: input.place,
       p_note: input.note,
       p_repeat: input.repeat ?? null
-    });
+    };
+    // 2.3 overload (kids to attach); the 2.0 signature stays for a request without them.
+    if (input.kidIds && input.kidIds.length) args.p_kids = input.kidIds;
+    return withOpen(await this.rpc<AppointmentView>("siosia_request_service", args));
   }
   takeRequest(id: string) {
     return this.rpc<AppointmentView>("siosia_take_request", { p_id: id });
@@ -355,27 +477,116 @@ export class SupabaseBackend implements Backend {
   timeline() {
     return this.rpc<HistoryItem[]>("siosia_timeline");
   }
-  setOffers(ids: string[]) {
-    return this.rpc<Profile>("siosia_set_offers", { p_ids: ids });
+  async setOffers(ids: string[]) {
+    return this.profile(await this.rpc<Profile>("siosia_set_offers", { p_ids: ids }));
   }
-  saveHome(place: Place | null) {
-    return this.rpc<Profile>("siosia_save_home", { p_place: place });
+  async saveHome(place: Place | null) {
+    return this.profile(await this.rpc<Profile>("siosia_save_home", { p_place: place }));
   }
   async rateAppointment(id: string, stars: number, comment: string) {
     await this.rpc("siosia_rate_appointment", { p_id: id, p_stars: stars, p_comment: comment });
   }
 
+  // ---------- 2.3: kids, photos, chat ----------
+
+  kids() {
+    return this.rpc<Kid[]>("siosia_kids");
+  }
+  addKid(input: KidInput) {
+    return this.rpc<Kid>("siosia_add_kid", { p_kid: input });
+  }
+  updateKid(id: string, input: KidInput) {
+    return this.rpc<Kid>("siosia_update_kid", { p_id: id, p_kid: input });
+  }
+  async removeKid(id: string) {
+    // Clear the photo while the kid row still exists: the delete policy needs the row to allow the
+    // object's removal (B9). The server then drops the object row itself as a backstop.
+    await this.setPhoto({ kind: "kid", id }, null);
+    await this.rpc<string | null>("siosia_remove_kid", { p_id: id });
+  }
+  async setAppointmentKids(id: string, kidIds: string[]) {
+    return withOpen(await this.rpc<AppointmentView>("siosia_set_appointment_kids", { p_id: id, p_kids: kidIds }));
+  }
+  async rateKid(appointmentId: string, kidId: string, stars: number, comment: string) {
+    await this.rpc("siosia_rate_kid", { p_id: appointmentId, p_kid: kidId, p_stars: stars, p_comment: comment });
+  }
+  /**
+   * Uploads the (already resized) JPEG under a fresh random name in my own folder — keyed on the
+   * profile's PUBLIC id, profile/<publicId>/<random>.jpg or kid/<publicId>/<kidId>/<random>.jpg,
+   * since the signed URL of the object is shown to the other party and must not carry the auth uid
+   * (C17; the upload policy and siosia_set_photo check the folder is mine) — then stores its path on
+   * the row; the old object is removed. null clears.
+   */
+  async setPhoto(target: { kind: "profile" } | { kind: "kid"; id: string }, jpeg: Blob | null) {
+    const kidId = target.kind === "kid" ? target.id : null;
+    let path: string | null = null;
+    if (jpeg) {
+      const folder = await this.photoFolder();
+      path = target.kind === "profile" ? `profile/${folder}/${randomKey()}.jpg` : `kid/${folder}/${kidId}/${randomKey()}.jpg`;
+      const { error } = await this.sb.storage.from(PHOTOS_BUCKET).upload(path, jpeg, { upsert: true, contentType: "image/jpeg" });
+      if (error) throw new ServerError("unavailable", error.message);
+    }
+    let old: string | null;
+    try {
+      old = await this.rpc<string | null>("siosia_set_photo", { p_kind: target.kind, p_kid: kidId, p_path: path });
+    } catch (e) {
+      if (path) void this.removePhotos([path]); // the row never pointed at it
+      throw e;
+    }
+    if (old && old !== path) await this.removePhotos([old]);
+    return path ? ((await this.signPhotos([path])).get(path) ?? null) : null;
+  }
+  chat(room: ChatRoom, markRead = false) {
+    return this.rpc<ChatThread>("siosia_chat", { p_room: room, p_mark_read: markRead });
+  }
+  async sendMessage(room: ChatRoom, text: string) {
+    const m = await this.rpc<ChatMessage>("siosia_send_message", { p_room: room, p_text: text });
+    // The caller shows it from this result; the live feed on this device skips it.
+    for (const s of this.chatSubs) if (s.room === room) s.seen.add(m.id);
+    return m;
+  }
+  /**
+   * Live messages of a room: every "changed" on my user channel (the server sends one to both
+   * parties on a send) refetches the thread and emits the messages not delivered before. The first
+   * fetch only learns what is already there — the caller loaded the thread with chat().
+   */
+  onMessage(room: ChatRoom, cb: (m: ChatMessage) => void): Unsub {
+    const sub = { room, seen: new Set<string>() };
+    this.chatSubs.add(sub);
+    let primed = false;
+    let chain = Promise.resolve();
+    const pull = () => {
+      chain = chain.then(async () => {
+        const emit = primed;
+        primed = true;
+        try {
+          const t = await this.rpc<ChatThread>("siosia_chat", { p_room: room, p_mark_read: false });
+          for (const m of t.messages) {
+            if (sub.seen.has(m.id)) continue;
+            sub.seen.add(m.id);
+            if (emit) cb(m);
+          }
+        } catch {
+          // The next change tries again; the thread itself is reloaded by the screen.
+        }
+      });
+    };
+    const off = this.userChannel().add(pull);
+    return () => {
+      off();
+      this.chatSubs.delete(sub);
+    };
+  }
+
   // ---------- realtime ----------
 
+  private userChannel(): UserChannel {
+    if (!this.user) this.user = new UserChannel(this.sb, `user:${this.uid}`);
+    return this.user;
+  }
+
   onMyChanges(cb: () => void): Unsub {
-    const ch = resilientChannel(
-      this.sb,
-      `user:${this.uid}`,
-      { config: { private: true } },
-      (c) => void c.on("broadcast", { event: "changed" }, () => cb()),
-      () => cb() // (re)subscribed: events may have been missed meanwhile
-    );
-    return () => ch.close();
+    return this.userChannel().add(cb);
   }
 
   private driversChannel(): DriversChannel {
@@ -469,6 +680,48 @@ export class SupabaseBackend implements Backend {
 
   async signOut() {
     await this.sb.auth.signOut();
+  }
+}
+
+/**
+ * The one private "user:<uid>" channel of this client — realtime-js keeps one channel object per
+ * topic, so a second subscription to it would take over the first. Its "changed" events reach every
+ * listener: the app's refetch (onMyChanges) and each open chat thread (onMessage). Built with the
+ * first listener, closed with the last.
+ */
+class UserChannel {
+  private handle: ReturnType<typeof resilientChannel> | null = null;
+  private readonly listeners = new Set<() => void>();
+
+  constructor(
+    private readonly sb: SupabaseClient,
+    private readonly topic: string
+  ) {}
+
+  add(cb: () => void): Unsub {
+    this.listeners.add(cb);
+    if (this.handle) {
+      cb(); // joins a live channel: catch up once, as a fresh subscription would
+    } else {
+      this.handle = resilientChannel(
+        this.sb,
+        this.topic,
+        { config: { private: true } },
+        (c) => void c.on("broadcast", { event: "changed" }, () => this.fire()),
+        () => this.fire() // (re)subscribed: events may have been missed meanwhile
+      );
+    }
+    return () => {
+      this.listeners.delete(cb);
+      if (this.listeners.size === 0 && this.handle) {
+        this.handle.close();
+        this.handle = null;
+      }
+    };
+  }
+
+  private fire(): void {
+    for (const cb of [...this.listeners]) cb();
   }
 }
 

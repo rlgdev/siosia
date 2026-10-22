@@ -4,7 +4,7 @@
 // everyone in the group sees (FR-160); open requests of others lead to P1 (FR-161).
 
 import { useCallback, useEffect, useState } from "react";
-import { ProfileIcon } from "../components/ProfileIcon";
+import { Avatar, ProfileIcon } from "../components/ProfileIcon";
 import { profileIcon } from "../components/profileIcons";
 import { Money, Page, RatingBadge } from "../components/ui";
 import type { CatalogItem, LocalText } from "../core/types";
@@ -163,7 +163,7 @@ export function Catalog() {
                     <span className="providers">
                       {e.providers.map((p) => (
                         <span key={p.publicId ?? p.nickname} className="provider-chip">
-                          {p.icon && profileIcon(p.icon) ? <ProfileIcon icon={p.icon} size="sm" paint={p.paint} /> : null}
+                          <Avatar photo={p.photo} icon={p.icon} paint={p.paint} size="sm" />
                           {p.nickname} <RatingBadge rating={p.rating} />
                         </span>
                       ))}

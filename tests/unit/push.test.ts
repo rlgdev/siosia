@@ -1,11 +1,12 @@
 // Notifications: the shared texts (EN/PL, deployment time zone) and the push-dispatch logic that
 // sends the queued messages (with fakes for the database and the push service).
 
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { disablePush, enablePush, pushState } from "../../src/services/push";
-import { apptStatusText, leadText, pushText, rideLineText } from "../../supabase/functions/_shared/push-text";
-import { dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
+import { apptStatusText, CHAT_PUSH_CHARS, kidsText, leadText, pushText, rideLineText } from "../../supabase/functions/_shared/push-text";
+import { CHAT_GRACE_MS, dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
 
 const AT = Date.UTC(2026, 9, 12, 12, 30); // 14:30 in Warsaw (CEST)
 
@@ -197,6 +198,104 @@ describe("2.1 open request texts (FR-162, FR-164, V36, V37)", () => {
   });
 });
 
+describe("2.3 chat and kids texts (FR-202, FR-222, V48)", () => {
+  const TZ = "Europe/Warsaw";
+  const H = 3600_000;
+  const base = { service: "Childcare", at: AT, end: AT + 3 * H, client: "Toria", provider: "Siosia", place: "Husarska 16" };
+  const kids = ["Zosia", "Kuba"];
+
+  it("shows a chat message as sender / text, tagged by the room so the newest replaces the rest", () => {
+    expect(pushText("chat_message", { sender: "Toria", text: "Running 5 min late", room: "ride:r1" }, "en", TZ, "r1")).toEqual({
+      title: "Toria",
+      body: "Running 5 min late",
+      tag: "chat:ride:r1"
+    });
+    expect(pushText("chat_message", { sender: "Toria", text: "Jestem za 5 min", room: "appt:a1" }, "pl", TZ, "a1")).toEqual({
+      title: "Toria",
+      body: "Jestem za 5 min",
+      tag: "chat:appt:a1"
+    });
+    // Two messages of one room share the tag; another room has its own; the id alone is a fallback.
+    expect(pushText("chat_message", { sender: "Roman", text: "ok", room: "ride:r1" }, "en", TZ, "r1").tag).toBe("chat:ride:r1");
+    expect(pushText("chat_message", { sender: "Roman", text: "ok", room: "ride:r2" }, "en", TZ, "r2").tag).toBe("chat:ride:r2");
+    expect(pushText("chat_message", { sender: "Roman", text: "ok" }, "en", TZ, "r1").tag).toBe("chat:r1");
+    // The sender's words stay as typed (no template tidying): "...", a leading dot; only whitespace collapses.
+    expect(pushText("chat_message", { sender: "Roman", text: "  Wait...  \n .ok, {x} " , room: "ride:r1" }, "en", TZ).body).toBe("Wait... .ok, {x}");
+    // No nickname: "Someone" / "Ktoś"; no text: an empty body, never undefined.
+    expect(pushText("chat_message", { room: "ride:r1" }, "en", TZ)).toEqual({ title: "Someone", body: "", tag: "chat:ride:r1" });
+    expect(pushText("chat_message", { sender: "", text: "hej", room: "ride:r1" }, "pl", TZ).title).toBe("Ktoś");
+    // At most 80 characters, then an ellipsis. C21: the backends queue the full text (a message may be
+    // 500 characters long) — this is the one place that cuts; exactly 80 characters get no ellipsis.
+    expect(CHAT_PUSH_CHARS).toBe(80);
+    const full = pushText("chat_message", { sender: "Toria", text: "x".repeat(500), room: "ride:r1" }, "en", TZ).body;
+    expect(full).toBe(`${"x".repeat(80)}…`);
+    expect(full).toHaveLength(81);
+    expect(pushText("chat_message", { sender: "Toria", text: "x".repeat(500), room: "ride:r1" }, "pl", TZ).body).toBe(`${"x".repeat(80)}…`);
+    expect(pushText("chat_message", { sender: "Toria", text: "x".repeat(100), room: "ride:r1" }, "en", TZ).body).toBe(`${"x".repeat(80)}…`);
+    expect(pushText("chat_message", { sender: "Toria", text: "x".repeat(80), room: "ride:r1" }, "en", TZ).body).not.toContain("…");
+    expect(pushText("chat_message", { sender: "Toria", text: "x".repeat(80), room: "ride:r1" }, "en", TZ).body).toBe("x".repeat(80));
+    expect(pushText("chat_message", { sender: "Toria", text: `${"y".repeat(79)} zzzz`, room: "ride:r1" }, "en", TZ).body).toBe(`${"y".repeat(79)}…`);
+  });
+
+  it("opens the room from a chat notification; the other kinds keep their URLs", () => {
+    expect(openUrl("chat_message", { room: "ride:r1" })).toBe("./?chat=ride:r1");
+    expect(openUrl("chat_message", { room: "appt:a1" })).toBe("./?chat=appt:a1");
+    expect(openUrl("chat_message", {})).toBe("./");
+    expect(openUrl("chat_message")).toBe("./");
+    expect(openUrl("appt_accepted", { room: "appt:a1" })).toBe("./?open=planned");
+    expect(openUrl("driver_coming", { room: "ride:r1" })).toBe("./");
+  });
+
+  it("names the attached kids to the provider — request, accept, reminder — in EN and PL", () => {
+    expect(pushText("appt_new", { ...base, kids }, "en", TZ).body).toBe("Toria asks for Childcare, Mon 12 Oct, 14:30–17:30, with Zosia and Kuba. Answer in Siosia → Planned.");
+    expect(pushText("appt_new", { ...base, service: "Opieka", kids }, "pl", TZ).body).toMatch(/^Toria prosi o: Opieka, .*14:30–17:30, z: Zosia i Kuba\. Odpowiedz w Siosi → Zaplanowane\.$/);
+    // The accept copy the backend sends to the provider (role set or not).
+    expect(pushText("appt_accepted", { ...base, kids, role: "provider" }, "en", TZ).body).toBe("Childcare Mon 12 Oct, 14:30–17:30 is confirmed, with Zosia and Kuba.");
+    expect(pushText("appt_accepted", { ...base, kids }, "en", TZ).body).toBe("Childcare Mon 12 Oct, 14:30–17:30 is confirmed, with Zosia and Kuba.");
+    expect(pushText("appt_accepted", { ...base, service: "Opieka", kids, role: "provider" }, "pl", TZ).body).toMatch(/14:30–17:30 — potwierdzone, z: Zosia i Kuba\.$/);
+    const r = { ...base, lead: 1440, role: "provider" as const, other: "Toria", status: "confirmed", kids, rides: [{ leg: "there", status: "confirmed", driver: "Roman" }] };
+    expect(pushText("appt_reminder", r, "en", TZ, "a1")).toEqual({
+      title: "Tomorrow: Childcare Mon 12 Oct, 14:30–17:30",
+      body: "With Toria · Husarska 16, with Zosia and Kuba. Confirmed. Ride there: Roman ✓",
+      tag: "appt_reminder:a1"
+    });
+    expect(pushText("appt_reminder", { ...r, service: "Opieka", lead: 120, rides: [] }, "pl", TZ).body).toBe("Z Toria · Husarska 16, z: Zosia i Kuba. Potwierdzone.");
+    expect(pushText("appt_reminder", { ...r, place: "" }, "en", TZ).body).toBe("With Toria, with Zosia and Kuba. Confirmed. Ride there: Roman ✓");
+    // One kid, three kids: "and" / "i" only before the last.
+    expect(pushText("appt_new", { ...base, kids: ["Zosia"] }, "en", TZ).body).toContain(", with Zosia. Answer");
+    expect(pushText("appt_new", { ...base, kids: ["Zosia", "Kuba", "Ola"] }, "pl", TZ).body).toContain(", z: Zosia, Kuba i Ola. Odpowiedz");
+    expect(kidsText(["Zosia", "Kuba", "Ola"], "en")).toBe("Zosia, Kuba and Ola");
+    expect(kidsText([" Zosia ", "", "Kuba"], "pl")).toBe("Zosia i Kuba");
+    expect(kidsText(["Zosia"], "pl")).toBe("Zosia");
+    expect(kidsText([], "en")).toBe("");
+    expect(kidsText(undefined, "pl")).toBe("");
+  });
+
+  it("never names kids to the client, and prints nothing (no undefined) when none are attached", () => {
+    const client = { ...base, lead: 1440, role: "client" as const, other: "Siosia", status: "confirmed", kids: ["Zosia"], rides: [] };
+    expect(pushText("appt_reminder", client, "en", TZ).body).toBe("With Siosia · Husarska 16. Confirmed.");
+    expect(pushText("appt_accepted", { ...base, role: "client", kids: ["Zosia"] }, "pl", TZ).body).toMatch(/— potwierdzone\.$/);
+    expect(pushText("appt_new", { ...base, role: "client", kids: ["Zosia"] }, "en", TZ).body).not.toContain("Zosia");
+    for (const none of [undefined, [], [""], ["  "]])
+      for (const lang of ["en", "pl"])
+        for (const kind of ["appt_new", "appt_accepted", "appt_reminder"] as const) {
+          const t = pushText(kind, { ...base, kids: none, role: "provider", other: "Toria", status: "confirmed", lead: 120 }, lang, TZ, "a1");
+          expect(t.body, `${kind} ${lang} ${JSON.stringify(none)}`).not.toMatch(/undefined|null|with\s*[.,]|z:\s*[.,]|,\s*,|\s{2}|\s[.,]/);
+        }
+    // Without kids the 2.0 words are untouched.
+    expect(pushText("appt_new", base, "en", TZ).body).toBe("Toria asks for Childcare, Mon 12 Oct, 14:30–17:30. Answer in Siosia → Planned.");
+    expect(pushText("appt_accepted", base, "en", TZ).body).toBe("Childcare Mon 12 Oct, 14:30–17:30 is confirmed.");
+    expect(pushText("appt_accepted", { ...base, service: "Opieka" }, "pl", TZ).body).toMatch(/— potwierdzone\.$/);
+  });
+
+  it("ships chat_message, the chat URL and the kids words in the push-dispatch bundle (B8: the Edge Function is pasted from it)", () => {
+    const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
+    for (const s of ["chat_message", "./?chat=", "kidsText", "with ${", "z: ${", "chat:${"]) expect(bundle, s).toContain(s);
+    // C6: the read check (messages.read_at by the message id) and the grace are in the bundle too.
+    for (const s of ["isMessageRead", '"read_at"', "messageId", "CHAT_GRACE_MS"]) expect(bundle, s).toContain(s);
+  });
+});
+
 describe("push-dispatch", () => {
   const row = (id: number, user: string, attempts = 0): OutboxRow => ({
     id,
@@ -210,8 +309,20 @@ describe("push-dispatch", () => {
   });
   const sub = (endpoint: string): Subscription => ({ endpoint, p256dh: "p".repeat(20), auth: "a".repeat(12) });
 
-  function fake(rows: OutboxRow[], subs: Record<string, Subscription[]>, fail: Record<string, number>) {
-    const log = { sent: [] as string[], payloads: [] as string[], marked: [] as number[], failed: [] as number[], dropped: [] as string[] };
+  /** The clock of the fake runs: 2026-10-22 10:00 UTC. */
+  const NOW = Date.UTC(2026, 9, 22, 10, 0, 0);
+
+  function fake(rows: OutboxRow[], subs: Record<string, Subscription[]>, fail: Record<string, number>, read: Set<string> = new Set()) {
+    const log = {
+      sent: [] as string[],
+      payloads: [] as string[],
+      marked: [] as number[],
+      failed: [] as number[],
+      dropped: [] as string[],
+      /** The read checks and the sends, in order (the check must come before the send). */
+      asked: [] as string[],
+      waited: [] as number[]
+    };
     const deps: Deps = {
       pending: async () => rows,
       subscriptions: async (u) => subs[u] ?? [],
@@ -219,10 +330,17 @@ describe("push-dispatch", () => {
         if (fail[s.endpoint]) throw Object.assign(new Error("push service"), { statusCode: fail[s.endpoint] });
         log.sent.push(s.endpoint);
         log.payloads.push(payload);
+        log.asked.push(`send:${JSON.parse(payload).tag}`);
       },
       markSent: async (id) => void log.marked.push(id),
       markFailed: async (id) => void log.failed.push(id),
-      dropSubscription: async (e) => void log.dropped.push(e)
+      dropSubscription: async (e) => void log.dropped.push(e),
+      isMessageRead: async (messageId) => {
+        log.asked.push(`read?:${messageId}`);
+        return read.has(messageId);
+      },
+      now: () => NOW,
+      wait: async (ms) => void log.waited.push(ms)
     };
     return { deps, log };
   }
@@ -237,13 +355,33 @@ describe("push-dispatch", () => {
   it("sends an open request to a member as appt_open, tagged by the appointment, opening Planned (V36)", async () => {
     const params = { service: "Childcare", at: AT, end: AT + 3 * 3600_000, client: "Toria", provider: "", place: "Husarska 16", open: true };
     const { deps, log } = fake([{ ...row(11, "ewa", 1), kind: "appt_open", ride_id: null, appointment_id: "a11", params }], { ewa: [sub("https://push/e")] }, {});
-    expect(await dispatch(deps)).toEqual({ sent: 1, failed: 0, dropped: 0 });
+    expect(await dispatch(deps)).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
     expect(JSON.parse(log.payloads[0])).toEqual({
       title: "Can you help? Childcare",
       body: "Toria asks: Childcare Mon 12 Oct, 14:30–17:30 · Husarska 16. Open Siosia to take it.",
       tag: "appt_open:a11",
-      url: "./?open=planned"
+      url: "./?open=planned",
+      kind: "appt_open"
     });
+  });
+
+  it("sends a chat message tagged by its room and opening that chat (FR-222, V48)", async () => {
+    const { deps, log } = fake(
+      [{ ...row(12, "roman", 1), kind: "chat_message", ride_id: "r1", params: { sender: "Toria", text: "Running 5 min late", room: "ride:r1" } }],
+      { roman: [sub("https://push/r")] },
+      {}
+    );
+    expect(await dispatch(deps)).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
+    // kind and room ride along, so the service worker can hand the message to an open thread.
+    expect(JSON.parse(log.payloads[0])).toEqual({ title: "Toria", body: "Running 5 min late", tag: "chat:ride:r1", url: "./?chat=ride:r1", kind: "chat_message", room: "ride:r1" });
+    // An appointment room: appointment_id set for the outbox, the room still rules the tag and the URL.
+    const appt = fake(
+      [{ ...row(13, "siosia", 1), kind: "chat_message", ride_id: null, appointment_id: "a1", params: { sender: "Toria", text: "Hi", room: "appt:a1" } }],
+      { siosia: [sub("https://push/s")] },
+      {}
+    );
+    await dispatch(appt.deps);
+    expect(JSON.parse(appt.log.payloads[0])).toMatchObject({ title: "Toria", body: "Hi", tag: "chat:appt:a1", url: "./?chat=appt:a1" });
   });
 
   it("opens Planned for booking notifications too: their Take it lives there in 2.0, ./ is S1 (C16, FR-125)", async () => {
@@ -263,12 +401,294 @@ describe("push-dispatch", () => {
       { rider: [sub("https://push/a"), sub("https://push/b")], gone: [sub("https://push/410")], flaky: [sub("https://push/503")] },
       { "https://push/410": 410, "https://push/503": 503 }
     );
-    expect(await dispatch(deps)).toEqual({ sent: 1, failed: 1, dropped: 1 });
+    expect(await dispatch(deps)).toEqual({ sent: 1, failed: 1, dropped: 1, skipped: 0 });
     expect(log.sent).toEqual(["https://push/a", "https://push/b"]);
-    expect(JSON.parse(log.payloads[0])).toEqual({ title: "Roman is on the way", body: "Your driver is heading to the pickup.", tag: "driver_coming:r1", url: "./" });
+    expect(JSON.parse(log.payloads[0])).toEqual({ title: "Roman is on the way", body: "Your driver is heading to the pickup.", tag: "driver_coming:r1", url: "./", kind: "driver_coming" });
     expect(log.dropped).toEqual(["https://push/410"]);
     expect(log.failed).toEqual([3]); // tries again next run
     expect(log.marked).toEqual([1, 2, 4, 5]); // done: delivered, nobody left, out of attempts, no devices
+    // No chat row: nothing waited for, nobody asked whether a message was read.
+    expect(log.waited).toEqual([]);
+    expect(log.asked.filter((a) => a.startsWith("read?"))).toEqual([]);
+  });
+
+  describe("2.3 chat messages: the 2 s grace and the read check (C6, V48)", () => {
+    /** A chat row queued `ageMs` before the fake clock's now, with its message id in params (null = none). */
+    const chat = (id: number, ageMs: number, messageId: string | null = `m${id}`, room = "ride:r1"): OutboxRow => ({
+      ...row(id, "roman", 1),
+      kind: "chat_message",
+      ride_id: "r1",
+      created_at: new Date(NOW - ageMs).toISOString(),
+      params: { sender: "Toria", text: "Running 5 min late", room, ...(messageId ? { messageId } : {}) }
+    });
+    const subs = { roman: [sub("https://push/r")] };
+
+    it("drops a message the recipient read meanwhile: marked done, nothing sent (belt and braces to the SQL)", async () => {
+      const { deps, log } = fake([chat(21, 10_000)], subs, {}, new Set(["m21"]));
+      expect(await dispatch(deps)).toEqual({ sent: 0, failed: 0, dropped: 0, skipped: 1 });
+      expect(log.sent).toEqual([]);
+      expect(log.marked).toEqual([21]); // done — not left for the next run
+      expect(log.failed).toEqual([]);
+      expect(log.asked).toEqual(["read?:m21"]);
+    });
+
+    it("sends an unread message, asking right before the send; a read one in the same batch is skipped", async () => {
+      const { deps, log } = fake([chat(22, 10_000), chat(23, 10_000, "m23", "appt:a1"), chat(24, 10_000)], subs, {}, new Set(["m23"]));
+      expect(await dispatch(deps)).toEqual({ sent: 2, failed: 0, dropped: 0, skipped: 1 });
+      expect(log.asked).toEqual(["read?:m22", "send:chat:ride:r1", "read?:m23", "read?:m24", "send:chat:ride:r1"]);
+      expect(log.marked).toEqual([22, 23, 24]);
+      expect(JSON.parse(log.payloads[0])).toMatchObject({ title: "Toria", body: "Running 5 min late", tag: "chat:ride:r1", url: "./?chat=ride:r1", kind: "chat_message", room: "ride:r1" });
+    });
+
+    it("gives a fresh message the rest of its 2 s grace before asking, so a visible thread's mark-read lands first", async () => {
+      expect(CHAT_GRACE_MS).toBe(2000);
+      // Queued 300 ms ago: waits the remaining 1700 ms, then asks — and the answer (read meanwhile) counts.
+      const fresh = fake([chat(31, 300)], subs, {}, new Set(["m31"]));
+      expect(await dispatch(fresh.deps)).toEqual({ sent: 0, failed: 0, dropped: 0, skipped: 1 });
+      expect(fresh.log.waited).toEqual([1700]);
+      expect(fresh.log.asked).toEqual(["read?:m31"]);
+      // Queued just now: the whole grace; still unread after it: sent.
+      const now = fake([chat(32, 0)], subs, {});
+      expect(await dispatch(now.deps)).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
+      expect(now.log.waited).toEqual([2000]);
+      // A row whose clock runs ahead of ours never waits longer than the grace.
+      const ahead = fake([chat(33, -5000)], subs, {});
+      await dispatch(ahead.deps);
+      expect(ahead.log.waited).toEqual([2000]);
+      // Older than the grace (a retried row, the minute sweep): no wait at all, asked at once.
+      const old = fake([chat(34, 2000), chat(35, 60_000)], subs, {});
+      expect(await dispatch(old.deps)).toEqual({ sent: 2, failed: 0, dropped: 0, skipped: 0 });
+      expect(old.log.waited).toEqual([]);
+      expect(old.log.asked).toEqual(["read?:m34", "send:chat:ride:r1", "read?:m35", "send:chat:ride:r1"]);
+      // Rows claimed together: the waits of one run add up to about the grace, not to a grace per row.
+      const batch = fake([chat(36, 1500), chat(37, 1000), chat(38, 500)], subs, {});
+      await dispatch(batch.deps);
+      expect(batch.log.waited).toEqual([500, 1000, 1500]); // the fake clock stands still; a real one would wait 500 + 500 + 500
+    });
+
+    it("waits with a real timer when none is injected", async () => {
+      vi.useFakeTimers({ now: NOW });
+      try {
+        const { deps, log } = fake([chat(41, 0)], subs, {});
+        delete deps.wait;
+        delete deps.now;
+        let settled = false;
+        const run = dispatch(deps).then((r) => ((settled = true), r));
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(settled).toBe(false);
+        expect(log.asked).toEqual([]);
+        await vi.advanceTimersByTimeAsync(600);
+        expect(await run).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
+        expect(log.asked).toEqual(["read?:m41", "send:chat:ride:r1"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("neither waits for nor asks about a message without an id, a row without created_at, or the other kinds", async () => {
+      const noId = fake([chat(51, 10_000, null)], subs, {}, new Set(["m51"]));
+      expect(await dispatch(noId.deps)).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
+      expect(noId.log.asked).toEqual(["send:chat:ride:r1"]);
+      const noStamp = fake([{ ...chat(52, 0), created_at: undefined }, { ...chat(53, 0), created_at: null }], subs, {});
+      await dispatch(noStamp.deps);
+      expect(noStamp.log.waited).toEqual([]);
+      expect(noStamp.log.asked).toEqual(["read?:m52", "send:chat:ride:r1", "read?:m53", "send:chat:ride:r1"]);
+      // Another kind with a messageId in its params (never happens) and a fresh created_at: untouched.
+      const other = fake([{ ...row(54, "roman", 1), created_at: new Date(NOW).toISOString(), params: { driver: "Roman", messageId: "m54" } }], subs, {}, new Set(["m54"]));
+      expect(await dispatch(other.deps)).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
+      expect(other.log.waited).toEqual([]);
+      expect(other.log.asked).toEqual(["send:driver_coming:r1"]);
+      expect(JSON.parse(other.log.payloads[0])).not.toHaveProperty("room");
+    });
+
+    it("sends when the read check itself fails: the belt and braces never block a push", async () => {
+      const { deps, log } = fake([chat(61, 10_000)], subs, {}, new Set(["m61"]));
+      deps.isMessageRead = async () => {
+        throw new Error("db down");
+      };
+      expect(await dispatch(deps)).toEqual({ sent: 1, failed: 0, dropped: 0, skipped: 0 });
+      expect(log.marked).toEqual([61]);
+    });
+  });
+});
+
+describe("push service worker (public/push-sw.js): a chat message for a thread that is open goes to the window (FR-222, V48)", () => {
+  const SCOPE = "https://siosia.example/";
+  const CHROME = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36";
+  const IOS = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
+  const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15";
+  const MAC_CHROME = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+
+  type Posted = { type: string; room?: string; url?: string; title?: string; body?: string };
+  interface FakeWindow {
+    url: string;
+    visibilityState: "visible" | "hidden";
+    posted: Posted[];
+    focus: () => Promise<FakeWindow>;
+    postMessage: (msg: Posted, transfer?: Array<{ postMessage(d: unknown): void }>) => void;
+  }
+  /** A window of the app; `answer` is what it says to "siosia-chat-open?" (undefined = never answers). */
+  const win = (visibilityState: "visible" | "hidden", answer?: boolean, url = `${SCOPE}?x=1`): FakeWindow => {
+    const w: FakeWindow = {
+      url,
+      visibilityState,
+      posted: [],
+      focus: vi.fn(async () => w),
+      postMessage: (msg, transfer) => {
+        w.posted.push(msg);
+        if (msg.type === "siosia-chat-open?" && answer !== undefined) transfer?.[0].postMessage({ open: answer });
+      }
+    };
+    return w;
+  };
+  /** A MessageChannel whose answers arrive on the next microtask (deterministic under fake timers). */
+  class FakeChannel {
+    port1 = { onmessage: null as null | ((ev: { data: unknown }) => void), close: vi.fn() };
+    port2 = { postMessage: (data: unknown) => queueMicrotask(() => this.port1.onmessage?.({ data })) };
+  }
+
+  function loadWorker(userAgent: string, windows: FakeWindow[]) {
+    const handlers: Record<string, (ev: unknown) => void> = {};
+    const shown: Array<{ title: string; options: Record<string, unknown> }> = [];
+    const opened: string[] = [];
+    const sw = {
+      navigator: { userAgent },
+      addEventListener: (type: string, fn: (ev: unknown) => void) => void (handlers[type] = fn),
+      registration: { scope: SCOPE, showNotification: vi.fn(async (title: string, options: Record<string, unknown>) => void shown.push({ title, options })) },
+      clients: { matchAll: vi.fn(async () => windows), openWindow: vi.fn(async (url: string) => void opened.push(url)) }
+    };
+    new Function("self", readFileSync("public/push-sw.js", "utf-8"))(sw);
+    /** Fires a push with this payload and returns what the worker asked to wait for. */
+    const push = (payload: unknown): Promise<unknown> => {
+      let waited: Promise<unknown> = Promise.resolve();
+      handlers.push({
+        data: { json: () => payload, text: () => JSON.stringify(payload) },
+        waitUntil: (p: Promise<unknown>) => void (waited = p)
+      });
+      return waited;
+    };
+    const click = (url: string | undefined): Promise<unknown> => {
+      let waited: Promise<unknown> = Promise.resolve();
+      handlers.notificationclick({ notification: { close: vi.fn(), data: url === undefined ? undefined : { url } }, waitUntil: (p: Promise<unknown>) => void (waited = p) });
+      return waited;
+    };
+    return { push, click, shown, opened, sw };
+  }
+  const chatPush = { title: "Toria", body: "Running 5 min late", tag: "chat:ride:r1", url: "./?chat=ride:r1", kind: "chat_message", room: "ride:r1" };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("hands the message to the visible window that says the room is open — no notification", async () => {
+    vi.stubGlobal("MessageChannel", FakeChannel);
+    const hidden = win("hidden", true);
+    const open = win("visible", true);
+    const { push, shown } = loadWorker(CHROME, [hidden, open]);
+    await push(chatPush);
+    expect(shown).toEqual([]);
+    // Only visible windows are asked; the one that said yes gets the message (room, words, link).
+    expect(hidden.posted).toEqual([]);
+    expect(open.posted).toEqual([
+      { type: "siosia-chat-open?", room: "ride:r1" },
+      { type: "siosia-chat-message", room: "ride:r1", title: "Toria", body: "Running 5 min late", url: "./?chat=ride:r1" }
+    ]);
+  });
+
+  it("shows when the visible windows say the room is not open, or show another room", async () => {
+    vi.stubGlobal("MessageChannel", FakeChannel);
+    const a = win("visible", false);
+    const b = win("visible", false);
+    const { push, shown } = loadWorker(CHROME, [a, b]);
+    await push(chatPush);
+    expect(a.posted).toEqual([{ type: "siosia-chat-open?", room: "ride:r1" }]);
+    expect(b.posted).toEqual([{ type: "siosia-chat-open?", room: "ride:r1" }]);
+    expect(shown).toEqual([
+      {
+        title: "Toria",
+        options: { body: "Running 5 min late", tag: "chat:ride:r1", renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: "./?chat=ride:r1" } }
+      }
+    ]);
+  });
+
+  it("shows after ~300 ms when no window answers (an older app), and at once when none is visible", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("MessageChannel", FakeChannel);
+    const mute = win("visible");
+    const { push, shown } = loadWorker(CHROME, [mute]);
+    const done = push(chatPush);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(shown).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60);
+    await done;
+    expect(shown).toHaveLength(1);
+    expect(mute.posted).toEqual([{ type: "siosia-chat-open?", room: "ride:r1" }]);
+    // Hidden windows and foreign windows are never asked: the notification shows straight away.
+    const hidden = win("hidden", true);
+    const foreign = win("visible", true, "https://elsewhere.example/");
+    const bg = loadWorker(CHROME, [hidden, foreign]);
+    await bg.push(chatPush);
+    expect(bg.shown).toHaveLength(1);
+    expect(hidden.posted).toEqual([]);
+    expect(foreign.posted).toEqual([]);
+    const none = loadWorker(CHROME, []);
+    await none.push(chatPush);
+    expect(none.shown).toHaveLength(1);
+  });
+
+  it("iOS and Safari always show (a silent push costs the subscription there): the windows are not even asked", async () => {
+    vi.stubGlobal("MessageChannel", FakeChannel);
+    for (const ua of [IOS, MAC_SAFARI]) {
+      const open = win("visible", true);
+      const { push, shown, sw } = loadWorker(ua, [open]);
+      await push(chatPush);
+      expect(shown, ua).toHaveLength(1);
+      expect(open.posted, ua).toEqual([]);
+      expect(sw.clients.matchAll, ua).not.toHaveBeenCalled();
+    }
+    // Chrome on a Mac is not Safari.
+    const open = win("visible", true);
+    const mac = loadWorker(MAC_CHROME, [open]);
+    await mac.push(chatPush);
+    expect(mac.shown).toEqual([]);
+    expect(open.posted).toHaveLength(2);
+  });
+
+  it("knows a chat push by its tag when the payload has no kind (older dispatch), and the other kinds show as always", async () => {
+    vi.stubGlobal("MessageChannel", FakeChannel);
+    const open = win("visible", true);
+    const legacy = loadWorker(CHROME, [open]);
+    await legacy.push({ title: "Toria", body: "Hi", tag: "chat:appt:a1", url: "./?chat=appt:a1" });
+    expect(legacy.shown).toEqual([]);
+    expect(open.posted[0]).toEqual({ type: "siosia-chat-open?", room: "appt:a1" });
+    // A ride notification shows without a question, even with the thread open in a visible window.
+    const other = win("visible", true);
+    const ride = loadWorker(CHROME, [other]);
+    await ride.push({ title: "Roman is on the way", body: "Your driver is heading to the pickup.", tag: "driver_coming:r1", url: "./", kind: "driver_coming" });
+    expect(other.posted).toEqual([]);
+    expect(ride.shown).toEqual([
+      {
+        title: "Roman is on the way",
+        options: { body: "Your driver is heading to the pickup.", tag: "driver_coming:r1", renotify: true, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: "./" } }
+      }
+    ]);
+    // No payload / an unparsable one: the old fallbacks.
+    const bare = loadWorker(CHROME, []);
+    await bare.push(null);
+    expect(bare.shown[0]).toEqual({ title: "Siosia", options: { body: "", tag: undefined, renotify: false, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: "./" } } });
+  });
+
+  it("a tap still focuses the open app with the link, or opens a window", async () => {
+    const app = win("hidden");
+    const { click, opened } = loadWorker(CHROME, [win("visible", undefined, "https://elsewhere.example/"), app]);
+    await click("./?chat=ride:r1");
+    expect(app.focus).toHaveBeenCalled();
+    expect(app.posted).toEqual([{ type: "siosia-open", url: `${SCOPE}?chat=ride:r1` }]);
+    expect(opened).toEqual([]);
+    const closed = loadWorker(CHROME, []);
+    await closed.click(undefined);
+    expect(closed.opened).toEqual([SCOPE]);
   });
 });
 

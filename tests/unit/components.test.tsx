@@ -1,13 +1,17 @@
 // Component tests (spec §11 "Component"): screens render their states in EN and PL; S4 appears
 // whenever sharing is on. 2.1: the S1 badge of open requests (FR-161) and the car colour (FR-170).
+// 2.3: a photo wherever the nickname is (FR-211), the chat button on R3 / D3 / the booking cards
+// and the S1 badge of unread messages (FR-221).
 
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync, readdirSync } from "node:fs";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
-import { DriverIcon, MasterChip, ProfileIcon } from "../../src/components/ProfileIcon";
+import { Avatar, DriverIcon, Initial, MasterChip, ProfileIcon } from "../../src/components/ProfileIcon";
+import { DriverTrip } from "../../src/screens/driver/DriverTrip";
+import type { DriverRuntime } from "../../src/state/runtime";
 import { CAR_PAINTS, carPaint, iconLabel, iconSvg, normalPaint, profileIcon, shade, shadesOf } from "../../src/components/profileIcons";
 import { INFO_TIP_MS, InfoTip } from "../../src/components/InfoTip";
 import { SharingBanner } from "../../src/components/SharingBanner";
@@ -377,6 +381,7 @@ const OLA: Profile = {
   icon: null,
   fixedFare: null,
   publicId: "pub-ola",
+  photo: null,
   offers: [],
   offersPreset: false,
   home: null
@@ -660,24 +665,18 @@ describe("R3 Active ride: the car set off (FR-180) and Navigate (FR-181)", () =>
     ["en", "Your driver will set off soon", "Your driver has set off"],
     ["pl", "Kierowca wkrótce ruszy", "Kierowca już jedzie"]
   ] as const)("says the driver will set off, then has set off once departedAt is set (%s)", (lang, before, after) => {
-    const { rerender } = render(
-      <I18nProvider lang={lang}>
-        <RiderActive ride={assigned({ departedAt: null })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />
-      </I18nProvider>
+    // R3 carries the chat button (2.3), which needs the store.
+    const { store, rerender } = mount(lang, <RiderActive ride={assigned({ departedAt: null })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />, { profile: OLA });
+    const wrap = (ui: ReactNode) => (
+      <StoreContext.Provider value={store}>
+        <I18nProvider lang={lang}>{ui}</I18nProvider>
+      </StoreContext.Provider>
     );
     expect(screen.getByTestId("ride-status")).toHaveTextContent(before);
-    rerender(
-      <I18nProvider lang={lang}>
-        <RiderActive ride={assigned({ departedAt: Date.now() })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />
-      </I18nProvider>
-    );
+    rerender(wrap(<RiderActive ride={assigned({ departedAt: Date.now() })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />));
     expect(screen.getByTestId("ride-status")).toHaveTextContent(after);
     // A ride requested right now (no booking) keeps the plain "on the way".
-    rerender(
-      <I18nProvider lang={lang}>
-        <RiderActive ride={assigned({ departedAt: null, scheduledFor: null })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />
-      </I18nProvider>
-    );
+    rerender(wrap(<RiderActive ride={assigned({ departedAt: null, scheduledFor: null })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />));
     expect(screen.getByTestId("ride-status")).toHaveTextContent(lang === "en" ? "Your driver is on the way" : "Kierowca jest w drodze");
   });
 
@@ -691,5 +690,137 @@ describe("R3 Active ride: the car set off (FR-180) and Navigate (FR-181)", () =>
     } finally {
       Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true });
     }
+  });
+});
+
+// ---------- 2.3: photos where the nickname is, the chat button, the S1 badge ----------
+
+describe("2.3 a photo wherever the nickname is (FR-211)", () => {
+  const JPEG = "data:image/jpeg;base64,/9j/AAA";
+
+  it("Avatar prefers the photo, falls back to the icon in its paint, then to the fallback", () => {
+    const first = mount("en", <Avatar photo={JPEG} icon="taycan-ct-green" paint="#c62828" />, {});
+    expect(screen.getByTestId("avatar-photo")).toHaveAttribute("src", JPEG);
+    expect(screen.getByTestId("avatar-photo")).toHaveAttribute("alt", ""); // the name sits next to it
+    expect(screen.queryByRole("img", { name: "Red Taycan Cross Turismo" })).toBeNull();
+    first.unmount();
+    const second = mount("en", <Avatar photo={null} icon="taycan-ct-green" paint="#c62828" />, {});
+    expect(bodyFill(screen.getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+    second.unmount();
+    mount("en", <Avatar icon={null} fallback={<Initial name="ola" />} />, {});
+    expect(screen.queryByTestId("avatar-photo")).toBeNull();
+    expect(document.querySelector(".avatar")).toHaveTextContent("O");
+  });
+
+  it("a photo that does not load (its signed URL expired while the app stayed open, C16) gives way to the icon, then the fallback, until a fresh URL comes", () => {
+    const first = mount("en", <Avatar photo={JPEG} icon="taycan-ct-green" paint="#c62828" />, {});
+    fireEvent.error(screen.getByTestId("avatar-photo"));
+    expect(screen.queryByTestId("avatar-photo")).toBeNull();
+    expect(bodyFill(screen.getByRole("img", { name: "Red Taycan Cross Turismo" }))).toBe("#c62828");
+    // A fresh URL (the profile reloaded) shows again.
+    first.rerender(
+      <StoreContext.Provider value={first.store}>
+        <I18nProvider lang="en">
+          <Avatar photo="https://signed/fresh" icon="taycan-ct-green" paint="#c62828" />
+        </I18nProvider>
+      </StoreContext.Provider>
+    );
+    expect(screen.getByTestId("avatar-photo")).toHaveAttribute("src", "https://signed/fresh");
+    first.unmount();
+    mount("en", <Avatar photo={JPEG} icon={null} fallback={<Initial name="ola" />} />, {});
+    fireEvent.error(screen.getByTestId("avatar-photo"));
+    expect(screen.queryByTestId("avatar-photo")).toBeNull();
+    expect(document.querySelector(".avatar")).toHaveTextContent("O");
+  });
+
+  it("the driver card and the booking card show the driver's photo over the car icon; D3 shows the rider's", () => {
+    const driver = { nickname: "Roman", rating: { mean: null, count: 0 }, icon: "taycan-ct-green", photo: JPEG, vehicle: { ...TAYCAN, paint: "#c62828" } } as RideView["driver"];
+    const rt = { driverPos: null, driverSeenAt: Date.now(), driverPresent: true, sharingOn: true, setSharingOn: () => {}, fix: null } as unknown as RiderRuntime;
+    const route = { line: null, km: 2, min: 5, estimate: false };
+    const first = mount("en", <RiderActive ride={ride({ status: "accepted", driver })} rt={rt} route={route} busy={false} error={null} onCancel={() => {}} />, { profile: OLA });
+    expect(within(screen.getByTestId("driver-card")).getByTestId("avatar-photo")).toHaveAttribute("src", JPEG);
+    expect(within(screen.getByTestId("driver-card")).queryByRole("img")).toBeNull();
+    first.unmount();
+    const second = mount("en", <RiderBookingCard r={ride({ status: "scheduled", scheduledFor: Date.now() + 86_400_000, driver })} onChanged={() => {}} />, { profile: OLA });
+    expect(within(screen.getByTestId("booking-driver")).getByTestId("avatar-photo")).toHaveAttribute("src", JPEG);
+    second.unmount();
+    const drt = { fix: null, riderPos: null, riderStopped: false, tripKm: 0, wakeOk: true } as unknown as DriverRuntime;
+    mount(
+      "en",
+      <DriverTrip
+        ride={ride({ status: "accepted", role: "driver", rider: { nickname: "Ola", rating: { mean: null, count: 0 }, photo: JPEG } })}
+        rt={drt}
+        route={route}
+        timers={DEFAULT_CONFIG.timers}
+        busy={false}
+        error={null}
+        onAdvance={() => {}}
+        onCancel={() => {}}
+      />,
+      { profile: OLA }
+    );
+    expect(screen.getByTestId("avatar-photo")).toHaveAttribute("src", JPEG);
+  });
+});
+
+describe("2.3 the chat button and the S1 badge (FR-221)", () => {
+  const roman = { nickname: "Roman", rating: { mean: null, count: 0 }, icon: null, vehicle: { ...TAYCAN, paint: null } } as RideView["driver"];
+  const rt = { driverPos: null, driverSeenAt: Date.now(), driverPresent: true, sharingOn: true, setSharingOn: () => {}, fix: null } as unknown as RiderRuntime;
+  const drt = { fix: null, riderPos: null, riderStopped: false, tripKm: 0, wakeOk: true } as unknown as DriverRuntime;
+  const route = { line: null, km: 2, min: 5, estimate: false };
+
+  it("R3: the chat button with the unread count opens the ride's room; D3 too (in Polish, no badge without unread)", async () => {
+    const first = mount("en", <RiderActive ride={ride({ status: "accepted", driver: roman, unread: 2 })} rt={rt} route={route} busy={false} error={null} onCancel={() => {}} />, { profile: OLA });
+    const btn = screen.getByTestId("chat-open");
+    expect(btn).toHaveAccessibleName("Chat · 2 unread");
+    expect(screen.getByTestId("chat-unread")).toHaveTextContent("2");
+    await userEvent.click(btn);
+    expect(first.store.get().panel).toBe("chat");
+    expect(first.store.get().panelArg).toBe("ride:r1");
+    first.unmount();
+    // No driver yet: no room, no button.
+    const second = mount("en", <RiderActive ride={ride({ status: "accepted", driver: null })} rt={rt} route={route} busy={false} error={null} onCancel={() => {}} />, { profile: OLA });
+    expect(screen.queryByTestId("chat-open")).toBeNull();
+    second.unmount();
+    const third = mount(
+      "pl",
+      <DriverTrip ride={ride({ status: "in_progress", role: "driver" })} rt={drt} route={route} timers={DEFAULT_CONFIG.timers} busy={false} error={null} onAdvance={() => {}} onCancel={() => {}} />,
+      { profile: OLA }
+    );
+    expect(screen.getByTestId("chat-open")).toHaveTextContent("Czat");
+    expect(screen.getByTestId("chat-open")).toHaveAccessibleName("Czat");
+    expect(screen.queryByTestId("chat-unread")).toBeNull();
+    await userEvent.click(screen.getByTestId("chat-open"));
+    expect(third.store.get().panel).toBe("chat");
+    expect(third.store.get().panelArg).toBe("ride:r1");
+  });
+
+  it("the booking cards: the rider's once a driver took it, the driver's always", () => {
+    const first = mount("en", <RiderBookingCard r={ride({ status: "scheduled", scheduledFor: Date.now() + 86_400_000, driver: null })} onChanged={() => {}} />, { profile: OLA });
+    expect(screen.queryByTestId("chat-open")).toBeNull();
+    first.unmount();
+    mount("en", <RiderBookingCard r={ride({ status: "scheduled", scheduledFor: Date.now() + 86_400_000, driver: roman, unread: 1 })} onChanged={() => {}} />, { profile: OLA });
+    expect(screen.getByTestId("chat-unread")).toHaveTextContent("1");
+  });
+
+  it.each([
+    ["en", 3, "3 new messages"],
+    ["en", 1, "1 new message"], // one, not "1 new messages" (C18)
+    ["pl", 3, "nowe wiadomości: 3"],
+    ["pl", 1, "1 nowa wiadomość"]
+  ] as const)("S1 badges the unread messages on Planned in %s (%i), and nothing without any", (lang, n, text) => {
+    const first = mount(lang, <Home />, { profile: { ...OLA, language: lang }, my: { toAnswer: 0, openRequests: 0, planned: 1, nextPlanned: null, unreadChats: n } });
+    const badge = within(screen.getByTestId("start-planned")).getByTestId("badge-chat");
+    expect(badge).toHaveTextContent(text);
+    if (n === 1) expect(badge).not.toHaveTextContent(/messages|wiadomości/);
+    first.unmount();
+    mount(lang, <Home />, { profile: { ...OLA, language: lang }, my: { toAnswer: 0, openRequests: 0, planned: 1, nextPlanned: null, unreadChats: 0 } });
+    expect(screen.queryByTestId("badge-chat")).toBeNull();
+  });
+
+  it("S1 shows my own photo next to the greeting when I have one", () => {
+    mount("en", <Home />, { profile: { ...OLA, photo: "data:image/jpeg;base64,/9j/AAA" }, my: { toAnswer: 0, openRequests: 0, planned: 0, nextPlanned: null } });
+    expect(screen.getByTestId("avatar-photo")).toHaveAttribute("src", "data:image/jpeg;base64,/9j/AAA");
+    expect(document.querySelector(".logo")).toBeNull();
   });
 });

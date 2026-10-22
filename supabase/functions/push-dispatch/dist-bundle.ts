@@ -101,17 +101,19 @@ var TEXTS = {
     driver_arrived: ["{driver} is here", "Your driver has arrived at the pickup."],
     booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
     request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
-    appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}. Answer in Siosia \u2192 Planned."],
+    appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}{kids}. Answer in Siosia \u2192 Planned."],
     appt_open: ["Can you help? {service}", "{client} asks: {service} {range}{atplace}. Open Siosia to take it."],
-    appt_accepted: ["{provider} accepted", "{service} {range} is confirmed.{clashes}"],
+    appt_accepted: ["{provider} accepted", "{service} {range} is confirmed{kids}.{clashes}"],
     appt_declined: ["{provider} can't make it", "{service} {range} was declined."],
     appt_cancelled: ["{service} {when} cancelled", "Cancelled by {who}: {service} {range}.{remaining}"],
     appt_expired: ["No answer from {provider}", "{service} {range} got no answer and expired."],
-    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}{kids}. {status}.{rides}"],
     appt_ride_added: ["{who} added a ride", "{service} {when}: ride {leg}{attime}, looking for a driver."],
     appt_ride_taken: ["Ride confirmed: {driver}", "{service} {when}: the ride {leg} has a driver."],
     appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
-    appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."]
+    appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."],
+    // 2.3 (FR-222): the sender's own words; the tag is the room, so a newer message replaces the older.
+    chat_message: ["{sender}", "{text}"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -124,19 +126,28 @@ var TEXTS = {
     driver_arrived: ["{driver} czeka", "Kierowca jest na miejscu odbioru."],
     booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafi\u0142a do kierowc\xF3w w pobli\u017Cu."],
     request_new: ["Nowe zam\xF3wienie", "Odbi\xF3r: {pickup}. Otw\xF3rz Siosi\u0119, aby je przyj\u0105\u0107."],
-    appt_new: ["Nowa pro\u015Bba: {service} {when}", "{client} prosi o: {service}, {range}. Odpowiedz w Siosi \u2192 Zaplanowane."],
+    appt_new: ["Nowa pro\u015Bba: {service} {when}", "{client} prosi o: {service}, {range}{kids}. Odpowiedz w Siosi \u2192 Zaplanowane."],
     appt_open: ["Mo\u017Cesz pom\xF3c? {service}", "{client} prosi o pomoc: {service} {range}{atplace}. Otw\xF3rz Siosi\u0119, aby si\u0119 tego podj\u0105\u0107."],
-    appt_accepted: ["{provider} potwierdza", "{service} {range} \u2014 potwierdzone.{clashes}"],
+    appt_accepted: ["{provider} potwierdza", "{service} {range} \u2014 potwierdzone{kids}.{clashes}"],
     appt_declined: ["{provider} nie mo\u017Ce", "{service} {range} \u2014 odrzucone."],
     appt_cancelled: ["{service} {when} odwo\u0142ane", "Odwo\u0142ane przez: {who}. {service} {range}.{remaining}"],
     appt_expired: ["Brak odpowiedzi od {provider}", "{service} {range} \u2014 bez odpowiedzi, pro\u015Bba wygas\u0142a."],
-    appt_reminder: ["{lead}: {service} {range}", "{withplace}. {status}.{rides}"],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}{kids}. {status}.{rides}"],
     appt_ride_added: ["{who} dodaje przejazd", "{service} {when}: przejazd {leg}{attime}, szukamy kierowcy."],
     appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowc\u0119."],
     appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} zn\xF3w bez kierowcy."],
-    appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."]
+    appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."],
+    chat_message: ["{sender}", "{text}"]
   }
 };
+var CHAT_PUSH_CHARS = 80;
+function kidsText(names, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  const list = (names ?? []).map((n) => String(n ?? "").trim()).filter(Boolean);
+  if (list.length < 2) return list[0] ?? "";
+  return `${list.slice(0, -1).join(", ")} ${l === "pl" ? "i" : "and"} ${list[list.length - 1]}`;
+}
+var WITH_KIDS = { en: (k) => `, with ${k}`, pl: (k) => `, z: ${k}` };
 var OPEN_TEXTS = {
   en: { appt_expired: ["Nobody took it", "Nobody took your request: {service} {range}."] },
   pl: { appt_expired: ["Nikt si\u0119 nie zg\u0142osi\u0142", "Nikt nie przyj\u0105\u0142 Twojej pro\u015Bby: {service} {range}."] }
@@ -154,7 +165,12 @@ function pushText(kind, params, lang, tz, id) {
   const withWho = params.other ? WITH[l](params.other) : status === "open" ? YOUR_OPEN[l] : "";
   const declined = (params.declined ?? []).map((d) => dayMonth(toMs(d), l, tz)).filter(Boolean);
   const total = (params.accepted ?? 0) + declined.length;
+  const kids = params.role === "client" ? "" : kidsText(params.kids, l);
+  const chat = (params.text ?? "").replace(/\s+/g, " ").trim();
   const vars = {
+    sender: params.sender || SOMEONE[l],
+    text: chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}\u2026` : chat,
+    kids: kids ? WITH_KIDS[l](kids) : "",
     when: fmt(ms, l, tz, true),
     time: fmt(toMs(params.time) ?? ms, l, tz, false),
     pickup: params.pickup ?? "",
@@ -177,18 +193,52 @@ function pushText(kind, params, lang, tz, id) {
     clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const fill = (s) => s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
-  return { title: fill(title), body: fill(body), tag: `${kind}:${id ?? ""}` };
+  const tidy = (s) => kind === "chat_message" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
+  const fill = (s) => tidy(
+    s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
+  );
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : `${kind}:${id ?? ""}`;
+  return { title: fill(title), body: fill(body), tag };
 }
 
 // supabase/functions/push-dispatch/dispatch.ts
-var openUrl = (kind) => kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
+var openUrl = (kind, params) => {
+  if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
+  return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
+};
 var MAX_ATTEMPTS = 5;
+var CHAT_GRACE_MS = 2e3;
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function isRead(deps, messageId) {
+  try {
+    return await deps.isMessageRead(messageId);
+  } catch {
+    return false;
+  }
+}
 async function dispatch(deps, limit = 100) {
-  const result = { sent: 0, failed: 0, dropped: 0 };
+  const result = { sent: 0, failed: 0, dropped: 0, skipped: 0 };
+  const now = deps.now ?? Date.now;
+  const wait = deps.wait ?? sleep;
   for (const row of await deps.pending(limit)) {
-    const text = pushText(row.kind, row.params ?? {}, row.lang, row.tz, row.appointment_id ?? row.ride_id);
-    const payload = JSON.stringify({ ...text, url: openUrl(row.kind) });
+    const params = row.params ?? {};
+    if (row.kind === "chat_message") {
+      const queued = Date.parse(row.created_at ?? "");
+      const left = Number.isFinite(queued) ? Math.min(CHAT_GRACE_MS, CHAT_GRACE_MS - (now() - queued)) : 0;
+      if (left > 0) await wait(left);
+      if (params.messageId && await isRead(deps, params.messageId)) {
+        await deps.markSent(row.id);
+        result.skipped++;
+        continue;
+      }
+    }
+    const text = pushText(row.kind, params, row.lang, row.tz, row.appointment_id ?? row.ride_id);
+    const payload = JSON.stringify({
+      ...text,
+      url: openUrl(row.kind, params),
+      kind: row.kind,
+      ...row.kind === "chat_message" && params.room ? { room: params.room } : {}
+    });
     const subs = await deps.subscriptions(row.user_id);
     let delivered = 0;
     let retry = false;
@@ -257,6 +307,10 @@ Deno.serve(async (req) => {
     },
     async dropSubscription(endpoint) {
       await db.from("push_subscriptions").delete().eq("endpoint", endpoint);
+    },
+    async isMessageRead(messageId) {
+      const { data, error } = await db.from("messages").select("read_at").eq("id", messageId).maybeSingle();
+      return !error && !!data?.read_at;
     }
   });
   return Response.json({ ...result, vapidPublicKey: pub });

@@ -59,6 +59,13 @@ Deno.serve(async (req) => {
     },
     async dropSubscription(endpoint) {
       await db.from("push_subscriptions").delete().eq("endpoint", endpoint);
+    },
+    async isMessageRead(messageId) {
+      // 2.3 (C6): the recipient read it meanwhile (the thread was in front) — no push for it then.
+      // Service role (messages is RLS-locked to the room's parties). In doubt — an id the table does
+      // not know, a hiccup — the message is sent.
+      const { data, error } = await db.from("messages").select("read_at").eq("id", messageId).maybeSingle();
+      return !error && !!data?.read_at;
     }
   });
   return Response.json({ ...result, vapidPublicKey: pub });

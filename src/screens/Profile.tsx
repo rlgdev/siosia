@@ -1,15 +1,18 @@
 // S2 Profile: nickname, language, own stats, My place and Services I offer (2.0, FR-140, FR-093),
 // links to Planned / History / vehicle, the app and notifications, account linking (US8), privacy.
+// 2.3 (FR-200, FR-210): my photo next to the nickname, and My kids.
 
 import { AppSection } from "../components/AppInstall";
 import { InfoTip } from "../components/InfoTip";
 import { useEffect, useState } from "react";
 import type { AccountInfo } from "../backend/types";
 import { PlaceInput } from "../components/PlaceInput";
-import { MasterChip } from "../components/ProfileIcon";
+import { PhotoPicker } from "../components/PhotoPicker";
+import { Avatar, Initial, MasterChip } from "../components/ProfileIcon";
 import { Confirm, Notice, Panel, RatingBadge, useBusy } from "../components/ui";
-import type { Place } from "../core/types";
+import { ACTIVE_STATUSES, type Place } from "../core/types";
 import { EntryIcon, localText } from "./Catalog";
+import { MyKids } from "./MyKids";
 import { useI18n } from "../i18n";
 import { resetDemo } from "../state/demo";
 import { useApp, useStore } from "../state/store";
@@ -32,10 +35,21 @@ export function ProfilePanel() {
   }, [api, store]);
 
   const p = app.profile;
+  // The server refuses a deletion during a ride (active_ride): say so instead of offering it (C2).
+  const rideOn = !!app.my?.ride && ACTIVE_STATUSES.includes(app.my.ride.status);
 
   return (
     <Panel title={t("profile.title")} onClose={() => store.closePanel()}>
       <section className="card stack">
+        {p && (
+          <PhotoPicker target={{ kind: "profile" }} current={p.photo} onChanged={() => store.reloadProfile()} testId="profile-photo">
+            <Avatar photo={p.photo} icon={p.masterId ? null : p.icon} size="md" fallback={<Initial name={p.nickname} />} />
+            <span className="with-info grow">
+              {t("photo.yours")}
+              <InfoTip text={t("photo.hint")} testId="profile-photo" />
+            </span>
+          </PhotoPicker>
+        )}
         {p?.masterId ? (
           <>
             <MasterChip />
@@ -80,6 +94,7 @@ export function ProfilePanel() {
 
       {p && <MyPlace key={p.home ? `${p.home.lat},${p.home.lng},${p.home.label}` : "none"} />}
       {p && !p.offersPreset && <ServicesIOffer />}
+      {p && <MyKids />}
 
       <AppSection />
 
@@ -176,9 +191,14 @@ export function ProfilePanel() {
             {t("demo.reset")}
           </button>
         )}
-        <button type="button" className="btn btn-danger-outline" onClick={() => setConfirmDelete(true)}>
+        <button type="button" className="btn btn-danger-outline" disabled={rideOn} onClick={() => setConfirmDelete(true)} data-testid="profile-delete">
           {t("profile.delete")}
         </button>
+        {rideOn && (
+          <p className="muted small" data-testid="profile-delete-ride">
+            {t("profile.deleteRide")}
+          </p>
+        )}
       </section>
       <Confirm
         open={confirmDelete}

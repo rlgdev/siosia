@@ -215,6 +215,14 @@ export interface AppointmentView {
   myRating: number | null;
   series: SeriesView | null;
   calendar: CalendarLinks;
+  /**
+   * 2.3: the client's kids attached to this appointment — full cards for the client and the
+   * provider, an empty list with `kidCount` for a candidate (FR-202).
+   */
+  kids: AttachedKid[];
+  kidCount: number;
+  /** Unread chat messages in this appointment's room (accepted appointments). */
+  unread: number;
 }
 
 export interface RepeatInput {
@@ -229,6 +237,8 @@ export interface ServiceRequestInput {
   serviceId: string;
   /** The provider's public id; null = an open request to anyone in the group (2.1). */
   providerId: string | null;
+  /** 2.3: the client's kids to attach (ids of their own kids); a series: to every occurrence. */
+  kidIds?: string[];
   startsAt: number;
   durationMin: number;
   place: Place | null;
@@ -331,6 +341,8 @@ export interface Profile {
   fixedFare: number | null;
   /** 2.0: what others see instead of the user id. */
   publicId: string | null;
+  /** 2.3: my photo as a signed URL (≤ 1 h), or null. */
+  photo: string | null;
   /** Catalog entries (kind "time") this person offers. */
   offers: string[];
   /** A master profile presets the offers (the toggles are hidden). */
@@ -346,7 +358,79 @@ export interface PublicParty {
   icon?: string | null;
   /** 2.1: the paint of this person's car (#rrggbb), so a car icon is drawn in it everywhere. */
   paint?: string | null;
+  /** 2.3: a signed URL of this person's photo (≤ 1 h) for a viewer allowed to see them; null = none. */
+  photo?: string | null;
 }
+
+// ---------- 2.3: kids, photos, chat ----------
+
+/** A kid as its owner sees it (S2 → My kids). */
+export interface Kid {
+  id: string;
+  name: string;
+  /** Signed URL (≤ 1 h) or null. */
+  photo: string | null;
+  bornYear: number | null;
+  note: string;
+  rating: RatingSummary;
+  /** Every rating this kid got, newest first (owner only). */
+  ratings: KidRatingView[];
+}
+
+export interface KidInput {
+  name: string;
+  bornYear: number | null;
+  note: string;
+}
+
+export interface KidRatingView {
+  appointmentId: string;
+  /** The provider who rated, by nickname. */
+  by: string;
+  stars: number;
+  comment: string;
+  at: number;
+}
+
+/** A kid as the provider of an appointment sees it (FR-202). */
+export interface AttachedKid {
+  id: string;
+  name: string;
+  photo: string | null;
+  /** Age in years from the year of birth, or null. */
+  age: number | null;
+  note: string;
+  rating: RatingSummary;
+  /** The viewer's own rating of this kid for this appointment, once given. */
+  myRating: number | null;
+}
+
+/** A chat room: a ride with its driver, or an accepted appointment. */
+export type ChatRoom = `ride:${string}` | `appt:${string}`;
+
+export interface ChatMessage {
+  id: string;
+  room: ChatRoom;
+  /** True when the viewer sent it. */
+  mine: boolean;
+  text: string;
+  sentAt: number;
+  /** When the other party read it (own messages), or when I read it. */
+  readAt: number | null;
+}
+
+export interface ChatThread {
+  room: ChatRoom;
+  /** The other party, as the viewer may see them. */
+  other: PublicParty;
+  messages: ChatMessage[];
+  /** Sending still allowed (live, or within 24 h after the end). */
+  open: boolean;
+  unread: number;
+}
+
+/** Unread counts per room the viewer belongs to (badges). */
+export type ChatUnread = Record<string, number>;
 
 export interface PublicDriver extends PublicParty {
   /** Only present once the driver is assigned to the viewer's ride (FR-044). */
@@ -373,6 +457,8 @@ export interface RideView {
   acceptedAt: number | null;
   /** 2.2: when the driver's car first moved towards a booked pickup (the rider is told). */
   departedAt: number | null;
+  /** 2.3: unread chat messages in this ride's room (once a driver is assigned). */
+  unread?: number;
   arrivedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;
@@ -444,6 +530,8 @@ export interface MyState {
   toAnswer: number;
   /** 2.1: open requests of others I could take (a series counts once). */
   openRequests: number;
+  /** 2.3: unread chat messages across my rooms. */
+  unreadChats: number;
   /** Upcoming items in both roles. */
   planned: number;
   nextPlanned: NextPlanned | null;

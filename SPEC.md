@@ -97,6 +97,12 @@ V40: booked ride accepted ∧ car moved ≥ DEPART_M (150 m) from first fix on d
 V41: ∀ directions link = google.com/maps/dir/?api=1 (driver Navigate, rider Walk) on every OS; ⊥ maps.apple.com
 V42: screen explanations live behind round i (InfoTip): popup ≤ 5 s, closes on 2nd tap / tap elsewhere, aria-label + role=tooltip; ⊥ standing paragraph for: vehicle.intro, profile.privacy/myPlaceHint/offersHint, wake.help, move.body, app.codeIntro, request.openNote, book.waiting/startsAt, driver.keepOpen/standbyInfo
 V43: a <button> inside a <label> → the label must carry htmlFor (else the button becomes the labelled control: unnamed input, label tap toggles the button); set-off judged only from fixes with accuracy ≤ 50 m and distance − both accuracies ≥ DEPART_M; a failed depart retries after ≥ 20 s, not per fix; re-dispatch clears departed_at (both twins); push-dispatch dist-bundle.ts contains every PushKind (tested)
+V44: kids: owner-only rows (name 1–30, photo?, born year?, note ≤200), ≤ 8/member; attached to appt by its client only (per occurrence); provider of that appt sees name/photo/age/note; candidate sees count only; drivers/others ⊥; deleting profile → kids + photos gone
+V45: kid rating: provider of a done appt, per attached kid, once, ≤ 24 h, 1–5 + comment ≤140; owner reads all; summary (mean,count) to owner + to provider of a later appt w/ that kid; ⊥ owner's own rating
+V46: photos: client-resized (≤512 px, JPEG ≤150 KB) → private bucket `photos` (demo: data URL); tables hold object path only; read via signed URL ≤ 1 h issued by server to an allowed viewer; one per profile/kid, replace deletes old; shown wherever the nickname is (icon = fallback)
+V47: chat room = ride:<id> (driver assigned) | appt:<id> (accepted); parties only (RLS + server; re-dispatched driver loses room); text ≤500; stored + live; writable while live + 24 h after end, then read-only; deleted with the ride/appt; ≤ 30 msgs / room / sender / 10 min → too_many
+V48: chat push `chat_message` to the other party (tag per room, opens the chat) unless they have the thread open; ⊥ to a driver while in_progress; read receipts (read_at) set when the thread is visible
+V49: ∀ per-user table (kids, kid_ratings, messages, photo paths, chat_presence) is re-keyed by the account move (redeem_transfer) and removed by delete_profile — both twins, tested together; photo ownership row-based (profile/kid row → path), object folders keyed by public_id (⊥ auth uid in any URL a viewer gets); 2-arg policy helpers ⊥ granted to clients (1-arg auth.uid() wrappers); chat push suppressed by server-side presence (chat_presence, 45 s) + dispatch read-check; removing a kid drops its object server-side
 
 ## §T tasks
 
@@ -123,6 +129,9 @@ T19|x|car colour: vehicles.paint + set_car_colour (SQL + engine), icon tint (Pro
 T20|x|release 2.1: review, re-run migration on live DB, push-dispatch bundle redeploy, push main, verify live|§15,V30–V38
 T21|x|2.2: departed_at + siosia_depart (SQL+engine+adapters), driver_departed texts EN/PL, driver-phone detector (runtime, DEPART_M), R3 status, Google Maps everywhere, InfoTip component + 11 descriptions behind it, i18n short lines, tests (engine, sql, push, components, e2e)|V40,V41,V42,FR-180,FR-181,FR-190
 T22|x|release 2.2: review, live DB migration (departed_at + siosia_depart), push-dispatch bundle, main|§15,V40–V42
+T23|x|2.3 backend: kids + kid_ratings + messages tables, photos bucket + signed-URL read, RPCs (kids CRUD, attach, rate kid, photo set/clear, chat send/list/read, room access), push kind chat_message, retention, RLS; engine twin (mock photos as data URLs, mock realtime chat); adapters; sql + engine tests|V44–V48,FR-200–225
+T24|x|2.3 UI: S2 My kids + photo pickers (resize), C2/C3 attach kids, provider's kid cards + rate-kid after done, kid card w/ ratings, photos everywhere nickname is, chat sheet (R3/D3/C3/P1 badge, live, read marks), i18n EN/PL, robot Siosia chat reply, tests (components, e2e)|V44–V48,FR-200–225
+T25|~|release 2.3: review, live DB migration + bucket, push-dispatch bundle, main, live check|§15,V44–V48
 
 ## §B bugs
 
@@ -135,3 +144,4 @@ B5|2026-10-20|pre-release review: templates stored client JSON verbatim, null-un
 B6|2026-10-21|2.1 review: take of open series w/ every date clashing for taker 'succeeded' → all dates declined, client told declined, request gone ∀ members (single clash already → overlap)|V35
 B7|2026-10-21|live check on public site: PlaceInput's own <form> nested in C2's <form> → Search button submitted the page, app reloaded w/o ?backend=mock (found only by driving the published app; unit/e2e used Here)|V39
 B8|2026-10-22|2.2 review: InfoTip <button> inside <label> stole the label (a11y, e2e getByLabel); set-off detector trusted coarse indoor fixes (false 'set off' while parked); retry per GPS fix on failure; re-dispatch kept departed_at (new driver shown as 'set off'); push bundle not rebuilt (driver_departed would send the booking_open text)|V43
+B9|2026-10-22|2.3 review (22 findings): account move left kids/kid ratings/messages/photos on the old uid (child data orphaned, un-deletable; engine twin moved them); kid removal orphaned its photo object; photo paths exposed the auth uid; 2-arg policy helpers were a membership oracle; chat push not suppressed on the live stack while the thread is open; deleteProfile wiped the bucket before the server could refuse; capture=environment hid the gallery|V49

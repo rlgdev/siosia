@@ -64,3 +64,30 @@ export function partyText(a: AppointmentView, t: T): string {
 
 /** The other party's nickname for a sentence ("Rate Siosia"), "Anyone" when there is none yet. */
 export const otherName = (a: AppointmentView, t: T): string => otherOf(a)?.nickname ?? t("appt.anyone");
+
+// ---------- 2.3: the attached kids (FR-202) ----------
+
+/** "Zosia", "Zosia and Kuba", "Zosia, Ola and Kuba" — names need no declension this way in Polish either. */
+export function joinNames(names: string[], lang: string): string {
+  if (names.length <= 1) return names.join("");
+  const and = lang === "pl" ? " i " : " and ";
+  return `${names.slice(0, -1).join(", ")}${and}${names[names.length - 1]}`;
+}
+
+/** "2 kids" / "dzieci: 2" — all a candidate of an open request learns about them. */
+export const kidCountText = (n: number, t: T): string => (n === 1 ? t("appt.kidOne") : t("appt.kidCount", { n }));
+
+/**
+ * The kids line of a P1 item and C3: "with Zosia and Kuba" for the two parties (the names the
+ * view carries), the count for a candidate, nothing without kids. A view from an older server has
+ * no kids at all.
+ */
+export function kidsLine(a: AppointmentView, lang: string, t: T): string | null {
+  if (a.role === "candidate") return a.kidCount > 0 ? kidCountText(a.kidCount, t) : null;
+  const kids = a.kids ?? [];
+  return kids.length ? t("appt.withKids", { names: joinNames(kids.map((k) => k.name), lang) }) : null;
+}
+
+/** A room exists once the appointment was accepted (FR-220); it stays readable after the end. */
+export const apptRoom = (a: AppointmentView): `appt:${string}` | null =>
+  a.status === "accepted" || a.status === "done" || (a.status === "cancelled" && a.answeredAt !== null) ? `appt:${a.id}` : null;

@@ -21,14 +21,21 @@ import {
   ServerError,
   type AppointmentStatus,
   type AppointmentView,
+  type AttachedKid,
   type AttachedRide,
   type AttachedStatus,
   type CatalogEntry,
   type CatalogItem,
+  type ChatMessage,
+  type ChatRoom,
+  type ChatThread,
   type HistoryItem,
+  type Kid,
+  type KidInput,
   type Leg,
   type PartyRole,
   type Planned,
+  type PublicParty,
   type PublicProvider,
   type RideTemplateInput,
   type ServiceRequestInput,
@@ -68,6 +75,8 @@ export interface UserRow {
   publicId?: string;
   offers?: string[];
   home?: Place | null;
+  /** 2.3: the photo's object path (never a URL — V46); null = none. */
+  photoPath?: string | null;
 }
 
 /**
@@ -244,6 +253,37 @@ export interface RatingRow {
   createdAt: number;
 }
 
+/** 2.3: a kid's profile — an owner-only row (FR-200); the photo is an object path, never a URL. */
+export interface KidRow {
+  id: string;
+  ownerId: string;
+  name: string;
+  photoPath: string | null;
+  bornYear: number | null;
+  note: string;
+  createdAt: number;
+}
+
+/** 2.3: the provider's rating of a kid attached to a done appointment (one per appointment and kid). */
+export interface KidRatingRow {
+  appointmentId: string;
+  kidId: string;
+  fromUser: string;
+  stars: number;
+  comment: string;
+  createdAt: number;
+}
+
+/** 2.3: a chat message; the room is ride:<id> or appt:<id> (FR-220). */
+export interface MessageRow {
+  id: string;
+  room: ChatRoom;
+  sender: string;
+  text: string;
+  sentAt: number;
+  readAt: number | null;
+}
+
 export interface DbState {
   version: 1;
   seq: number;
@@ -263,6 +303,16 @@ export interface DbState {
   /** 2.0 */
   appointments?: Record<string, ApptRow>;
   series?: Record<string, SeriesRow>;
+  /** 2.3 (optional: demo databases saved before 2.3 lack them) */
+  kids?: Record<string, KidRow>;
+  /** appointment id → the client's kids attached to it (FR-201). */
+  appointmentKids?: Record<string, string[]>;
+  kidRatings?: KidRatingRow[];
+  messages?: MessageRow[];
+  /** The demo's "bucket": object path → data URL (Supabase keeps the object in Storage). */
+  photos?: Record<string, string>;
+  /** user id → room → when they last had that thread open and visible (FR-222; Supabase: chat_presence). */
+  chatPresence?: Record<string, Record<string, number>>;
 }
 
 /** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
@@ -270,7 +320,26 @@ export const TRANSFER_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const normalizeTransfer = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 export function emptyDb(): DbState {
-  return { version: 1, seq: 0, users: {}, vehicles: {}, drivers: {}, members: {}, rides: {}, offers: {}, ratings: [], inviteFails: {}, appointments: {}, series: {} };
+  return {
+    version: 1,
+    seq: 0,
+    users: {},
+    vehicles: {},
+    drivers: {},
+    members: {},
+    rides: {},
+    offers: {},
+    ratings: [],
+    inviteFails: {},
+    appointments: {},
+    series: {},
+    kids: {},
+    appointmentKids: {},
+    kidRatings: [],
+    messages: [],
+    photos: {},
+    chatPresence: {}
+  };
 }
 
 export interface EngineConfig extends DeploymentConfig {
@@ -290,6 +359,21 @@ export interface PushEvent {
   params: PushParams;
 }
 
+/** 2.3: a chat message for one party's live thread (→ "chat" on topic user:<id>, Supabase: siosia_notify). */
+export interface ChatDelivery {
+  userId: string;
+  room: ChatRoom;
+  message: ChatMessage;
+}
+
+/** 2.3: a chat room as the server sees it: its two parties, whether sending is still allowed, and what it belongs to (the push tag). */
+interface RoomInfo {
+  parties: string[];
+  open: boolean;
+  rideId: string | null;
+  appointmentId: string | null;
+}
+
 export interface Effects {
   /** Users whose state changed (→ realtime "changed" on topic user:<id>). */
   notify: Set<string>;
@@ -297,6 +381,8 @@ export interface Effects {
   pingDrivers: boolean;
   /** Notifications to send (only users who turned them on get them). */
   push: PushEvent[];
+  /** 2.3: messages to deliver live, one per party (the sender's other tabs included). */
+  chat: ChatDelivery[];
 }
 
 export const normalizeInvite = (code: string) => code.trim().toUpperCase().replace(/\s+/g, "");
@@ -304,9 +390,28 @@ export const normalizeInvite = (code: string) => code.trim().toUpperCase().repla
 const NICK_RE = /^.{2,20}$/u;
 /** A car paint as #rrggbb (any case in, stored lower case; twin of the check in siosia_set_car_colour). */
 const PAINT_RE = /^#[0-9a-f]{6}$/i;
+/** 2.3 limits (twins of the checks in the SQL kid, photo and chat functions). */
+const KIDS_MAX = 8;
+const KID_NAME_MAX = 30;
+const KID_NOTE_MAX = 200;
+const KID_BORN_MIN = 1900;
+const CHAT_TEXT_MAX = 500;
+/** At most 30 messages per room per sender per 10 minutes (FR-225). */
+const CHAT_RATE_N = 30;
+const CHAT_RATE_MS = 10 * 60_000;
+/** Sending stays open this long after the ride / appointment ended (FR-223). */
+const CHAT_AFTER_END_MS = 24 * 3600_000;
+/**
+ * Someone seen in a room this recently has the thread open (the app stamps it on opening and every
+ * 20 s while visible) and gets no notification for it (FR-222; twin of the 45 s in siosia_send_message).
+ */
+const CHAT_PRESENCE_MS = 45_000;
+/** A photo as uploaded: a JPEG data URL; the app resizes to ≤ 150 KB, base64 adds a third (FR-210). */
+const PHOTO_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/;
+const PHOTO_MAX_CHARS = 220_000;
 
 export class Engine {
-  readonly effects: Effects = { notify: new Set(), pingDrivers: false, push: [] };
+  readonly effects: Effects = { notify: new Set(), pingDrivers: false, push: [], chat: [] };
   private readonly cfg: EngineConfig;
 
   constructor(
@@ -440,6 +545,22 @@ export class Engine {
       if (g.fromUser === old) g.fromUser = uid;
       if (g.toUser === old) g.toUser = uid;
     }
+    // 2.3 (V49): the kid ratings given, the messages sent and the chat presence move too and, like
+    // rides and ratings, a replaced profile's own rows of those merge (its presence yields to the
+    // newer stamp). The kids move too, but a replaced profile is a deleted one (FR-200): its own
+    // kids go first, photos included, and the providers who expect them hear (deleteKid). The photos
+    // follow their rows — the paths hold no user id — and the old account's photo comes with its
+    // user row, so a photo of the replaced profile is dropped.
+    for (const k of Object.values(this.db.kids ?? {})) if (k.ownerId === uid) this.deleteKid(k);
+    for (const k of Object.values(this.db.kids ?? {})) if (k.ownerId === old) k.ownerId = uid;
+    for (const g of this.db.kidRatings ?? []) if (g.fromUser === old) g.fromUser = uid;
+    for (const m of this.db.messages ?? []) if (m.sender === old) m.sender = uid;
+    const pres = this.db.chatPresence;
+    if (pres?.[old]) {
+      pres[uid] = { ...pres[old], ...(pres[uid] ?? {}) };
+      delete pres[old];
+    }
+    if (mine?.photoPath && mine.photoPath !== this.db.users[old].photoPath) delete this.db.photos?.[mine.photoPath];
     this.db.users[uid] = { ...this.db.users[old], id: uid };
     delete this.db.users[old];
     if (this.db.vehicles[old]) {
@@ -518,6 +639,7 @@ export class Engine {
       defaultDropoff: this.riderMaster(uid)?.dropoff ?? null,
       masterVehicle: (this.masterOf(uid)?.role === "driver" && this.masterOf(uid)?.vehicle) || null,
       publicId: this.publicIdOf(uid),
+      photo: this.signedUrl(u.photoPath),
       offers: this.offersOf(uid),
       offersPreset: !!this.linkedMaster(uid),
       home: u.home ?? this.riderMaster(uid)?.pickup ?? null
@@ -631,7 +753,13 @@ export class Engine {
     delete this.db.vehicles[uid];
     delete this.db.members[uid];
     if (this.db.linkMembers) delete this.db.linkMembers[uid];
-    this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null, offers: [], home: null };
+    // 2.3 (FR-200, V49): the kids go with the profile — their photos and ratings too — and so do my
+    // photo, the messages I sent and my chat presence.
+    for (const k of this.kidsOf(uid)) this.deleteKid(k);
+    if (u.photoPath) delete this.db.photos?.[u.photoPath];
+    if (this.db.messages?.length) this.db.messages = this.db.messages.filter((m) => m.sender !== uid);
+    delete this.db.chatPresence?.[uid];
+    this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null, offers: [], home: null, photoPath: null };
   }
 
   // ---------- reads ----------
@@ -658,6 +786,7 @@ export class Engine {
       standby: !!driver?.standbyUntil && driver.standbyUntil > this.now,
       openBookings:
         this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length,
+      unreadChats: this.unreadChats(uid),
       ...this.plannedSummary(uid)
     };
   }
@@ -901,6 +1030,7 @@ export class Engine {
         Math.abs((x.scheduledFor ?? 0) - (r.scheduledFor ?? 0)) < (Math.max(x.estMin, r.estMin) + 30) * 60_000
     );
     if (clash) throw new ServerError("overlap");
+    this.resetRoom(r);
     r.driverId = uid;
     this.notifyRide(r);
     this.pushTo(r.riderId, "booking_taken", r, { driver: this.db.users[uid].nickname });
@@ -1053,6 +1183,7 @@ export class Engine {
         this.closeOffer(o, "withdrawn");
         throw new ServerError("taken");
       }
+      this.resetRoom(r);
       r.status = "accepted";
       r.driverId = uid;
       r.acceptedAt = this.now;
@@ -1304,7 +1435,8 @@ export class Engine {
             : Object.values(this.db.users)
                 .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.offersOf(u.id).includes(e.id))
                 .sort((a, b) => a.nickname.localeCompare(b.nickname))
-                .map((u) => this.publicParty(u.id))
+                // Whoever browses the catalog may see the providers' photos (FR-211).
+                .map((u) => this.publicParty(u.id, true))
       }));
   }
 
@@ -1356,6 +1488,8 @@ export class Engine {
     const place = input.place ?? null;
     if ((place === null && e.needsPlace) || (place !== null && (!isValidLatLng(place) || !String(place.label ?? "").trim())) || note.length > 200)
       throw new ServerError("bad_input");
+    // 2.3 (FR-201): the client's own kids come along, on every occurrence of a series.
+    const kidIds = input.kidIds == null ? [] : this.ownKidIds(uid, input.kidIds);
     const price = e.price && "perHour" in e.price ? Math.round(((e.price.perHour * d) / 60) * 100) / 100 : e.price && "fixed" in e.price ? e.price.fixed : null;
     // The occurrences: one, or a series at the same wall-clock time every 1 or 2 weeks.
     const tz = this.cfg.timezone;
@@ -1444,6 +1578,7 @@ export class Engine {
         seq: series ? i + 1 : null
       };
       (this.db.appointments ??= {})[a.id] = a;
+      if (kidIds.length) (this.db.appointmentKids ??= {})[a.id] = [...kidIds];
       first ??= a;
     });
     this.notifyAppt(first!);
@@ -1701,6 +1836,346 @@ export class Engine {
     this.notifyAppt(a);
   }
 
+  // ---------- 2.3: kids (FR-200–204, V44, V45) ----------
+
+  /** My kids with every rating they got (S2 → My kids), oldest first. */
+  kids(uid: string): Kid[] {
+    this.requireUser(uid);
+    return this.kidsOf(uid).map((k) => this.kidView(k));
+  }
+
+  addKid(uid: string, input: KidInput): Kid {
+    this.requireUser(uid);
+    const clean = this.cleanKid(input);
+    if (this.kidsOf(uid).length >= KIDS_MAX) throw new ServerError("too_many");
+    const k: KidRow = { id: this.nextId("k"), ownerId: uid, photoPath: null, createdAt: this.now, ...clean };
+    (this.db.kids ??= {})[k.id] = k;
+    this.effects.notify.add(uid);
+    return this.kidView(k);
+  }
+
+  updateKid(uid: string, id: string, input: KidInput): Kid {
+    const k = this.ownKid(uid, id);
+    Object.assign(k, this.cleanKid(input));
+    this.kidChanged(k);
+    return this.kidView(k);
+  }
+
+  /** Removes one of my kids: its photo, ratings and attachments go with it (FR-204). */
+  removeKid(uid: string, id: string): void {
+    this.deleteKid(this.ownKid(uid, id));
+    this.effects.notify.add(uid);
+  }
+
+  /** The client attaches (replaces) their own kids on an appointment, until it ends (FR-201). */
+  setAppointmentKids(uid: string, id: string, kidIds: string[]): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a) throw new ServerError("not_found");
+    if (a.clientId !== uid) throw new ServerError("forbidden");
+    // Ended = done, declined, cancelled or expired (an accepted one past its end is done by the sweep).
+    if (a.status !== "requested" && a.status !== "accepted") throw new ServerError("illegal_transition");
+    (this.db.appointmentKids ??= {})[a.id] = this.ownKidIds(uid, kidIds);
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
+  /**
+   * The provider rates an attached kid once, within 24 h after a done appointment (FR-203). The
+   * owner's own rating (FR-060) is a different table and stays untouched.
+   */
+  rateKid(uid: string, appointmentId: string, kidId: string, stars: number, comment: string): void {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[appointmentId];
+    if (!a || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    if (a.clientId === uid) throw new ServerError("forbidden");
+    if (!this.kidsIn(a.id).some((k) => k.id === kidId)) throw new ServerError("not_found");
+    if (a.status !== "done") throw new ServerError("illegal_transition");
+    if (this.now > (a.endedAt ?? this.endOf(a)) + SERVER.apptRatingWindowS * 1000) throw new ServerError("window_closed");
+    const s = Math.round(stars);
+    if (!Number.isFinite(stars) || s < 1 || s > 5) throw new ServerError("bad_input");
+    const all = (this.db.kidRatings ??= []);
+    if (all.some((g) => g.appointmentId === a.id && g.kidId === kidId)) throw new ServerError("already_rated");
+    all.push({ appointmentId: a.id, kidId, fromUser: uid, stars: s, comment: String(comment ?? "").trim().slice(0, 140), createdAt: this.now });
+    this.notifyAppt(a);
+  }
+
+  private kidsOf(uid: string): KidRow[] {
+    return Object.values(this.db.kids ?? {})
+      .filter((k) => k.ownerId === uid)
+      .sort((x, y) => x.createdAt - y.createdAt);
+  }
+
+  /** One of the caller's kids (not_found for anyone else's). */
+  private ownKid(uid: string, id: string): KidRow {
+    this.requireUser(uid);
+    const k = this.db.kids?.[id];
+    if (!k || k.ownerId !== uid) throw new ServerError("not_found");
+    return k;
+  }
+
+  /** A kid as stored: name 1–30 trimmed, year of birth 1900…this year or null, note ≤ 200 trimmed. */
+  private cleanKid(input: KidInput): Pick<KidRow, "name" | "bornYear" | "note"> {
+    const name = String(input?.name ?? "").trim();
+    const note = String(input?.note ?? "").trim();
+    const born = input?.bornYear ?? null;
+    if (name.length < 1 || name.length > KID_NAME_MAX || note.length > KID_NOTE_MAX) throw new ServerError("bad_input");
+    if (born !== null && (!Number.isInteger(born) || born < KID_BORN_MIN || born > this.year())) throw new ServerError("bad_input");
+    return { name, bornYear: born, note };
+  }
+
+  /** The caller's own kids, each once (bad_input for anyone else's, an unknown one, or not a list). */
+  private ownKidIds(uid: string, kidIds: unknown): string[] {
+    if (!Array.isArray(kidIds)) throw new ServerError("bad_input");
+    const ids = [...new Set(kidIds)];
+    for (const id of ids) if (typeof id !== "string" || this.db.kids?.[id]?.ownerId !== uid) throw new ServerError("bad_input");
+    return ids as string[];
+  }
+
+  /** The kids attached to an appointment (a removed kid is gone from it). */
+  private kidsIn(appointmentId: string): KidRow[] {
+    return (this.db.appointmentKids?.[appointmentId] ?? []).map((id) => this.db.kids?.[id]).filter((k): k is KidRow => !!k);
+  }
+
+  /** Its photo, ratings and attachments go with a kid; providers still expecting it refetch. */
+  private deleteKid(k: KidRow): void {
+    this.kidChanged(k); // while the attachments still say who expects the kid
+    if (k.photoPath) delete this.db.photos?.[k.photoPath];
+    this.db.kidRatings = (this.db.kidRatings ?? []).filter((g) => g.kidId !== k.id);
+    for (const [aid, ids] of Object.entries(this.db.appointmentKids ?? {})) if (ids.includes(k.id)) this.db.appointmentKids![aid] = ids.filter((x) => x !== k.id);
+    delete this.db.kids![k.id];
+  }
+
+  /** The owner's tabs and the providers of upcoming appointments the kid is attached to refetch. */
+  private kidChanged(k: KidRow): void {
+    this.effects.notify.add(k.ownerId);
+    for (const a of Object.values(this.db.appointments ?? {}))
+      if (a.providerId && (a.status === "requested" || a.status === "accepted") && (this.db.appointmentKids?.[a.id] ?? []).includes(k.id)) this.effects.notify.add(a.providerId);
+  }
+
+  /** A kid's ratings, newest first. */
+  private kidRatingsOf(kidId: string): KidRatingRow[] {
+    return (this.db.kidRatings ?? []).filter((g) => g.kidId === kidId).sort((x, y) => y.createdAt - x.createdAt);
+  }
+
+  /** A kid's summary (FR-203): the mean of all its ratings to one decimal; null without any. */
+  private kidSummary(ratings: KidRatingRow[]): RatingSummary {
+    const count = ratings.length;
+    return { mean: count ? round1(ratings.reduce((s, g) => s + g.stars, 0) / count) : null, count };
+  }
+
+  /** A kid as its owner sees it: every rating with who gave it. */
+  private kidView(k: KidRow): Kid {
+    const got = this.kidRatingsOf(k.id);
+    return {
+      id: k.id,
+      name: k.name,
+      photo: this.signedUrl(k.photoPath),
+      bornYear: k.bornYear,
+      note: k.note,
+      rating: this.kidSummary(got),
+      ratings: got.map((g) => ({ appointmentId: g.appointmentId, by: this.nick(g.fromUser), stars: g.stars, comment: g.comment, at: g.createdAt }))
+    };
+  }
+
+  /** The attached kids as a party of the appointment sees them (FR-202), with the viewer's own rating. */
+  private attachedKids(a: ApptRow, viewer: string): AttachedKid[] {
+    return this.kidsIn(a.id).map((k) => {
+      const got = this.kidRatingsOf(k.id);
+      return {
+        id: k.id,
+        name: k.name,
+        photo: this.signedUrl(k.photoPath),
+        age: k.bornYear === null ? null : this.year() - k.bornYear,
+        note: k.note,
+        rating: this.kidSummary(got),
+        myRating: got.find((g) => g.appointmentId === a.id && g.fromUser === viewer)?.stars ?? null
+      };
+    });
+  }
+
+  /** This year (UTC, like extract(year from now()) on the server). */
+  private year(): number {
+    return new Date(this.now).getUTCFullYear();
+  }
+
+  // ---------- 2.3: photos (FR-210–212, V46) ----------
+
+  /**
+   * Stores a photo (a JPEG the app already resized) for my profile or one of my kids, keeping only
+   * its object path in the row; null clears it; replacing deletes the old object. Returns the
+   * signed URL — in the demo the stored data URL itself (Supabase signs the object for ≤ 1 h).
+   */
+  setPhoto(uid: string, target: { kind: "profile" } | { kind: "kid"; id: string }, dataUrl: string | null): string | null {
+    const u = this.requireUser(uid);
+    const kid = target?.kind === "kid" ? this.ownKid(uid, target.id) : null;
+    const row: { photoPath?: string | null } | null = target?.kind === "profile" ? u : kid;
+    if (!row) throw new ServerError("bad_input");
+    if (dataUrl !== null && (typeof dataUrl !== "string" || dataUrl.length > PHOTO_MAX_CHARS || !PHOTO_RE.test(dataUrl))) throw new ServerError("bad_input");
+    const photos = (this.db.photos ??= {});
+    if (row.photoPath) delete photos[row.photoPath];
+    row.photoPath = null;
+    if (dataUrl !== null) {
+      const path = `${target.kind === "profile" ? "profiles" : "kids"}/${this.nextId("ph")}.jpg`;
+      photos[path] = dataUrl;
+      row.photoPath = path;
+    }
+    // A kid's card changed: the providers expecting the kid refetch too (as siosia_set_photo does).
+    if (kid) this.kidChanged(kid);
+    else this.effects.notify.add(uid);
+    return this.signedUrl(row.photoPath);
+  }
+
+  /** The demo's "signed URL" of an object path: the stored data URL; null without a photo. */
+  private signedUrl(path: string | null | undefined): string | null {
+    return (path && this.db.photos?.[path]) || null;
+  }
+
+  // ---------- 2.3: chat (FR-220–225, V47, V48) ----------
+
+  /**
+   * A room's thread as one of its parties sees it; `markRead` — the thread is open and visible —
+   * sets readAt on the other's messages (FR-224) and stamps the reader's presence in the room, so
+   * no notification reaches them for what they are looking at (FR-222; the app re-stamps every 20 s).
+   */
+  chat(uid: string, room: ChatRoom, markRead = false): ChatThread {
+    this.requireUser(uid);
+    this.sweep();
+    const info = this.room(room, uid);
+    const other = info.parties.find((p) => p !== uid)!;
+    const msgs = this.messagesIn(room);
+    if (markRead) {
+      const pres = (this.db.chatPresence ??= {});
+      pres[uid] = { ...(pres[uid] ?? {}), [room]: this.now };
+      let changed = false;
+      for (const m of msgs) {
+        if (m.sender === uid || m.readAt !== null) continue;
+        m.readAt = this.now;
+        changed = true;
+      }
+      // The sender sees the read marks; the reader's other tabs drop the badge.
+      if (changed) {
+        this.effects.notify.add(other);
+        this.effects.notify.add(uid);
+      }
+    }
+    return {
+      room,
+      other: this.party(other, true),
+      messages: msgs.map((m) => this.messageView(m, uid)),
+      open: info.open,
+      unread: msgs.filter((m) => m.sender !== uid && m.readAt === null).length
+    };
+  }
+
+  /** Sends to the other party of a room I belong to (FR-223, FR-225): stored, delivered live, pushed once. */
+  sendMessage(uid: string, room: ChatRoom, text: string): ChatMessage {
+    this.requireUser(uid);
+    this.sweep();
+    const info = this.room(room, uid);
+    if (!info.open) throw new ServerError("illegal_transition");
+    const clean = String(text ?? "").trim();
+    if (clean.length < 1 || clean.length > CHAT_TEXT_MAX) throw new ServerError("bad_input");
+    const all = (this.db.messages ??= []);
+    if (all.filter((m) => m.room === room && m.sender === uid && m.sentAt > this.now - CHAT_RATE_MS).length >= CHAT_RATE_N) throw new ServerError("too_many");
+    const m: MessageRow = { id: this.nextId("m"), room, sender: uid, text: clean, sentAt: this.now, readAt: null };
+    all.push(m);
+    for (const p of info.parties) {
+      this.effects.notify.add(p);
+      this.effects.chat.push({ userId: p, room, message: this.messageView(m, p) });
+    }
+    // No phone while driving (FR-222): a driver on a trip is not told; the message waits in the
+    // thread. Someone looking at the thread right now sees it land live and is not told either.
+    // The notification carries the whole text; push-text cuts it to the first words.
+    const other = info.parties.find((p) => p !== uid)!;
+    if (this.isMember(other) && !this.driving(other) && !this.inRoom(other, room))
+      this.effects.push.push({
+        userId: other,
+        kind: "chat_message",
+        rideId: info.rideId,
+        appointmentId: info.appointmentId,
+        params: { sender: this.nick(uid), text: clean, room, messageId: m.id }
+      });
+    return this.messageView(m, uid);
+  }
+
+  /** Seen in the room within the presence window: the thread is open on their screen (FR-222). */
+  private inRoom(uid: string, room: string): boolean {
+    const seen = this.db.chatPresence?.[uid]?.[room];
+    return seen !== undefined && this.now - seen < CHAT_PRESENCE_MS;
+  }
+
+  /** A room's two parties, whether sending is still allowed, and the ride / appointment for the tag; null = no such room. */
+  private roomOf(room: string): RoomInfo | null {
+    const parts = String(room ?? "").split(":");
+    if (parts.length !== 2) return null;
+    const [kind, id] = parts;
+    if (kind === "ride") {
+      // Opens with the driver (FR-220); a re-dispatched ride has none until the next one accepts,
+      // and its old driver is no party any more (FR-223).
+      const r = this.db.rides[id];
+      if (!r || !r.driverId) return null;
+      return { parties: [r.riderId, r.driverId], open: this.stillOpen(r.endedAt), rideId: r.id, appointmentId: null };
+    }
+    if (kind === "appt") {
+      // Opens on acceptance: an answered one with a provider that was not declined (answeredAt
+      // is set on accept and decline only; a withdrawn or expired request was never answered).
+      const a = this.db.appointments?.[id];
+      if (!a || !a.providerId || a.answeredAt === null || a.status === "declined" || a.status === "expired") return null;
+      return { parties: [a.clientId, a.providerId], open: this.stillOpen(a.endedAt), rideId: null, appointmentId: a.id };
+    }
+    return null;
+  }
+
+  /** The room for one of its parties (not_found for anyone else, or when there is no such room). */
+  private room(room: string, uid: string): RoomInfo {
+    const info = this.roomOf(room);
+    if (!info || !info.parties.includes(uid)) throw new ServerError("not_found");
+    return info;
+  }
+
+  /** Live, or within 24 h after the end (FR-223). */
+  private stillOpen(endedAt: number | null | undefined): boolean {
+    return endedAt == null || this.now <= endedAt + CHAT_AFTER_END_MS;
+  }
+
+  /**
+   * A ride gets a (new) driver: its thread starts afresh, so the words exchanged with a driver who
+   * cancelled or gave the booking back reach nobody else (FR-223). Nothing to do on a first driver.
+   */
+  private resetRoom(r: RideRow): void {
+    if (this.db.messages?.length) this.db.messages = this.db.messages.filter((m) => m.room !== `ride:${r.id}`);
+  }
+
+  /** The driver of a ride under way right now (FR-222). */
+  private driving(uid: string): boolean {
+    return Object.values(this.db.rides).some((r) => r.driverId === uid && r.status === "in_progress");
+  }
+
+  /** A room's messages, oldest first. */
+  private messagesIn(room: string): MessageRow[] {
+    return (this.db.messages ?? []).filter((m) => m.room === room).sort((x, y) => x.sentAt - y.sentAt);
+  }
+
+  private messageView(m: MessageRow, viewer: string): ChatMessage {
+    return { id: m.id, room: m.room, mine: m.sender === viewer, text: m.text, sentAt: m.sentAt, readAt: m.readAt };
+  }
+
+  /** The other party's messages in a room the viewer has not read yet. */
+  private unreadIn(room: string, viewer: string): number {
+    return (this.db.messages ?? []).filter((m) => m.room === room && m.sender !== viewer && m.readAt === null).length;
+  }
+
+  /** 2.3: unread messages across every room I am a party to (the badge). */
+  private unreadChats(uid: string): number {
+    let n = 0;
+    for (const r of Object.values(this.db.rides)) if (r.driverId && (r.riderId === uid || r.driverId === uid)) n += this.unreadIn(`ride:${r.id}`, uid);
+    for (const a of Object.values(this.db.appointments ?? {})) if ((a.clientId === uid || a.providerId === uid) && this.roomOf(`appt:${a.id}`)) n += this.unreadIn(`appt:${a.id}`, uid);
+    return n;
+  }
+
   // ---------- 2.0: internals ----------
 
   private service(id: string): CatalogEntry | null {
@@ -1727,8 +2202,8 @@ export class Engine {
     return u.publicId;
   }
 
-  private publicParty(uid: string): PublicProvider {
-    return { ...this.party(uid), publicId: this.publicIdOf(uid) };
+  private publicParty(uid: string, showPhoto: boolean): PublicProvider {
+    return { ...this.party(uid, showPhoto), publicId: this.publicIdOf(uid) };
   }
 
   /** 2.1: every member with a profile but `except` — who sees an open request (V34). */
@@ -1914,6 +2389,8 @@ export class Engine {
         client: this.nick(a.clientId),
         provider: this.nick(a.providerId),
         place: a.place?.label ?? "",
+        // 2.3 (FR-202): the provider hears who comes ("with Zosia and Kuba"); the client knows their own kids.
+        ...(userId === a.providerId && this.kidsIn(a.id).length ? { kids: this.kidsIn(a.id).map((k) => k.name) } : {}),
         ...extra
       }
     });
@@ -1992,8 +2469,9 @@ export class Engine {
       note: a.note,
       price: a.price,
       currency: a.currency,
-      client: this.publicParty(a.clientId),
-      provider: a.providerId ? this.publicParty(a.providerId) : null,
+      // The parties see each other's photo; a candidate is not a party yet (FR-212).
+      client: this.publicParty(a.clientId, !candidate),
+      provider: a.providerId ? this.publicParty(a.providerId, !candidate) : null,
       requestedAt: a.requestedAt,
       answeredAt: a.answeredAt,
       endedAt: a.endedAt,
@@ -2002,6 +2480,10 @@ export class Engine {
       rides: candidate ? [] : this.attached(a, viewer),
       reminders: candidate ? [] : [...a.reminded],
       myRating: candidate ? null : this.db.ratings.find((x) => x.appointmentId === a.id && x.fromUser === viewer)?.stars ?? null,
+      // 2.3 (FR-202): the kids' cards for the two parties; a candidate sees how many ("2 kids").
+      kids: candidate ? [] : this.attachedKids(a, viewer),
+      kidCount: this.kidsIn(a.id).length,
+      unread: candidate || !this.roomOf(`appt:${a.id}`) ? 0 : this.unreadIn(`appt:${a.id}`, viewer),
       series: s
         ? {
             id: s.id,
@@ -2216,14 +2698,19 @@ export class Engine {
     return summarizeRatings(stars);
   }
 
-  /** A person as others see them (siosia_party): 2.1 adds the paint of their car (null when none). */
-  private party(uid: string) {
+  /**
+   * A person as others see them (siosia_party): 2.1 adds the paint of their car (null when none);
+   * 2.3 their photo, but only for a viewer allowed to see them — the other party of their ride or
+   * appointment, a catalog viewer, a chat partner (FR-212). Null otherwise, as without a photo.
+   */
+  private party(uid: string, showPhoto: boolean): PublicParty {
     const u = this.db.users[uid];
     return {
       nickname: u ? u.nickname : "Deleted user",
       rating: this.rating(uid),
       icon: this.masterOf(uid)?.icon ?? null,
-      paint: this.db.vehicles[uid]?.paint ?? null
+      paint: this.db.vehicles[uid]?.paint ?? null,
+      photo: showPhoto && u && !u.deleted ? this.signedUrl(u.photoPath) : null
     };
   }
 
@@ -2231,6 +2718,8 @@ export class Engine {
   private rideView(r: RideRow, viewer: string): RideView {
     const role = r.riderId === viewer ? "rider" : "driver";
     const mine = this.db.ratings.find((x) => x.rideId === r.id && x.fromUser === viewer);
+    // Photos for the two parties only — a driver browsing open bookings is not one yet (FR-212).
+    const isParty = r.riderId === viewer || r.driverId === viewer;
     return {
       id: r.id,
       status: r.status,
@@ -2260,8 +2749,10 @@ export class Engine {
       round: r.round,
       expiresAt: this.expiresAt(r),
       scheduledFor: r.scheduledFor ?? null,
-      rider: this.party(r.riderId),
-      driver: r.driverId ? { ...this.party(r.driverId), vehicle: this.vehicleOf(r.driverId) } : null,
+      rider: this.party(r.riderId, isParty),
+      driver: r.driverId ? { ...this.party(r.driverId, isParty), vehicle: this.vehicleOf(r.driverId) } : null,
+      // 2.3: the room opens with a driver (FR-220); nothing for anyone but the two parties.
+      unread: r.driverId && isParty ? this.unreadIn(`ride:${r.id}`, viewer) : 0,
       myRating: mine ? mine.stars : null,
       // The appointment and leg are the rider's business only (FR-114).
       appointmentId: role === "rider" ? r.appointmentId ?? null : null,
@@ -2285,7 +2776,8 @@ export class Engine {
       fare: r.fare,
       currency: r.currency,
       fareIsEstimate: r.fareIsEstimate,
-      rider: this.party(r.riderId)
+      // The offer card shows who asks, not their photo: the driver is no party yet (FR-212).
+      rider: this.party(r.riderId, false)
     };
   }
 

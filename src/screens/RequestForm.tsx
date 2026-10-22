@@ -4,10 +4,13 @@
 // occurrence when the entry has one. Send request stays disabled until the form is valid.
 // 2.1 (FR-094, FR-161): "Anyone who can" sends an open request (providerId null) that everyone in
 // the group sees until someone takes it; preselected when nobody offers the entry.
+// 2.3 (FR-201): a client with kids ticks the ones who will be there; they travel as kidIds (a
+// series: to every occurrence) and the provider sees them — nobody else.
 
 import { useEffect, useMemo, useState } from "react";
 import { InfoTip } from "../components/InfoTip";
 import { fromInput, roundUp, seriesStarts, toDateInput, toLocalInput } from "../components/datetime";
+import { KidPicker, useMyKids } from "../components/Kids";
 import { PlaceInput } from "../components/PlaceInput";
 import { durationText, EntryIcon, localText } from "./Catalog";
 import { Money, Panel, RatingBadge, useBusy } from "../components/ui";
@@ -97,6 +100,9 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   const [place, setPlace] = useState<Place | null>(home);
   const [keepHome, setKeepHome] = useState(false);
   const [note, setNote] = useState("");
+  // The picker shows only to a client who has kids (none: nothing to tick).
+  const [kids] = useMyKids();
+  const [kidIds, setKidIds] = useState<string[]>([]);
 
   const startMs = fromInput(start);
   const every = repeat === "biweekly" ? 2 : 1;
@@ -133,7 +139,8 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
         durationMin: duration,
         place,
         note: note.trim(),
-        repeat: rep
+        repeat: rep,
+        ...(kidIds.length ? { kidIds } : {})
       });
       if (keepHome && place) await store.api.saveHome(place).then(() => store.reloadProfile());
       // The request now waits in Planned (US9).
@@ -238,6 +245,17 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
         </div>
       )}
       <PlaceInput label={t("request.place")} value={place} onChange={setPlace} home={home} testId="request-place" optional={!entry.needsPlace} />
+      {kids && kids.length > 0 && (
+        <fieldset className="field" data-testid="request-kids">
+          <legend>
+            <span className="with-info">
+              {t("request.kids")}
+              <InfoTip text={t("request.kidsHint")} testId="request-kids" />
+            </span>
+          </legend>
+          <KidPicker kids={kids} selected={kidIds} onChange={setKidIds} />
+        </fieldset>
+      )}
       {!home && place && (
         <label className="switch-row">
           <input type="checkbox" checked={keepHome} onChange={(e) => setKeepHome(e.target.checked)} />

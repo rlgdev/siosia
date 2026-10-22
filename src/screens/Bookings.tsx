@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTip } from "../components/InfoTip";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { DriverIcon, ProfileIcon } from "../components/ProfileIcon";
+import { ChatButton } from "../components/ChatSheet";
+import { Avatar, DriverIcon } from "../components/ProfileIcon";
 import { Confirm, Money, Panel, RatingBadge, useBusy } from "../components/ui";
 import { coarse, haversineKm } from "../core/geo";
 import type { OpenBooking, RideView } from "../core/types";
@@ -70,6 +71,8 @@ export function RiderBookingCard({ r, onChanged }: { r: RideView; onChanged: () 
         </p>
       )}
       <AddToCalendar ride={r} />
+      {/* The room opens with the driver (FR-220). */}
+      {r.driver && <ChatButton room={`ride:${r.id}`} unread={r.unread} />}
       <button type="button" className="btn btn-danger-outline" disabled={busy} onClick={() => setConfirm(true)} data-testid="cancel-booking">
         {t("book.cancel")}
       </button>
@@ -115,7 +118,7 @@ export function DriverBookingCard({ r, onChanged }: { r: RideView; onChanged: ()
         </strong>
       </div>
       <p>
-        <ProfileIcon icon={r.rider.icon} size="sm" paint={r.rider.paint} /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
+        <Avatar photo={r.rider.photo} icon={r.rider.icon} size="sm" paint={r.rider.paint} /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
       </p>
       <Route r={r} />
       {leave !== null && <p className="hint">{t("book.leaveBy", { time: time(leave) })}</p>}
@@ -131,6 +134,7 @@ export function DriverBookingCard({ r, onChanged }: { r: RideView; onChanged: ()
         </p>
       )}
       <AddToCalendar ride={r} />
+      <ChatButton room={`ride:${r.id}`} unread={r.unread} />
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setConfirm(true)} data-testid="release-booking">
         {t("book.release")}
       </button>
@@ -201,7 +205,7 @@ export function OpenBookingsList({ open, onChanged }: { open: OpenBooking[]; onC
                 </strong>
               </div>
               <p>
-                <ProfileIcon icon={r.rider.icon} size="sm" paint={r.rider.paint} /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
+                <Avatar photo={r.rider.photo} icon={r.rider.icon} size="sm" paint={r.rider.paint} /> <strong>{r.rider.nickname}</strong> <RatingBadge rating={r.rider.rating} />
                 {distanceKm !== null && <span className="muted small"> · {t("book.away", { km: distanceKm.toFixed(1) })}</span>}
               </p>
               <Route r={r} />
