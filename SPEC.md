@@ -93,6 +93,10 @@ V36: open request created → 1 appt_open ∀ other member (recipient lang, ?ope
 V37: open request reminders & expiry → client only ("nobody took it"); provider-less views/texts/ics ⊥ crash (provider null ∀ code paths: chips, push-text, ics, history, calendar)
 V38: car icon tap (own driver icon) → colour swatches (10); choose → vehicle.colour (driver lang) + vehicle.paint #rrggbb, server-validated; icon drawn in paint ∀ places (S1, D1, profile, rider's driver card, booking card)
 V39: no <form> nested in a <form>: PlaceInput (C2, ride sheets, S2) searches w/ a plain button + Enter; ∀ screen form submits only its own action; e2e covers address search inside C2
+V40: booked ride accepted ∧ car moved ≥ DEPART_M (150 m) from first fix on driver phone → 1 depart call → departed_at set once, 1 driver_departed push to rider, R3 status "set off"; repeats/other statuses/non-driver → no-op|forbidden; rider's view carries departedAt
+V41: ∀ directions link = google.com/maps/dir/?api=1 (driver Navigate, rider Walk) on every OS; ⊥ maps.apple.com
+V42: screen explanations live behind round i (InfoTip): popup ≤ 5 s, closes on 2nd tap / tap elsewhere, aria-label + role=tooltip; ⊥ standing paragraph for: vehicle.intro, profile.privacy/myPlaceHint/offersHint, wake.help, move.body, app.codeIntro, request.openNote, book.waiting/startsAt, driver.keepOpen/standbyInfo
+V43: a <button> inside a <label> → the label must carry htmlFor (else the button becomes the labelled control: unnamed input, label tap toggles the button); set-off judged only from fixes with accuracy ≤ 50 m and distance − both accuracies ≥ DEPART_M; a failed depart retries after ≥ 20 s, not per fix; re-dispatch clears departed_at (both twins); push-dispatch dist-bundle.ts contains every PushKind (tested)
 
 ## §T tasks
 
@@ -117,6 +121,8 @@ T17|x|open requests backend: SQL + engine twin (provider_id null, candidates' li
 T18|x|open requests UI: C1 entries never disabled + hint, C2 "Anyone who can" + visibility note, P1 "You could help (N)" + I can do it (take sheet w/ ride ticks), S1 badge, C3 candidate view, chips/texts for provider null, i18n EN/PL, robot Siosia takes open requests, component + e2e tests|V34–V37,FR-090,FR-094,FR-161,FR-163
 T19|x|car colour: vehicles.paint + set_car_colour (SQL + engine), icon tint (ProfileIcon paint), colour sheet on car icon tap, rider views tinted, i18n, tests|V38,FR-170
 T20|x|release 2.1: review, re-run migration on live DB, push-dispatch bundle redeploy, push main, verify live|§15,V30–V38
+T21|x|2.2: departed_at + siosia_depart (SQL+engine+adapters), driver_departed texts EN/PL, driver-phone detector (runtime, DEPART_M), R3 status, Google Maps everywhere, InfoTip component + 11 descriptions behind it, i18n short lines, tests (engine, sql, push, components, e2e)|V40,V41,V42,FR-180,FR-181,FR-190
+T22|~|release 2.2: review, live DB migration (departed_at + siosia_depart), push-dispatch bundle, main|§15,V40–V42
 
 ## §B bugs
 
@@ -128,3 +134,4 @@ B4|2026-10-20|pre-release review: escapeText only mapped `\r?\n` → lone CR / U
 B5|2026-10-20|pre-release review: templates stored client JSON verbatim, null-unsafe checks passed missing fields, valid_place NULL on missing lng, label rules differ by twin|V33
 B6|2026-10-21|2.1 review: take of open series w/ every date clashing for taker 'succeeded' → all dates declined, client told declined, request gone ∀ members (single clash already → overlap)|V35
 B7|2026-10-21|live check on public site: PlaceInput's own <form> nested in C2's <form> → Search button submitted the page, app reloaded w/o ?backend=mock (found only by driving the published app; unit/e2e used Here)|V39
+B8|2026-10-22|2.2 review: InfoTip <button> inside <label> stole the label (a11y, e2e getByLabel); set-off detector trusted coarse indoor fixes (false 'set off' while parked); retry per GPS fix on failure; re-dispatch kept departed_at (new driver shown as 'set off'); push bundle not rebuilt (driver_departed would send the booking_open text)|V43

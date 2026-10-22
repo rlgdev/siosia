@@ -3,11 +3,13 @@
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync, readdirSync } from "node:fs";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { DriverIcon, MasterChip, ProfileIcon } from "../../src/components/ProfileIcon";
 import { CAR_PAINTS, carPaint, iconLabel, iconSvg, normalPaint, profileIcon, shade, shadesOf } from "../../src/components/profileIcons";
+import { INFO_TIP_MS, InfoTip } from "../../src/components/InfoTip";
 import { SharingBanner } from "../../src/components/SharingBanner";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
 import type { Lang, MyState, OfferView, Profile, RideView, Vehicle } from "../../src/core/types";
@@ -22,7 +24,9 @@ import { OfferCard } from "../../src/screens/driver/OfferCard";
 import { RiderActive } from "../../src/screens/rider/RiderActive";
 import { endedNotice, reasonText } from "../../src/screens/rider/RiderApp";
 import { Searching } from "../../src/screens/rider/Searching";
-import type { RiderRuntime } from "../../src/state/runtime";
+import { navigationUrl } from "../../src/services/device";
+import type { GeoFix } from "../../src/services/geolocation";
+import { DEPART_ACCURACY_M, DEPART_M, DEPART_RETRY_MS, hasDeparted, type RiderRuntime } from "../../src/state/runtime";
 import { sharing } from "../../src/state/sharing";
 import { AppStore, StoreContext } from "../../src/state/store";
 
@@ -63,6 +67,7 @@ const ride = (over: Partial<RideView> = {}): RideView => ({
   requestedAt: Date.now() - 20_000,
   dispatchStartedAt: Date.now() - 20_000,
   acceptedAt: null,
+  departedAt: null,
   arrivedAt: null,
   startedAt: null,
   endedAt: null,
@@ -555,5 +560,136 @@ describe("2.1 the car icon in the car's paint (FR-170, V38)", () => {
     mount("en", <DriverIcon driver={{ icon: null, vehicle: null }} fallback={<span>fallback</span>} />, {});
     expect(screen.getByText("fallback")).toBeInTheDocument();
     expect(screen.queryByRole("img")).toBeNull();
+  });
+});
+
+describe("InfoTip (FR-190): the round i that pops its text for 5 s", () => {
+  it("opens on tap, closes by itself after its delay (5 s), on a second tap, and on a tap elsewhere", async () => {
+    expect(INFO_TIP_MS).toBe(5000);
+    render(
+      <I18nProvider lang="en">
+        <div>
+          <button type="button">elsewhere</button>
+          <InfoTip text="Riders see this only after you accept their request." testId="vehicle" ms={250} />
+        </div>
+      </I18nProvider>
+    );
+    const btn = screen.getByTestId("vehicle-info");
+    expect(btn).toHaveAttribute("aria-label", "More about this");
+    expect(screen.queryByTestId("vehicle-tip")).toBeNull();
+    await userEvent.click(btn);
+    expect(screen.getByTestId("vehicle-tip")).toHaveTextContent("Riders see this only after you accept their request.");
+    expect(btn).toHaveAttribute("aria-expanded", "true");
+    await waitFor(() => expect(screen.queryByTestId("vehicle-tip")).toBeNull(), { timeout: 1500 }); // gone by itself
+    await userEvent.click(btn);
+    expect(screen.getByTestId("vehicle-tip")).toBeInTheDocument();
+    await userEvent.click(btn); // a second tap closes it sooner
+    expect(screen.queryByTestId("vehicle-tip")).toBeNull();
+    await userEvent.click(btn);
+    await userEvent.click(screen.getByRole("button", { name: "elsewhere" })); // so does a tap anywhere else
+    expect(screen.queryByTestId("vehicle-tip")).toBeNull();
+  });
+
+  it("closes on Escape, and an icon inside a <label> leaves the input as the labelled control (B8)", async () => {
+    render(
+      <I18nProvider lang="en">
+        <label className="field" htmlFor="x-make">
+          <span className="with-info">
+            Make
+            <InfoTip text="Riders see this only after you accept their request." testId="vehicle" />
+          </span>
+          <input id="x-make" />
+        </label>
+      </I18nProvider>
+    );
+    expect(screen.getByRole("textbox", { name: "Make" }).id).toBe("x-make"); // the input, not the "i", is what "Make" labels
+    await userEvent.click(document.querySelector("label.field")!); // tapping the label focuses the field, not the icon
+    expect(screen.queryByTestId("vehicle-tip")).toBeNull();
+    expect(document.activeElement?.id).toBe("x-make");
+    await userEvent.click(screen.getByTestId("vehicle-info"));
+    expect(screen.getByTestId("vehicle-tip")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("vehicle-tip")).toBeNull();
+    // The real forms label their inputs explicitly.
+    for (const f of ["src/screens/driver/VehicleForm.tsx", "src/components/AppInstall.tsx"]) {
+      const src = readFileSync(f, "utf-8");
+      for (const m of src.matchAll(/<label[^>]*>\s*<span className="with-info">/g)) expect(src.slice(m.index! - 0, m.index! + 40), f).toContain("htmlFor=");
+    }
+  });
+
+  it("is a round icon, and the screens it replaced show no standing paragraph any more", () => {
+    const css = readFileSync("src/styles/theme.css", "utf-8");
+    expect(css).toMatch(/\.infotip-btn \{[^}]*border-radius: 50%/);
+    for (const f of ["src/screens/driver/VehicleForm.tsx", "src/screens/Profile.tsx", "src/screens/Bookings.tsx", "src/screens/RequestForm.tsx", "src/components/ScreenOn.tsx", "src/components/AppInstall.tsx"]) {
+      const src = readFileSync(f, "utf-8");
+      expect(src, f).toContain("<InfoTip");
+    }
+    for (const key of ["vehicle.intro", "profile.privacy", "profile.myPlaceHint", "profile.offersHint", "wake.help", "move.body", "app.codeIntro", "request.openNote", "book.waiting"]) {
+      const used = ["src/screens", "src/components"].some((dir) => readdirSync(dir, { recursive: true }).some((f) => String(f).endsWith(".tsx") && readFileSync(`${dir}/${f}`, "utf-8").includes(`t("${key}"`)));
+      expect(used, key).toBe(true); // still shown — now behind the icon
+    }
+  });
+});
+
+describe("R3 Active ride: the car set off (FR-180) and Navigate (FR-181)", () => {
+  const assigned = (over: Partial<RideView>) =>
+    ride({ status: "accepted", scheduledFor: Date.now() + 20 * 60_000, driver: { nickname: "Roman", rating: { mean: null, count: 0 }, icon: null, vehicle: { make: "Porsche", model: "Taycan", colour: "Zielony", plate: "W1LLRUN", seats: 4 } }, ...over } as Partial<RideView>);
+  const rt = (): RiderRuntime => ({ driverPos: null, driverSeenAt: null, driverPresent: true, sharingOn: true, setSharingOn: () => {}, fix: null });
+  const route = { line: null, km: 2, min: 5, estimate: false };
+  it("judges set-off from accurate fixes only, beyond what the accuracy could explain (FR-180)", () => {
+    const fix = (lat: number, accuracy: number): GeoFix => ({ lat, lng: 21, accuracy, heading: null, speed: null, t: Date.now() });
+    const home = fix(52.2, 8);
+    expect(hasDeparted(null, fix(52.21, 8))).toBe(false);
+    expect(hasDeparted(home, fix(52.2005, 8))).toBe(false); // ~55 m: parked
+    expect(hasDeparted(home, fix(52.2015, 8))).toBe(true); // ~165 m: set off
+    expect(hasDeparted(home, fix(52.2015, 80))).toBe(false); // a coarse fix proves nothing
+    expect(hasDeparted(fix(52.2, 600), fix(52.2015, 8))).toBe(false); // nor a coarse origin
+    expect(hasDeparted(fix(52.2, 45), fix(52.2015, 45))).toBe(false); // 165 m but 90 m of accuracy
+    expect(hasDeparted(fix(52.2, 45), fix(52.2025, 45))).toBe(true); // 275 m
+    expect(DEPART_M).toBe(150);
+    expect(DEPART_ACCURACY_M).toBe(50);
+    expect(DEPART_RETRY_MS).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("ships every push kind in the push-dispatch bundle (the Edge Function is pasted from it)", () => {
+    const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
+    for (const kind of ["driver_departed", "appt_open", "driver_coming", "booking_new"]) expect(bundle, kind).toContain(kind);
+  });
+
+  it.each([
+    ["en", "Your driver will set off soon", "Your driver has set off"],
+    ["pl", "Kierowca wkrótce ruszy", "Kierowca już jedzie"]
+  ] as const)("says the driver will set off, then has set off once departedAt is set (%s)", (lang, before, after) => {
+    const { rerender } = render(
+      <I18nProvider lang={lang}>
+        <RiderActive ride={assigned({ departedAt: null })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />
+      </I18nProvider>
+    );
+    expect(screen.getByTestId("ride-status")).toHaveTextContent(before);
+    rerender(
+      <I18nProvider lang={lang}>
+        <RiderActive ride={assigned({ departedAt: Date.now() })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />
+      </I18nProvider>
+    );
+    expect(screen.getByTestId("ride-status")).toHaveTextContent(after);
+    // A ride requested right now (no booking) keeps the plain "on the way".
+    rerender(
+      <I18nProvider lang={lang}>
+        <RiderActive ride={assigned({ departedAt: null, scheduledFor: null })} rt={rt()} route={route} busy={false} error={null} onCancel={() => {}} />
+      </I18nProvider>
+    );
+    expect(screen.getByTestId("ride-status")).toHaveTextContent(lang === "en" ? "Your driver is on the way" : "Kierowca jest w drodze");
+  });
+
+  it("links directions to Google Maps on every phone, iPhone included", () => {
+    const ua = navigator.userAgent;
+    Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15", configurable: true });
+    try {
+      expect(navigationUrl({ lat: 52.25, lng: 20.82 })).toBe("https://www.google.com/maps/dir/?api=1&destination=52.25,20.82&travelmode=driving");
+      expect(navigationUrl({ lat: 52.25, lng: 20.82 }, "walking")).toBe("https://www.google.com/maps/dir/?api=1&destination=52.25,20.82&travelmode=walking");
+      expect(navigationUrl({ lat: 52.25, lng: 20.82 })).not.toContain("maps.apple.com");
+    } finally {
+      Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true });
+    }
   });
 });

@@ -33,6 +33,22 @@ const PEER_GONE_MS = 10_000;
  * resent at once — otherwise a parked driver would not appear on a rider's map that subscribed
  * after the first fix. Peer joins are rare (presence changes only), so the resend is never limited.
  */
+/** A booked ride's car counts as "set off" once it is this far from where the ride began. */
+export const DEPART_M = 150;
+/** Fixes coarser than this (indoor Wi-Fi / cell fixes) say nothing about the car moving. */
+export const DEPART_ACCURACY_M = 50;
+/** After a failed depart call, the next try waits this long (not one call per fix). */
+export const DEPART_RETRY_MS = 20_000;
+
+/**
+ * Has the car moved DEPART_M from `origin`, beyond what both fixes' accuracy could explain? Pure,
+ * so the rule is unit-tested; a coarse fix never counts, as origin or as the moved fix.
+ */
+export function hasDeparted(origin: GeoFix | null, f: GeoFix): boolean {
+  if (!origin || f.accuracy > DEPART_ACCURACY_M || origin.accuracy > DEPART_ACCURACY_M) return false;
+  return haversineM(origin, f) - origin.accuracy - f.accuracy >= DEPART_M;
+}
+
 function liveSender(emit: (f: GeoFix, heading: number | null) => void) {
   const throttle = new PositionThrottle(CADENCE.livePosMs, CADENCE.livePosM);
   let lastSent = 0;
@@ -414,6 +430,38 @@ export function useDriverRuntime(): DriverRuntime {
       resend.current = null;
     };
   }, [rideKey, rideStatus]);
+
+  // 2.2 (FR-180): a booked ride starts while the driver may still be at home. Once the car has
+  // moved DEPART_M from where this ride began on this phone, the rider is told it set off. The
+  // server ignores repeats, so a reload simply measures again from the new first fix.
+  const departed = ride?.departedAt ?? null;
+  const scheduled = ride?.scheduledFor ?? null;
+  useEffect(() => {
+    if (!rideKey || rideStatus !== "accepted" || departed || scheduled === null) return;
+    // The origin is the first accurate fix (a coarse one would put "home" hundreds of metres off).
+    const first = fixRef.current;
+    let origin: GeoFix | null = first && first.accuracy <= DEPART_ACCURACY_M ? first : null;
+    let sent = false;
+    let failedAt = 0;
+    const check = (f: GeoFix) => {
+      if (sent || Date.now() - failedAt < DEPART_RETRY_MS) return;
+      if (!origin) {
+        if (f.accuracy <= DEPART_ACCURACY_M) origin = f;
+        return;
+      }
+      if (!hasDeparted(origin, f)) return;
+      sent = true;
+      void api.depart(ride!.id).catch(() => {
+        // Not reached (offline, or the server refused): try again later, not on every fix.
+        sent = false;
+        failedAt = Date.now();
+      });
+    };
+    const off = geo.onFix(check);
+    return off;
+    // The ride and its status are what matter; fixes arrive through geo.onFix.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rideKey, rideStatus, departed, scheduled]);
 
   // Rider sharing stops at in_progress: drop their pin (FR-023).
   useEffect(() => {

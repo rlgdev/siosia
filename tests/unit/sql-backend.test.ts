@@ -523,7 +523,7 @@ describe("SQL backend (PGlite)", () => {
     expect((await call<Json>(BD, "siosia_get_profile")).driverCancels).toBe(0);
     await call(BD, "siosia_claim_booking", [b.id]);
     await admin("update public.rides set scheduled_for = now() + interval '50 minutes' where id = $1", [b.id]);
-    await call(BD, "siosia_cancel_ride", [b.id, "other"]);
+    await call(BD, "siosia_cancel_ride", [b.id, "vehicle_problem"]);
     expect((await call<Json>(BD, "siosia_get_profile")).driverCancels).toBe(1);
     expect((await call<Json>(B1, "siosia_get_ride", [b.id]))).toMatchObject({ status: "scheduled", driver: null });
     await call(B1, "siosia_cancel_ride", [b.id, null]);
@@ -595,6 +595,23 @@ describe("SQL backend (PGlite)", () => {
     await admin("update public.rides set scheduled_for = now() + interval '29 minutes' where id = $1", [b.id]);
     await call(B1, "siosia_my_state");
     expect((await outbox()).map((r) => `${r.kind}>${r.user}`)).toEqual(["time_to_go>BD", "driver_coming>B1"]);
+    await admin("delete from public.push_outbox");
+    // 2.2 (FR-180): the car sets off — the rider is told once; repeats, the rider, others: nothing.
+    expect(await errorOf(call(B1, "siosia_depart", [b.id]))).toBe("forbidden");
+    expect(await errorOf(call(BD, "siosia_depart", ["00000000-0000-4000-8000-00000000dead"]))).toBe("not_found");
+    const departed = await call<Json>(BD, "siosia_depart", [b.id]);
+    expect(typeof departed.departedAt).toBe("number");
+    expect((await outbox()).map((r) => `${r.kind}>${r.user}`)).toEqual(["driver_departed>B1"]);
+    expect((await call<Json>(B1, "siosia_get_ride", [b.id])).departedAt).toBe(departed.departedAt);
+    await admin("delete from public.push_outbox");
+    await call(BD, "siosia_depart", [b.id]);
+    await call(BD, "siosia_advance", [b.id, "arrived", null]);
+    await call(BD, "siosia_depart", [b.id]);
+    expect((await outbox()).map((r) => `${r.kind}>${r.user}`)).toEqual(["driver_arrived>B1"]);
+    await admin("delete from public.push_outbox");
+    // The driver drops out: the ride is re-dispatched and the next driver sets off afresh.
+    await call(BD, "siosia_cancel_ride", [b.id, "vehicle_problem"]);
+    expect(await admin("select status, departed_at from public.rides where id = $1", [b.id])).toMatchObject({ rows: [{ status: "requested", departed_at: null }] });
     await admin("delete from public.push_outbox");
     // Someone without a subscription gets nothing queued.
     const b2 = await call<Json>(B2, "siosia_book_ride", [PICKUP, DROPOFF, 2, 6, false, at(300)]);

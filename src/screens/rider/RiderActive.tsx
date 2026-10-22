@@ -41,7 +41,7 @@ export function RiderActive({ ride, rt, route, busy, error, onCancel }: Props) {
   return (
     <Sheet>
       <p className="status-line" role="status" aria-live="polite" data-testid="ride-status">
-        {t(`active.${status}`)}
+        {status === "accepted" && ride.departedAt ? t("active.departed") : status === "accepted" && ride.scheduledFor !== null ? t("active.willDepart") : t(`active.${status}`)}
         {status !== "arrived" && route.min !== null && rt.driverPos && !stale && <strong> · {t("active.eta", { min: fmtMin(route.min) })}</strong>}
       </p>
       {rt.driverPresent === false && status === "in_progress" && <p className="hint">{t("active.reconnecting")}</p>}

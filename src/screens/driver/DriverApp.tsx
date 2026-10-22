@@ -2,6 +2,7 @@
 // 2.1 (FR-170): D1 names the car next to its icon; tapping the icon picks the car's colour.
 
 import { AppHint, PushPrompt } from "../../components/AppInstall";
+import { InfoTip } from "../../components/InfoTip";
 import { useCallback, useEffect, useState } from "react";
 import { MapView, type MapMarker } from "../../components/MapView";
 import { Money, Notice, Sheet, TopBar, useBusy } from "../../components/ui";
@@ -221,7 +222,7 @@ function DriverMain() {
           <div>
             <span className={`dot ${rt.online ? "dot-on" : "dot-off"}`} aria-hidden="true" />
             <strong data-testid="driver-state">{t(rt.online ? "driver.online" : "driver.offline")}</strong>
-            <p className="muted small">{t(rt.online ? "driver.waiting" : "driver.offlineHint")}</p>
+            <InfoTip text={t(rt.online ? "driver.waiting" : "driver.offlineHint")} testId="driver-state" />
           </div>
           <button
             type="button"
@@ -246,10 +247,13 @@ function DriverMain() {
             {isIOS() && ` ${t("wake.autoLock")}`}
           </Notice>
         )}
-        {rt.online && rt.wakeOk && <p className="muted small">{t("driver.keepOpen")}</p>}
-        {rt.online && (dep.standbyHours ?? 0) > 0 && (
-          <p className="muted small" data-testid="standby-info">
-            {t("driver.standbyInfo", { h: dep.standbyHours })}
+        {rt.online && (rt.wakeOk || (dep.standbyHours ?? 0) > 0) && (
+          <p className="muted small with-info" data-testid="standby-info">
+            {t("driver.onlineHints")}
+            <InfoTip
+              text={[rt.wakeOk ? t("driver.keepOpen") : null, (dep.standbyHours ?? 0) > 0 ? t("driver.standbyInfo", { h: dep.standbyHours }) : null].filter(Boolean).join(" ")}
+              testId="online-hints"
+            />
           </p>
         )}
         {rt.online && rt.fix && (

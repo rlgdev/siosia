@@ -19,6 +19,14 @@ describe("notification texts", () => {
     expect(pushText("booking_taken", { at: new Date(AT).toISOString(), driver: "Roman" }, "pl", "Europe/Warsaw").title).toBe("Roman Cię zawiezie");
     expect(pushText("booking_taken", { at: AT, driver: "Roman" }, "pl", "Europe/Warsaw").body).toMatch(/^Twój kurs .*14:30 ma kierowcę\.$/);
     expect(pushText("driver_arrived", { driver: "Roman" }, "xx", "Nowhere/Bad_Zone").title).toBe("Roman is here");
+    // 2.2 (FR-180): the car set off towards a booked pickup.
+    expect(pushText("driver_departed", { driver: "Roman" }, "en", "Europe/Warsaw", "r1")).toEqual({
+      title: "Roman has set off",
+      body: "The car is moving towards your pickup — see it on the map.",
+      tag: "driver_departed:r1"
+    });
+    expect(pushText("driver_departed", { driver: "Roman" }, "pl", "Europe/Warsaw").title).toBe("Roman ruszył(a)");
+    expect(openUrl("driver_departed")).toBe("./");
   });
 });
 

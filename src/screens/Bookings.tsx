@@ -3,6 +3,7 @@
 // (with the distance from here) and the ones they took (with when to leave) — Take and Give back.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InfoTip } from "../components/InfoTip";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { DriverIcon, ProfileIcon } from "../components/ProfileIcon";
 import { Confirm, Money, Panel, RatingBadge, useBusy } from "../components/ui";
@@ -58,7 +59,10 @@ export function RiderBookingCard({ r, onChanged }: { r: RideView; onChanged: () 
           )}
         </p>
       ) : (
-        <p className="muted small">{t("book.waiting", { min: app.deployment?.booking.openMin ?? 20 })}</p>
+        <p className="muted small with-info">
+          {t("book.waitingShort")}
+          <InfoTip text={t("book.waiting", { min: app.deployment?.booking.openMin ?? 20 })} testId="booking-waiting" />
+        </p>
       )}
       {error && (
         <p className="form-error" role="alert">
@@ -116,7 +120,10 @@ export function DriverBookingCard({ r, onChanged }: { r: RideView; onChanged: ()
       <Route r={r} />
       {leave !== null && <p className="hint">{t("book.leaveBy", { time: time(leave) })}</p>}
       {r.scheduledFor !== null && (
-        <p className="muted small">{t("book.startsAt", { time: time(r.scheduledFor - (app.deployment?.booking.leadMin ?? 30) * 60_000) })}</p>
+        <p className="muted small with-info">
+          {t("book.startsAtShort", { time: time(r.scheduledFor - (app.deployment?.booking.leadMin ?? 30) * 60_000) })}
+          <InfoTip text={t("book.startsAt", { time: time(r.scheduledFor - (app.deployment?.booking.leadMin ?? 30) * 60_000) })} testId="booking-starts" />
+        </p>
       )}
       {error && (
         <p className="form-error" role="alert">

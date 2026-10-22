@@ -129,6 +129,11 @@ export interface Backend {
   refreshOffers(pos: LatLng): Promise<MyState>;
   decideOffer(offerId: string, decision: OfferDecision): Promise<"won" | "ok">;
   advance(rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number): Promise<RideView>;
+  /**
+   * 2.2: the driver's phone noticed the car moving towards the pickup of an accepted ride; the rider
+   * is told once ("{driver} set off"). Idempotent; a no-op outside status accepted.
+   */
+  depart(rideId: string): Promise<RideView>;
 
   markPaid(rideId: string): Promise<void>;
   markCollected(rideId: string): Promise<void>;

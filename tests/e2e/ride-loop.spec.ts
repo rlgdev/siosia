@@ -358,10 +358,30 @@ test("a rider books a ride for later; a driver takes it in advance; the rider se
   await expect(rider.getByTestId("push-toast")).toContainText("Adam will drive you");
   await expect(rider.getByTestId("booking-driver")).toContainText("Driver: Adam", { timeout: 35_000 });
   await expect(rider.getByTestId("booking-driver")).toContainText("WX 4242");
-  await rider.getByTestId("cancel-booking").click();
-  await rider.getByRole("button", { name: "Yes" }).click();
-  await expect(rider.getByTestId("planned-empty")).toBeVisible();
-  await expect(driver.getByTestId("my-booking")).toHaveCount(0, { timeout: 35_000 });
+
+  // 2.2 (FR-180): the booking starts (30 min before); when the driver's car moves off, the rider is
+  // told it set off, and the driver's Navigate opens Google Maps (FR-181).
+  await driver.evaluate(() => {
+    const db = JSON.parse(localStorage.getItem("siosia.mock.db.v1") ?? "null");
+    if (!db) throw new Error("no mock db");
+    for (const r of Object.values(db.rides) as { status: string; scheduledFor: number | null }[]) if (r.status === "scheduled" && r.scheduledFor) r.scheduledFor = Date.now() + 29 * 60_000;
+    localStorage.setItem("siosia.mock.db.v1", JSON.stringify(db));
+  });
+  await expect(driver.getByTestId("push-toast")).toContainText("Time to go", { timeout: 15_000 });
+  await expect(driver.getByTestId("navigate")).toHaveAttribute("href", /^https:\/\/www\.google\.com\/maps\/dir\/\?api=1&destination=/);
+  // The started ride holds R1: the rider's app follows it there by itself (V1).
+  await expect(rider.getByTestId("ride-status")).toContainText("Your driver will set off soon", { timeout: 15_000 });
+  await driver.bringToFront(); // Chromium feeds GPS only to the focused page
+  await context.setGeolocation({ latitude: 52.2297, longitude: 21.0122, accuracy: 8 });
+  await driver.waitForTimeout(1500);
+  await context.setGeolocation({ latitude: 52.2327, longitude: 21.0122, accuracy: 8 }); // ~330 m north: set off
+  await expect(rider.getByTestId("ride-status")).toContainText("Your driver has set off", { timeout: 15_000 });
+  await expect(rider.getByTestId("push-toast")).toContainText("Adam has set off");
+  await rider.bringToFront(); // a backgrounded Chromium tab answers clicks late
+  await rider.getByTestId("cancel-ride").click();
+  await rider.getByRole("alertdialog").getByRole("button", { name: "Cancel ride" }).click();
+  await expect(rider.getByTestId("request-ride")).toBeDisabled({ timeout: 15_000 }); // R1 again, no ride
+  await expect(driver.getByTestId("offer-card")).toHaveCount(0);
 });
 
 test("the menu offers notifications next to the app install steps", async ({ context }) => {
@@ -417,7 +437,8 @@ test("Keep the screen on: a top-bar checkbox, on by itself while a driver is onl
   await expect(driver.getByTestId("screen-on")).toBeChecked();
   // The same choice in the menu, with what it does.
   await driver.getByRole("button", { name: "Menu" }).click();
-  await expect(driver.getByTestId("screen-on-section")).toContainText("pressing the side button still pauses Siosia");
+  await driver.getByTestId("screen-on-info").click(); // the explanation is behind the round "i" (FR-190)
+  await expect(driver.getByTestId("screen-on-tip")).toContainText("pressing the side button still pauses Siosia");
   await expect(driver.getByTestId("screen-on-section").getByRole("checkbox")).toBeChecked();
 });
 
@@ -425,7 +446,8 @@ test("a driver whose app went quiet stays on standby and is back online with the
   await isolate(context);
   const driver = await context.newPage();
   await goOnlineAsDriver(driver, "Adam", "WX 4242");
-  await expect(driver.getByTestId("standby-info")).toContainText("you still hear about new requests");
+  await driver.getByTestId("online-hints-info").click();
+  await expect(driver.getByTestId("online-hints-tip")).toContainText("you still hear about new requests");
   await driver.goto("about:blank"); // the app is closed (this tab keeps its account)
 
   const rider = await context.newPage();

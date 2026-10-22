@@ -6,6 +6,7 @@
 // the group sees until someone takes it; preselected when nobody offers the entry.
 
 import { useEffect, useMemo, useState } from "react";
+import { InfoTip } from "../components/InfoTip";
 import { fromInput, roundUp, seriesStarts, toDateInput, toLocalInput } from "../components/datetime";
 import { PlaceInput } from "../components/PlaceInput";
 import { durationText, EntryIcon, localText } from "./Catalog";
@@ -169,8 +170,9 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
         </label>
       </fieldset>
       {open && (
-        <p className="notice notice-info" data-testid="request-open-note">
-          {t("request.openNote")}
+        <p className="muted small with-info" data-testid="request-open-note">
+          {t("request.openNoteShort")}
+          <InfoTip text={t("request.openNote")} testId="request-open" />
         </p>
       )}
       <label className="field">

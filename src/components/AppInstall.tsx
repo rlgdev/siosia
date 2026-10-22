@@ -3,6 +3,7 @@
 // the app. The same code moves a profile to another phone.
 
 import { useEffect, useState, type FormEvent } from "react";
+import { InfoTip } from "./InfoTip";
 import { disablePush, enablePush, pushState, type PushState } from "../services/push";
 import { useI18n } from "../i18n";
 import { isIOS, isStandalone, readPref, writePref } from "../services/device";
@@ -41,11 +42,13 @@ export function AppSection() {
           <li>{t("app.step3")}</li>
         </ol>
       )}
-      <p className="muted small">{t("app.codeIntro")}</p>
       {code ? (
         <div className="transfer-code">
           <strong data-testid="transfer-code">{code.code}</strong>
-          <span className="muted small">{t("app.codeUntil", { time: until })}</span>
+          <span className="muted small with-info">
+            {t("app.codeUntil", { time: until })}
+            <InfoTip text={t("app.codeIntro")} testId="transfer-code" />
+          </span>
           <button type="button" className="btn btn-secondary" onClick={() => void copy()}>
             {t(copied ? "app.copied" : "app.copy")}
           </button>
@@ -171,10 +174,13 @@ export function MoveHere() {
     <details className="move-here" open={isStandalone()}>
       <summary>{t("move.title")}</summary>
       <form className="stack" onSubmit={submit}>
-        <p className="muted small">{t("move.body")}</p>
-        <label className="field">
-          <span>{t("move.label")}</span>
+        <label className="field" htmlFor="move-code">
+          <span className="with-info">
+            {t("move.label")}
+            <InfoTip text={t("move.body")} testId="move-code" />
+          </span>
           <input
+            id="move-code"
             value={code}
             onChange={(e) => setCode(e.target.value)}
             autoCapitalize="characters"

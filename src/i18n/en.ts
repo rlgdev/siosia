@@ -533,7 +533,15 @@ export const en = {
   "car.change": "Change car colour",
   "car.title": "Car colour",
   "car.addFirst": "Add your car first",
-  "car.add": "Add your car"
+  "car.add": "Add your car",
+  "common.info": "More about this",
+  "active.departed": "Your driver has set off",
+  "driver.onlineHints": "Keep Siosia in front.",
+  "wake.helpShort": "Keeps the phone awake while Siosia is on screen.",
+  "book.waitingShort": "Waiting for a driver to take it.",
+  "book.startsAtShort": "Starts in Siosia at {time}.",
+  "request.openNoteShort": "Everyone in the group sees this request.",
+  "active.willDepart": "Your driver will set off soon"
 } as const;
 
 export type MessageKey = keyof typeof en;

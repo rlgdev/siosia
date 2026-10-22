@@ -2,6 +2,7 @@
 // links to Planned / History / vehicle, the app and notifications, account linking (US8), privacy.
 
 import { AppSection } from "../components/AppInstall";
+import { InfoTip } from "../components/InfoTip";
 import { useEffect, useState } from "react";
 import type { AccountInfo } from "../backend/types";
 import { PlaceInput } from "../components/PlaceInput";
@@ -161,8 +162,10 @@ export function ProfilePanel() {
       </section>
 
       <section className="card stack">
-        <h3>{t("profile.privacyTitle")}</h3>
-        <p className="muted">{t("profile.privacy")}</p>
+        <h3 className="with-info">
+          {t("profile.privacyTitle")}
+          <InfoTip text={t("profile.privacy")} testId="privacy" />
+        </h3>
       </section>
 
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -209,8 +212,10 @@ function MyPlace() {
     });
   return (
     <section className="card stack" data-testid="my-place">
-      <h3>{t("place.myPlace")}</h3>
-      <p className="muted small">{t("profile.myPlaceHint")}</p>
+      <h3 className="with-info">
+        {t("place.myPlace")}
+        <InfoTip text={t("profile.myPlaceHint")} testId="my-place" />
+      </h3>
       <PlaceInput
         label={t("profile.myPlaceWhere")}
         value={place}
@@ -271,8 +276,10 @@ function ServicesIOffer() {
   };
   return (
     <section className="card stack" data-testid="offers">
-      <h3>{t("profile.offersTitle")}</h3>
-      <p className="muted small">{t("profile.offersHint")}</p>
+      <h3 className="with-info">
+        {t("profile.offersTitle")}
+        <InfoTip text={`${t("profile.offersHint")} ${t("profile.offersRide")}`} testId="offers" />
+      </h3>
       {entries.map((e) => (
         <label key={e.id} className="switch-row">
           <input type="checkbox" checked={offers.includes(e.id)} disabled={busy} onChange={(ev) => toggle(e.id, ev.target.checked)} data-testid={`offer-${e.id}`} />
@@ -281,7 +288,6 @@ function ServicesIOffer() {
           </span>
         </label>
       ))}
-      <p className="muted small">{t("profile.offersRide")}</p>
       {error && (
         <p className="form-error" role="alert">
           {error}

@@ -50,8 +50,12 @@ export const isStandalone = () =>
   typeof window !== "undefined" &&
   (window.matchMedia?.("(display-mode: standalone)").matches === true || (navigator as Navigator & { standalone?: boolean }).standalone === true);
 
+/**
+ * Directions in the Google Maps app on every phone (FR-181; the operator's choice of 2026-10-22,
+ * Apple Maps was used on iPhone before): the universal link opens the app when installed, else
+ * Google Maps on the web.
+ */
 export function navigationUrl(to: LatLng, mode: "driving" | "walking" = "driving"): string {
-  if (isIOS()) return `https://maps.apple.com/?daddr=${to.lat},${to.lng}&dirflg=${mode === "walking" ? "w" : "d"}`;
   return `https://www.google.com/maps/dir/?api=1&destination=${to.lat},${to.lng}&travelmode=${mode}`;
 }
 

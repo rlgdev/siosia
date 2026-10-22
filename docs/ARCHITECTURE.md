@@ -231,6 +231,15 @@ cannot deadlock. The accept body moved into the internal `siosia_answer_as`; the
 its shades from the paint (`src/components/profileIcons.ts`). The demo's robot Siosia takes open
 requests for her services after 15 s, so a person in another tab sees them first.
 
+**2.2: the car sets off, Google Maps, info icons** (2026-10-22, "Amendment 2.2", SPEC.md V40–V42).
+The server never sees a driver's live position during a ride (it travels rider-ward over the
+private channel), so "the car started moving" is detected on the driver's phone: once the fix is
+150 m from where the ride began there (`DEPART_M`, `src/state/runtime.ts`), the phone calls
+`siosia_depart` once; the server sets `rides.departed_at`, pushes `driver_departed` to the rider
+and R3 reads "Your driver has set off". Repeats are no-ops, so a reload simply measures again.
+Directions open Google Maps on every phone (`navigationUrl`). Explanations live behind a round *i*
+(`src/components/InfoTip.tsx`: 5 s popup, closes on a second tap or a tap elsewhere).
+
 ### 2.0 deviations, on purpose
 
 - **A series in the calendar is written in local time** (spec V27 said UTC): `DTSTART`, `DTEND`

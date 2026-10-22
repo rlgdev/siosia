@@ -140,6 +140,7 @@ export interface RideRow {
   requestedAt: number;
   dispatchStartedAt: number;
   acceptedAt: number | null;
+  departedAt?: number | null;
   arrivedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;
@@ -1077,6 +1078,24 @@ export class Engine {
       o.decidedAt = this.now;
     }
     return "ok";
+  }
+
+  /**
+   * 2.2: the driver's phone saw the car move towards the pickup (FR-180). Told once, while the
+   * ride is accepted; later calls and other statuses change nothing (the phone may repeat it).
+   */
+  depart(uid: string, rideId: string): RideView {
+    this.requireUser(uid);
+    this.touchDriver(uid);
+    const r = this.db.rides[rideId];
+    if (!r) throw new ServerError("not_found");
+    if (r.driverId !== uid) throw new ServerError("forbidden");
+    if (r.status === "accepted" && !r.departedAt) {
+      r.departedAt = this.now;
+      this.notifyRide(r);
+      this.pushTo(r.riderId, "driver_departed", r, { driver: this.db.users[uid].nickname });
+    }
+    return this.rideView(r, uid);
   }
 
   advance(uid: string, rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number): RideView {
@@ -2156,6 +2175,7 @@ export class Engine {
     r.status = "requested";
     r.driverId = null;
     r.acceptedAt = null;
+    r.departedAt = null; // the next driver sets off afresh
     r.arrivedAt = null;
     r.round++;
     r.redispatchCount++;
@@ -2227,6 +2247,7 @@ export class Engine {
       requestedAt: r.requestedAt,
       dispatchStartedAt: r.dispatchStartedAt,
       acceptedAt: r.acceptedAt,
+      departedAt: r.departedAt ?? null,
       arrivedAt: r.arrivedAt,
       startedAt: r.startedAt,
       endedAt: r.endedAt,

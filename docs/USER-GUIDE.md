@@ -74,7 +74,7 @@ it on that phone.
    Requests waiting nearby (~8 km) are offered as soon as you go online — including ones you
    declined or missed earlier. The main screen shows **Pending requests nearby: N**; tap **Show
    requests** to see them all again.
-4. Drive to the pickup — **Navigate** opens Google Maps (Apple Maps on iPhone). You see the rider's
+4. Drive to the pickup — **Navigate** opens Google Maps (on iPhone too). You see the rider's
    live position while they share it.
 5. Tap **I've arrived** → when the rider is in, **Start trip** → at the destination
    **Complete trip**.
@@ -117,7 +117,9 @@ Display & Brightness → **Auto-Lock → Never** (Low Power Mode keeps Auto-Lock
 ## Booking a ride for later
 
 *Ride* → set pickup and destination → **Later** → pick the time (30 minutes to 30 days ahead) →
-**Book for …**. The price is fixed when you book. **Planned** shows each one — with the driver,
+**Book for …**. The price is fixed when you book. When the ride starts (30 minutes before) you get
+*{driver} is on the way*, and the moment the car actually moves off, *{driver} has set off* — your
+screen then reads *Your driver has set off* and the car is on your map. **Planned** shows each one — with the driver,
 car and plate once a driver took it — and lets you **cancel**. A driver who took it starts 30
 minutes before (you get *Driver is on the way*); if nobody took it, it goes to drivers nearby 20
 minutes before.
@@ -183,6 +185,12 @@ Calendar / .ics** (iPhone shows the event with *Add All*; Android opens it in th
 The event has the place, the other person, the rides you may see and reminders (rides: 30 minutes
 before). A repeating series is one repeating event without the cancelled dates. The calendar entry
 is a copy: **it doesn't update by itself** — open the link again after a change.
+
+## The round *i*
+
+Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
+heading or setting. Tap it: the explanation pops up for 5 seconds (tap again, or anywhere, to close
+it sooner). Nothing was removed — it just takes less room.
 
 ## Privacy
 
@@ -289,7 +297,7 @@ potwierdzenie zastępuje go na tym telefonie.
    Zamówienia czekające w pobliżu (~8 km) dostajesz od razu po przejściu online — także te
    odrzucone lub przegapione wcześniej. Ekran główny pokazuje **Oczekujące zamówienia w pobliżu: N**;
    dotknij **Pokaż zamówienia**, aby zobaczyć je wszystkie ponownie.
-4. Jedź do odbioru — **Nawiguj** otwiera Mapy Google (na iPhonie Mapy Apple). Widzisz pozycję
+4. Jedź do odbioru — **Nawiguj** otwiera Mapy Google (także na iPhonie). Widzisz pozycję
    pasażera, póki ją udostępnia.
 5. **Jestem na miejscu** → gdy pasażer wsiądzie, **Rozpocznij kurs** → u celu **Zakończ kurs**.
 6. Pobierz opłatę **bezpośrednio**, dotknij *Oznacz opłatę jako pobraną*, oceń pasażera. Dzisiejsze
@@ -333,7 +341,9 @@ Autoblokadę na 30 sekundach).
 ## Rezerwacja kursu na później
 
 *Jadę* → ustaw odbiór i cel → **Później** → wybierz godzinę (od 30 minut do 30 dni naprzód) →
-**Zarezerwuj na …**. Cena jest ustalana przy rezerwacji. **Zaplanowane** pokazują każdą — z
+**Zarezerwuj na …**. Cena jest ustalana przy rezerwacji. Gdy kurs się zaczyna (30 minut przed),
+dostajesz *{kierowca} jest w drodze*, a gdy auto naprawdę rusza — *{kierowca} ruszył(a)*; ekran
+pokazuje wtedy *Kierowca już jedzie*, a auto jest na Twojej mapie. **Zaplanowane** pokazują każdą — z
 kierowcą, samochodem i numerem, gdy kierowca ją weźmie — i pozwalają ją **anulować**. Kierowca,
 który ją wziął, rusza 30 minut wcześniej (dostaniesz *Kierowca jest w drodze*); jeśli nikt jej nie
 weźmie, trafi do kierowców w pobliżu 20 minut wcześniej.
@@ -399,6 +409,12 @@ Przy potwierdzonym terminie, całej serii i zarezerwowanym przejeździe: **Dodaj
 aplikacji kalendarza). Wydarzenie ma miejsce, drugą osobę, przejazdy, które możesz widzieć, i
 przypomnienia (przejazd: 30 minut przed). Seria to jedno powtarzane wydarzenie bez odwołanych
 terminów. Wpis w kalendarzu to kopia: **sam się nie aktualizuje** — po zmianie otwórz link ponownie.
+
+## Okrągłe *i*
+
+Tam, gdzie ekran opisywał się akapitem, jest teraz małe okrągłe **i** obok nagłówka lub
+ustawienia. Dotknij: wyjaśnienie pokazuje się na 5 sekund (dotknij ponownie albo gdziekolwiek, by
+zamknąć wcześniej). Nic nie zniknęło — zajmuje tylko mniej miejsca.
 
 ## Prywatność
 

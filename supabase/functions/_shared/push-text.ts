@@ -11,6 +11,8 @@ export type PushKind =
   | "booking_cancelled"
   | "time_to_go"
   | "driver_coming"
+  // 2.2: the car started moving towards the pickup (booked rides)
+  | "driver_departed"
   | "driver_arrived"
   | "booking_open"
   | "request_new"
@@ -205,6 +207,7 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     booking_cancelled: ["Booking cancelled", "{when} from {pickup} was cancelled by the rider."],
     time_to_go: ["Time to go", "Pickup {time}: {rider} at {pickup}. Open Siosia."],
     driver_coming: ["{driver} is on the way", "Your driver is heading to the pickup."],
+    driver_departed: ["{driver} has set off", "The car is moving towards your pickup — see it on the map."],
     driver_arrived: ["{driver} is here", "Your driver has arrived at the pickup."],
     booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
     request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
@@ -227,6 +230,7 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     booking_cancelled: ["Rezerwacja anulowana", "{when} z {pickup} — pasażer anulował."],
     time_to_go: ["Czas jechać", "Odbiór {time}: {rider}, {pickup}. Otwórz Siosię."],
     driver_coming: ["{driver} jest w drodze", "Kierowca jedzie do miejsca odbioru."],
+    driver_departed: ["{driver} ruszył(a)", "Auto jedzie do Twojego miejsca odbioru — zobacz je na mapie."],
     driver_arrived: ["{driver} czeka", "Kierowca jest na miejscu odbioru."],
     booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafiła do kierowców w pobliżu."],
     request_new: ["Nowe zamówienie", "Odbiór: {pickup}. Otwórz Siosię, aby je przyjąć."],

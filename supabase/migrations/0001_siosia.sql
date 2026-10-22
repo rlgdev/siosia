@@ -418,6 +418,8 @@ alter table public.rides add column if not exists leg text;
 alter table public.rides drop constraint if exists rides_leg_check;
 alter table public.rides add constraint rides_leg_check check (leg is null or leg in ('there', 'back'));
 alter table public.rides add column if not exists auto_booked boolean not null default false;
+-- 2.2: when the driver's car first moved towards a booked pickup (FR-180).
+alter table public.rides add column if not exists departed_at timestamptz;
 create unique index if not exists rides_appointment_leg on public.rides (appointment_id, rider_id, leg)
   where appointment_id is not null and status not in ('cancelled', 'expired');
 create index if not exists rides_appointment_idx on public.rides (appointment_id) where appointment_id is not null;
@@ -794,7 +796,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'fare', r.fare, 'currency', r.currency, 'fareIsEstimate', r.fare_is_estimate,
     'actualKm', r.actual_km, 'actualMin', r.actual_min,
     'requestedAt', siosia_ms(r.requested_at), 'dispatchStartedAt', siosia_ms(r.dispatch_started_at),
-    'acceptedAt', siosia_ms(r.accepted_at), 'arrivedAt', siosia_ms(r.arrived_at),
+    'acceptedAt', siosia_ms(r.accepted_at), 'departedAt', siosia_ms(r.departed_at), 'arrivedAt', siosia_ms(r.arrived_at),
     'startedAt', siosia_ms(r.started_at), 'endedAt', siosia_ms(r.ended_at),
     'cancelledBy', r.cancelled_by, 'cancelReason', r.cancel_reason,
     'paid', r.paid, 'collected', r.collected,
@@ -1050,7 +1052,7 @@ begin
   update rides set
     status = 'requested',
     excluded = case when driver_id = any (excluded) then excluded else array_append(excluded, driver_id) end,
-    driver_id = null, accepted_at = null, arrived_at = null,
+    driver_id = null, accepted_at = null, departed_at = null, arrived_at = null,
     round = round + 1, redispatch_count = redispatch_count + 1,
     dispatch_started_at = now(), notified_count = 0, cancel_reason = p_reason
   where id = p_ride and status in ('accepted','arrived') and driver_id = p_driver;
@@ -2188,6 +2190,24 @@ begin
   return siosia_ok(siosia_ride_json(r, v_uid));
 end $$;
 
+-- 2.2 (FR-180): the driver's phone saw the car move towards the pickup. The rider is told once,
+-- while the ride is accepted; later calls and other statuses change nothing.
+create or replace function public.siosia_depart(p_ride uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r rides;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  update driver_status set last_seen = now() where user_id = v_uid and online;
+  select * into r from rides where id = p_ride for update;
+  if r.id is null then return siosia_err('not_found'); end if;
+  if r.driver_id is distinct from v_uid then return siosia_err('forbidden'); end if;
+  if r.status = 'accepted' and r.departed_at is null then
+    update rides set departed_at = now() where id = p_ride returning * into r;
+    perform siosia_push(r.rider_id, 'driver_departed', r.id, jsonb_build_object('driver', siosia_nick(v_uid)));
+  end if;
+  return siosia_ok(siosia_ride_json(r, v_uid));
+end $$;
+
 -- Receipt actions are allowed within 24 h of completion; status unchanged (§5).
 create or replace function public.siosia_after_ride(p_ride uuid)
 returns rides language plpgsql stable security definer set search_path = public as $$
@@ -3281,6 +3301,7 @@ grant execute on function public.siosia_heartbeat(float8, float8) to authenticat
 grant execute on function public.siosia_refresh_offers(float8, float8) to authenticated;
 grant execute on function public.siosia_decide_offer(uuid, text) to authenticated;
 grant execute on function public.siosia_advance(uuid, text, float8) to authenticated;
+grant execute on function public.siosia_depart(uuid) to authenticated;
 grant execute on function public.siosia_mark_paid(uuid) to authenticated;
 grant execute on function public.siosia_mark_collected(uuid) to authenticated;
 grant execute on function public.siosia_rate(uuid, int, text) to authenticated;

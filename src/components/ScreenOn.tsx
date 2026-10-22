@@ -2,6 +2,7 @@
 // Drive screens, and the same choice with what it does in ☰ → Siosia as an app.
 
 import { useI18n } from "../i18n";
+import { InfoTip } from "./InfoTip";
 import { isIOS, isStandalone } from "../services/device";
 import { screenWake, useScreenWake } from "../services/wakeLock";
 import { Notice } from "./ui";
@@ -57,9 +58,11 @@ export function ScreenOnSection() {
           {isIOS() && !isStandalone() && ` ${t("wake.autoLock")}`}
         </p>
       )}
-      {wake.supported && wake.forced && <p className="muted small">{t("wake.online")}</p>}
       {wake.supported && on && wake.refused && <Notice kind="warn">{t("wake.refused")}</Notice>}
-      <p className="muted small">{t("wake.help")}</p>
+      <p className="muted small with-info">
+        {wake.supported && wake.forced ? t("wake.online") : t("wake.helpShort")}
+        <InfoTip text={t("wake.help")} testId="screen-on" />
+      </p>
     </div>
   );
 }

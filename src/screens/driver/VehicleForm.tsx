@@ -1,6 +1,7 @@
 // D6 Vehicle profile (FR-004): required before a driver can go online; editable later.
 
 import { useState, type ChangeEvent, type FormEvent } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { Panel, useBusy } from "../../components/ui";
 import type { Vehicle } from "../../core/types";
 import { useI18n } from "../../i18n";
@@ -27,10 +28,13 @@ export function VehicleForm({ onSaved }: { onSaved?: () => void }) {
   };
   return (
     <form className="stack" onSubmit={submit} data-testid="vehicle-form">
-      <p className="muted">{t("vehicle.intro")}</p>
-      <label className="field">
-        <span>{t("vehicle.make")}</span>
-        <input value={v.make} onChange={set("make")} maxLength={30} required />
+      {/* htmlFor: a <button> inside a <label> would otherwise become the labelled control (B8). */}
+      <label className="field" htmlFor="vehicle-make">
+        <span className="with-info">
+          {t("vehicle.make")}
+          <InfoTip text={t("vehicle.intro")} testId="vehicle" />
+        </span>
+        <input id="vehicle-make" value={v.make} onChange={set("make")} maxLength={30} required />
       </label>
       <label className="field">
         <span>{t("vehicle.model")}</span>

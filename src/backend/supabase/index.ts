@@ -297,6 +297,9 @@ export class SupabaseBackend implements Backend {
   decideOffer(offerId: string, decision: OfferDecision) {
     return this.rpc<"won" | "ok">("siosia_decide_offer", { p_offer: offerId, p_decision: decision });
   }
+  depart(rideId: string) {
+    return this.rpc<RideView>("siosia_depart", { p_ride: rideId });
+  }
   advance(rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number) {
     return this.rpc<RideView>("siosia_advance", { p_ride: rideId, p_to: to, p_actual_km: actualKm ?? null });
   }

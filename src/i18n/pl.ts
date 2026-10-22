@@ -535,5 +535,13 @@ export const pl: Record<MessageKey, string> = {
   "car.change": "Zmień kolor auta",
   "car.title": "Kolor auta",
   "car.addFirst": "Najpierw dodaj swoje auto",
-  "car.add": "Dodaj auto"
+  "car.add": "Dodaj auto",
+  "common.info": "Więcej o tym",
+  "active.departed": "Kierowca już jedzie",
+  "driver.onlineHints": "Trzymaj Siosię na wierzchu.",
+  "wake.helpShort": "Nie wygasza ekranu, gdy Siosia jest na wierzchu.",
+  "book.waitingShort": "Czeka na kierowcę.",
+  "book.startsAtShort": "Start w Siosi o {time}.",
+  "request.openNoteShort": "Wszyscy w grupie widzą tę prośbę.",
+  "active.willDepart": "Kierowca wkrótce ruszy"
 };

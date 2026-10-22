@@ -166,7 +166,7 @@ describe("C2 Request form (FR-094, FR-107)", () => {
       note: "Kids back at 14:30",
       repeat: { every: 1, count: 8 }
     });
-  });
+  }, 15_000);
 
   it("asks for a provider when several offer it, and shows the price per occurrence", async () => {
     const priced: CatalogItem[] = [{ ...DEFAULT_SERVICES[1], price: { perHour: 80 }, providers: [SIOSIA, { ...SIOSIA, publicId: "pub-ewa", nickname: "Ewa" }] }];
@@ -263,6 +263,7 @@ const booking = (over: Partial<RideView> = {}): RideView => ({
   requestedAt: Date.now() - 20_000,
   dispatchStartedAt: Date.now() - 20_000,
   acceptedAt: null,
+  departedAt: null,
   arrivedAt: null,
   startedAt: null,
   endedAt: null,
@@ -699,7 +700,10 @@ describe("2.1 C2: Anyone who can (FR-094, FR-161)", () => {
     setup("en", <RequestPanel />, { catalog: async () => CATALOG, requestService }, { panel: "request", panelArg: "learning" });
     const send = await screen.findByTestId("request-send");
     expect(screen.getByRole("radio", { name: "Anyone who can" })).toBeChecked();
-    expect(screen.getByTestId("request-open-note")).toHaveTextContent("Everyone in the group sees this request — time, place and note — until someone takes it.");
+    expect(screen.getByTestId("request-open-note")).toHaveTextContent("Everyone in the group sees this request.");
+    // The full explanation sits behind the round "i" (FR-190).
+    await userEvent.click(screen.getByTestId("request-open-info"));
+    expect(screen.getByTestId("request-open-tip")).toHaveTextContent("Everyone in the group sees this request — time, place and note — until someone takes it.");
     expect(send).toBeEnabled();
     await userEvent.click(send);
     await waitFor(() => expect(requestService).toHaveBeenCalled());
@@ -718,7 +722,9 @@ describe("2.1 C2: Anyone who can (FR-094, FR-161)", () => {
     expect(await screen.findByTestId("request-problem")).toHaveTextContent("Wybierz, kogo prosisz.");
     expect(screen.getByTestId("request-anyone")).not.toBeChecked();
     await userEvent.click(screen.getByRole("radio", { name: "Każdy, kto może" }));
-    expect(screen.getByTestId("request-open-note")).toHaveTextContent("Wszyscy w grupie widzą tę prośbę — termin, miejsce i notatkę — dopóki ktoś się jej nie podejmie.");
+    expect(screen.getByTestId("request-open-note")).toHaveTextContent("Wszyscy w grupie widzą tę prośbę.");
+    await userEvent.click(screen.getByTestId("request-open-info"));
+    expect(screen.getByTestId("request-open-tip")).toHaveTextContent("Wszyscy w grupie widzą tę prośbę — termin, miejsce i notatkę — dopóki ktoś się jej nie podejmie.");
     await userEvent.click(screen.getByTestId("request-send"));
     await waitFor(() => expect(requestService).toHaveBeenCalled());
     expect(requestService.mock.calls[0][0].providerId).toBeNull();

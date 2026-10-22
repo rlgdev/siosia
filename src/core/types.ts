@@ -371,6 +371,8 @@ export interface RideView {
   requestedAt: number;
   dispatchStartedAt: number;
   acceptedAt: number | null;
+  /** 2.2: when the driver's car first moved towards a booked pickup (the rider is told). */
+  departedAt: number | null;
   arrivedAt: number | null;
   startedAt: number | null;
   endedAt: number | null;

@@ -568,6 +568,25 @@ describe("rides booked in advance", () => {
     expect(at((e) => e.getRide("rider", b.id))).toMatchObject({ status: "requested", driver: null });
   });
 
+  it("re-dispatches a started booking with departedAt cleared, so the next driver sets off afresh (FR-180)", () => {
+    user("rider", "Ola");
+    user("d1", "Driver 1", true);
+    user("d2", "Driver 2", true);
+    const b = book();
+    at((e) => e.claimBooking("d1", b.id));
+    now = b.scheduledFor! - 30 * MIN;
+    at((e) => e.sweep());
+    expect(db.rides[b.id].status).toBe("accepted");
+    at((e) => e.depart("d1", b.id));
+    expect(db.rides[b.id].departedAt).toBe(now);
+    at((e) => e.cancelRide("d1", b.id, "vehicle_problem")); // the driver drops out: re-dispatched
+    expect(db.rides[b.id].status).toBe("requested");
+    expect(db.rides[b.id].departedAt).toBeNull();
+    const o = online("d2", near(1)).offer!;
+    at((e) => e.decideOffer("d2", o.id, "accept"));
+    expect(at((e) => e.getRide("rider", b.id))).toMatchObject({ status: "accepted", departedAt: null });
+  });
+
   it("keeps a started booking with a driver seen recently, even past 15 min after its time", () => {
     const b = book();
     at((e) => e.claimBooking("d1", b.id));
@@ -701,7 +720,15 @@ describe("notifications (who hears what)", () => {
     start.sweep();
     expect(start.effects.push.map((p) => `${p.kind}>${p.userId}`)).toEqual(["time_to_go>d2", "driver_coming>rider"]);
     expect(start.effects.push[0].params).toMatchObject({ at: t, pickup: "Centrum", rider: "Ola" });
+    // 2.2 (FR-180): the car sets off — the rider is told once; repeats and others change nothing.
+    expect(code(() => at((e) => e.depart("rider", id)))).toBe("forbidden");
+    expect(code(() => at((e) => e.depart("d2", "nope")))).toBe("not_found");
+    expect(ev((e) => e.depart("d2", id))).toEqual(["driver_departed>rider"]);
+    expect(db.rides[id].departedAt).toBe(now);
+    expect(at((e) => e.getRide("rider", id)).departedAt).toBe(now);
+    expect(ev((e) => e.depart("d2", id))).toEqual([]);
     expect(ev((e) => e.advance("d2", id, "arrived"))).toEqual(["driver_arrived>rider"]);
+    expect(ev((e) => e.depart("d2", id))).toEqual([]); // after arriving: nothing
     // A ride right now: accepting tells the rider.
     request("rider2");
     const o = online("d3", near(3)).offer!;

@@ -168,6 +168,9 @@ export class MockBackend implements Backend {
   decideOffer(offerId: string, decision: OfferDecision) {
     return this.call((e) => e.decideOffer(this.uid, offerId, decision));
   }
+  depart(rideId: string) {
+    return this.call((e) => e.depart(this.uid, rideId));
+  }
   advance(rideId: string, to: "arrived" | "in_progress" | "completed", actualKm?: number) {
     return this.call((e) => e.advance(this.uid, rideId, to, actualKm));
   }

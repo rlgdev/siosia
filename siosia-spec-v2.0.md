@@ -666,3 +666,22 @@ it). FR-100: a request is addressed to one provider **or open** to anyone.
   colour name (in the driver's language) and paint, and the car icon MUST be drawn in that paint
   wherever it appears — for the driver and for riders (driver card, booking card).
 
+## Amendment 2.2 (2026-10-22): the car sets off, Google Maps, info icons
+
+Operator request of 2026-10-22.
+
+- **FR-180**: For a booked ride, the rider MUST be told when the driver's car starts moving
+  towards the pickup — not only when the booking starts 30 min before. The driver's phone detects
+  it (the car has moved 150 m from where the ride began on that phone) and reports it once
+  (`siosia_depart`); the server records `departed_at`, notifies the rider (`driver_departed`:
+  "{driver} has set off") and R3 reads *Your driver has set off*. Repeats and other statuses
+  change nothing; a ride requested right now (no booking) needs no such step — the driver was
+  already on the move when accepting.
+- **FR-181**: *Navigate* (driver) and *Walk to pickup* (rider) MUST open Google Maps on every
+  phone — the universal link `google.com/maps/dir/?api=1&destination=…` opens the Google Maps app
+  when installed, else Google Maps on the web. Apple Maps is no longer used.
+- **FR-190**: Explanatory text on screens (how a setting works, what a state means) MUST NOT sit
+  on the screen as a paragraph; it sits behind a round *i* icon next to the heading or control and
+  pops up for 5 s when tapped (a second tap, or a tap elsewhere, closes it sooner). The words are
+  unchanged; one-line facts (counts, times, states) stay on the screen.
+
