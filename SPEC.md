@@ -131,7 +131,7 @@ T21|x|2.2: departed_at + siosia_depart (SQL+engine+adapters), driver_departed te
 T22|x|release 2.2: review, live DB migration (departed_at + siosia_depart), push-dispatch bundle, main|§15,V40–V42
 T23|x|2.3 backend: kids + kid_ratings + messages tables, photos bucket + signed-URL read, RPCs (kids CRUD, attach, rate kid, photo set/clear, chat send/list/read, room access), push kind chat_message, retention, RLS; engine twin (mock photos as data URLs, mock realtime chat); adapters; sql + engine tests|V44–V48,FR-200–225
 T24|x|2.3 UI: S2 My kids + photo pickers (resize), C2/C3 attach kids, provider's kid cards + rate-kid after done, kid card w/ ratings, photos everywhere nickname is, chat sheet (R3/D3/C3/P1 badge, live, read marks), i18n EN/PL, robot Siosia chat reply, tests (components, e2e)|V44–V48,FR-200–225
-T25|~|release 2.3: review, live DB migration + bucket, push-dispatch bundle, main, live check|§15,V44–V48
+T25|x|release 2.3: review, live DB migration + bucket, push-dispatch bundle, main, live check|§15,V44–V48
 
 ## §B bugs
 
