@@ -122,7 +122,7 @@ T18|x|open requests UI: C1 entries never disabled + hint, C2 "Anyone who can" + 
 T19|x|car colour: vehicles.paint + set_car_colour (SQL + engine), icon tint (ProfileIcon paint), colour sheet on car icon tap, rider views tinted, i18n, tests|V38,FR-170
 T20|x|release 2.1: review, re-run migration on live DB, push-dispatch bundle redeploy, push main, verify live|§15,V30–V38
 T21|x|2.2: departed_at + siosia_depart (SQL+engine+adapters), driver_departed texts EN/PL, driver-phone detector (runtime, DEPART_M), R3 status, Google Maps everywhere, InfoTip component + 11 descriptions behind it, i18n short lines, tests (engine, sql, push, components, e2e)|V40,V41,V42,FR-180,FR-181,FR-190
-T22|~|release 2.2: review, live DB migration (departed_at + siosia_depart), push-dispatch bundle, main|§15,V40–V42
+T22|x|release 2.2: review, live DB migration (departed_at + siosia_depart), push-dispatch bundle, main|§15,V40–V42
 
 ## §B bugs
 
