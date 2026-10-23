@@ -30,7 +30,10 @@ export type PushKind =
   | "appt_ride_lost"
   | "appt_ride_failed"
   // 2.3: a chat message (tag per room; opens the chat)
-  | "chat_message";
+  | "chat_message"
+  // 2.5: a session update (tag per appointment; opens C3) and the client heading home
+  | "session_update"
+  | "client_coming";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -74,6 +77,13 @@ export interface PushParams {
   messageId?: string;
   /** 2.3: the attached kids' names, for reminders and the accept text ("with Zosia and Kuba"). */
   kids?: string[];
+  /** 2.5: a session update — the kid it is about (null = everyone), whether it carries a photo, its id. */
+  kid?: string | null;
+  photo?: boolean;
+  updateId?: string;
+  /** 2.5: heading home — the minutes away and the expected arrival. */
+  minutes?: number;
+  etaAt?: Moment;
   rides?: RideLine[];
   rule?: "weekly" | "biweekly";
   count?: number;
@@ -234,7 +244,11 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
     appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."],
     // 2.3 (FR-222): the sender's own words; the tag is the room, so a newer message replaces the older.
-    chat_message: ["{sender}", "{text}"]
+    chat_message: ["{sender}", "{text}"],
+    // 2.5 (FR-232, FR-241): a session update names the kid it is about (else the service); the
+    // heading-home notice says how far away the client is.
+    session_update: ["{sender}{about}", "{update}"],
+    client_coming: ["{client} is heading home", "About {minutes} min — around {eta}."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -258,7 +272,9 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowcę."],
     appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} znów bez kierowcy."],
     appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszedł do skutku."],
-    chat_message: ["{sender}", "{text}"]
+    chat_message: ["{sender}", "{text}"],
+    session_update: ["{sender}{about}", "{update}"],
+    client_coming: ["{client} wraca do domu", "Za około {minutes} min — na miejscu ok. {eta}."]
   }
 };
 
@@ -311,9 +327,15 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   // 2.3 (K3): only the provider's copies carry kids; a client's never names their own.
   const kids = params.role === "client" ? "" : kidsText(params.kids, l);
   const chat = (params.text ?? "").replace(/\s+/g, " ").trim();
+  const cut = chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}…` : chat;
   const vars: Record<string, string> = {
     sender: params.sender || SOMEONE[l],
-    text: chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}…` : chat,
+    text: cut,
+    // 2.5: an update's words, "📷" marking a photo — alone when there are no words.
+    update: params.photo ? (cut ? `${cut} 📷` : l === "pl" ? "📷 Zdjęcie" : "📷 Photo") : cut,
+    about: params.kid || params.service ? ` · ${params.kid || params.service}` : "",
+    minutes: params.minutes === undefined || params.minutes === null ? "" : String(params.minutes),
+    eta: fmt(toMs(params.etaAt), l, tz, false),
     kids: kids ? WITH_KIDS[l](kids) : "",
     when: fmt(ms, l, tz, true),
     time: fmt(toMs(params.time) ?? ms, l, tz, false),
@@ -346,10 +368,10 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
           : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.`
         : ""
   };
-  // A chat body is the sender's own words: substituted and trimmed, but never tidied like a template
-  // (their "..." or a leading "." stay as typed).
+  // A chat body (and an update's, 2.5) is the sender's own words: substituted and trimmed, but never
+  // tidied like a template (their "..." or a leading "." stay as typed).
   const tidy = (s: string) =>
-    kind === "chat_message"
+    kind === "chat_message" || kind === "session_update"
       ? s
       : s
           .replace(/\s+([.,])/g, "$1")
@@ -363,6 +385,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
         .replace(/\s+/g, " ")
         .trim()
     );
-  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : `${kind}:${id ?? ""}`;
+  const tag =
+    kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }

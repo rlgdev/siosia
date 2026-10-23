@@ -7,6 +7,7 @@
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { otherName, partyText, statusChip } from "../components/apptWords";
+import { HistoryFeed } from "../components/SessionFeed";
 import { Money, Page, Panel } from "../components/ui";
 import type { AppointmentView, Earnings, HistoryItem, RideView } from "../core/types";
 import { useI18n } from "../i18n";
@@ -139,6 +140,7 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
           {t("history.rate", { name: otherName(a, t) })}
         </button>
       )}
+      {a.updateCount > 0 && <HistoryFeed a={a} />}
     </li>
   );
 }

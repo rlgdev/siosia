@@ -254,6 +254,19 @@ check, 24 h after the end, 30 per 10 min), delivered live over the existing priv
 channel and pushed as `chat_message` (tag per room) unless the recipient is driving an
 `in_progress` ride. Read marks are set when the thread is visible.
 
+**2.5: session updates and heading home** (2026-10-23, "Amendment 2.5", SPEC.md V54–V57).
+`appointment_updates` rows (author, an optional kid — its name copied at post time — a text and/or
+a photo path under `update/<author's public id>/<appointment id>/`) are written through
+`siosia_post_update` by the two parties of an accepted or done appointment, from 30 min before the
+start until 7 days after the end, and read through `siosia_updates`, which also stamps the reader's
+presence (`chat_presence`, room `feed:<id>`) so a `session_update` push skips a feed that is in
+front — the chat's mechanics, reused. Photo ownership stays row-based (V49): the Storage policies
+accept the new path shape for a party of that appointment. "Heading home" stores only two
+timestamps on the appointment (`coming_at`, `eta_at`): the phone computes the driving minutes
+(`services/routing.ts`: OSRM with the straight-line fallback) from its own fix or a searched
+address, and `siosia_coming_home` turns them into the notice and one `client_coming` push. The
+engine mirrors all of it; the demo robot answers a parent's first note and a heading-home notice.
+
 ### 2.0 deviations, on purpose
 
 - **A series in the calendar is written in local time** (spec V27 said UTC): `DTSTART`, `DTEND`

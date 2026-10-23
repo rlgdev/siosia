@@ -623,3 +623,46 @@ describe("in-app guide (FR-153)", () => {
     for (const word of ["Nauka", "Opieka nad dziećmi", "dzień</strong> i <strong>dwie godziny", "Tylko ten", "Wszystkie pozostałe"]) expect(plPart).toContain(word);
   });
 });
+
+describe("2.5 demo round trip (FR-230–241)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("posts an update with a photo from a Blob, shows the feed on both sides, tells the provider the parent is heading home", async () => {
+    resetMockDb();
+    const bus = new MockBus("test-bus-" + Math.random());
+    const cfg = { ...DEFAULT_CONFIG, inviteCode: null };
+    const client = new MockBackend("c1", cfg, { bus, sweep: false });
+    const siosia = new MockBackend("s1", cfg, { bus, sweep: false });
+    try {
+      await client.saveProfile("Toria", "en");
+      await siosia.saveProfile("Siosia", "pl");
+      await siosia.setOffers(["childcare"]);
+      const zosia = await client.addKid({ name: "Zosia", bornYear: 2018, note: "" });
+      const entry = (await client.catalog()).find((e) => e.id === "childcare")!;
+      const base = Date.now();
+      const a = await client.requestService({ serviceId: "childcare", providerId: entry.providers[0].publicId!, kidIds: [zosia.id], startsAt: base + 31 * 60_000, durationMin: 180, place: { lat: 52.25, lng: 20.82, label: "Dom" }, note: "" });
+      await siosia.answerAppointment(a.id, "accept");
+      expect(await client.getAppointment(a.id)).toMatchObject({ updateCount: 0, feedOpen: false, coming: null });
+      // Two minutes later the feed is open (30 min before the start).
+      vi.spyOn(Date, "now").mockImplementation(() => base + 2 * 60_000);
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+      const url = "data:image/jpeg;base64," + btoa(String.fromCharCode(...bytes));
+      const pushed = new Promise<PushMessage>((resolve) => client.onPush((m) => resolve(m)));
+      const u = await siosia.postUpdate(a.id, { text: "Zosia is drawing", kidId: zosia.id }, new Blob([bytes], { type: "image/jpeg" }));
+      expect(u).toMatchObject({ mine: true, kid: { id: zosia.id, name: "Zosia" }, text: "Zosia is drawing", photo: url });
+      expect(await pushed).toMatchObject({ kind: "session_update", appointmentId: a.id, params: { sender: "Siosia", kid: "Zosia", photo: true, text: "Zosia is drawing" } });
+      expect((await client.updates(a.id)).items).toEqual([expect.objectContaining({ mine: false, text: "Zosia is drawing", photo: url, author: expect.objectContaining({ nickname: "Siosia" }) })]);
+      expect(await client.getAppointment(a.id)).toMatchObject({ updateCount: 1, feedOpen: true, coming: null });
+      const told = new Promise<PushMessage>((resolve) => siosia.onPush((m) => resolve(m)));
+      const v = await client.comingHome(a.id, 25);
+      expect(v.coming).toEqual({ at: base + 2 * 60_000, etaAt: base + 27 * 60_000 });
+      expect(await told).toMatchObject({ kind: "client_coming", appointmentId: a.id, params: { client: "Toria", minutes: 25 } });
+      expect((await siosia.planned()).appointments[0]).toMatchObject({ updateCount: 1, coming: { at: base + 2 * 60_000 } });
+      await siosia.deleteUpdate(u.id);
+      expect((await client.updates(a.id)).items).toEqual([]);
+    } finally {
+      client.dispose();
+      siosia.dispose();
+    }
+  });
+});

@@ -2047,3 +2047,273 @@ describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () =>
     expect(await errorOf(h.call(U.stranger, "siosia_chat", ["ride:00000000-0000-4000-8000-00000000dead", false]))).toBe("not_member");
   });
 });
+
+describe("session updates and heading home (2.5: FR-230–242, V54–V56)", () => {
+  const feed = (uid: string, id: unknown, seen = false) => h.call<Json>(uid, "siosia_updates", [id, seen]);
+  const post = (uid: string, id: unknown, text: string | null, kid: unknown = null, photo: string | null = null) => h.call<Json>(uid, "siosia_post_update", [id, text, kid, photo]);
+  const del = (uid: string, id: unknown) => h.call<string | null>(uid, "siosia_delete_update", [id]);
+  const coming = (uid: string, id: unknown, min: number | null) => h.call<Json>(uid, "siosia_coming_home", [id, min]);
+  const addKid = (uid: string, name: string) => h.call<Json>(uid, "siosia_add_kid", [{ name, bornYear: null, note: "" }]);
+  const changed = async () => (await h.admin("select topic from realtime.messages where event = 'changed'")).rows.map((r) => String(r.topic));
+  const pushes = async () =>
+    (await h.admin("select kind, user_id, appointment_id, params from public.push_outbox order by id")).rows as { kind: string; user_id: string; appointment_id: string | null; params: Record<string, unknown> }[];
+  const quiet = () => h.db.exec("delete from public.push_outbox; delete from realtime.messages;");
+  const pidOf = async (uid: string) => String((await h.call<Json>(uid, "siosia_get_profile")).publicId);
+  const objects = async () => (await h.admin("select name from storage.objects where bucket_id = 'photos' order by name")).rows.map((r) => String(r.name));
+  const upload = (path: string) => h.admin("insert into storage.objects (bucket_id, name) values ('photos', $1)", [path]);
+  const can = async (path: string, viewer: string) => (await h.admin("select public.siosia_can_see_photo($1, $2) as ok", [path, viewer])).rows[0].ok;
+  const up = async (path: string, uid: string) => (await h.admin("select public.siosia_photo_upload_ok($1, $2) as ok", [path, uid])).rows[0].ok;
+  /** Moves the start so that the session ends `endMin` minutes from now (negative = already over; a sweep's ended_at moves with it). */
+  const endIn = (id: unknown, endMin: number) =>
+    h.admin(
+      "update public.appointments set starts_at = now() + make_interval(mins => $2) - make_interval(mins => duration_min), ended_at = case when ended_at is null then null else now() + make_interval(mins => $2) end where id = $1",
+      [id, endMin]
+    );
+  const items = async (uid: string, id: unknown) => (await feed(uid, id)).items as Json[];
+
+  beforeAll(async () => {
+    await h.admin("create schema if not exists storage");
+    await h.admin("create table if not exists storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text not null, name text not null)");
+  });
+  beforeEach(async () => {
+    await h.db.exec("delete from public.appointments; delete from public.kids; delete from public.push_outbox; delete from realtime.messages; delete from storage.objects; delete from public.chat_presence;");
+  });
+
+  /** An accepted childcare with Zosia attached, `startMin` minutes ahead (asked for with the 30-min lead, then moved). */
+  async function session(startMin = 60) {
+    const z = await addKid(U.client, "Zosia");
+    const a = await request(U.client, "siosia", Math.max(startMin, 31), { kids: [z.id] });
+    await answer(U.siosia, a.id, "accept");
+    if (startMin < 31) await shift(a.id, startMin);
+    await quiet();
+    return { a, z };
+  }
+
+  it("opens the feed 30 min before the start, to the two parties only, and keeps it 7 days after the end (FR-230, FR-234, V54)", async () => {
+    const { a } = await session(60);
+    expect(await getAppt(U.client, a.id)).toMatchObject({ updateCount: 0, feedOpen: false, coming: null });
+    expect(await feed(U.client, a.id)).toEqual({ appointmentId: a.id, open: false, items: [] });
+    expect(await errorOf(post(U.client, a.id, "Hi"))).toBe("illegal_transition");
+    await shift(a.id, 29);
+    expect((await feed(U.siosia, a.id)).open).toBe(true);
+    expect((await getAppt(U.siosia, a.id)).feedOpen).toBe(true);
+    expect(await errorOf(feed(U.driver, a.id))).toBe("not_found");
+    expect(await errorOf(post(U.other, a.id, "Hi"))).toBe("not_found");
+    expect(await errorOf(feed(U.stranger, a.id))).toBe("not_member");
+    expect(await errorOf(feed(U.client, "00000000-0000-4000-8000-00000000dead"))).toBe("not_found");
+    // Clients read nothing from the table directly, either (RLS: a party only; never a stranger).
+    expect(await errorOf(h.as(U.other, "select count(*) from public.appointment_updates"))).toMatch(/permission denied/);
+    // An open request has no feed; a candidate learns nothing of it.
+    const o = await request(U.client, null, 60);
+    expect(await errorOf(feed(U.client, o.id))).toBe("not_found");
+    expect(await getAppt(U.other, o.id)).toMatchObject({ role: "candidate", updateCount: 0, feedOpen: false, coming: null });
+    // Open once done, until 7 days after the end.
+    await endIn(a.id, -(7 * 24 * 60 - 1));
+    expect((await feed(U.client, a.id)).open).toBe(true);
+    expect((await getAppt(U.client, a.id)).status).toBe("done");
+    await endIn(a.id, -(7 * 24 * 60 + 1));
+    expect((await feed(U.client, a.id)).open).toBe(false);
+    expect((await getAppt(U.client, a.id)).feedOpen).toBe(false);
+    expect(await errorOf(post(U.siosia, a.id, "Late"))).toBe("illegal_transition");
+  });
+
+  it("deletes only while the feed is open, like posting; a cancelled appointment shows no notice (FR-231, FR-242, V54, V56)", async () => {
+    const { a } = await session(29);
+    const u = await post(U.client, a.id, "Note");
+    await endIn(a.id, -(7 * 24 * 60 + 1));
+    expect(await errorOf(del(U.client, u.id))).toBe("illegal_transition");
+    const { a: c } = await session(29);
+    expect((await coming(U.client, c.id, 15)).coming).not.toBeNull();
+    await h.admin("update public.appointments set starts_at = now() + interval '40 minutes' where id = $1", [c.id]); // not started: cancellable
+    await cancel(U.client, c.id);
+    expect(await getAppt(U.siosia, c.id)).toMatchObject({ status: "cancelled", coming: null });
+    expect(await errorOf(coming(U.client, c.id, 5))).toBe("illegal_transition");
+  });
+
+  it("posts a text and/or a photo under my folder for this appointment, about everyone or one attached kid; one push; the Storage checks; the author deletes their own (FR-230–232, FR-234, V54, V55)", async () => {
+    const { a, z } = await session(29);
+    const k2 = await addKid(U.client, "Kuba"); // not attached
+    const zs = await addKid(U.siosia, "Zuzia"); // someone else's
+    const mine = `update/${await pidOf(U.siosia)}/${a.id}/${randomUUID()}.jpg`;
+    const bad: [string | null, unknown, string | null][] = [
+      ["", null, null],
+      [null, null, null],
+      ["   ", null, null],
+      ["\n", null, null],
+      ["\t \r\n", null, null],
+      ["x".repeat(501), null, null],
+      ["Hi", k2.id, null],
+      ["Hi", zs.id, null],
+      ["Hi", randomUUID(), null],
+      ["Hi", null, `update/${await pidOf(U.client)}/${a.id}/${randomUUID()}.jpg`], // not my folder
+      ["Hi", null, `update/${await pidOf(U.siosia)}/${randomUUID()}/${randomUUID()}.jpg`], // another appointment
+      ["Hi", null, `profile/${await pidOf(U.siosia)}/${randomUUID()}.jpg`], // another shape
+      ["Hi", null, `update/${U.siosia}/${a.id}/${randomUUID()}.jpg`] // never a uid-keyed folder (V49)
+    ];
+    for (const b of bad) expect(await errorOf(post(U.siosia, a.id, b[0], b[1], b[2])), JSON.stringify(b).slice(0, 70)).toBe("bad_input");
+    expect(await post(U.siosia, a.id, "Hi\n\n")).toMatchObject({ text: "Hi" }); // keyboard whitespace trimmed, as the engine does
+    await quiet();
+    const u1 = await post(U.siosia, a.id, "  Zosia is drawing  ", z.id);
+    expect(u1).toMatchObject({ appointmentId: a.id, author: { nickname: "Siosia" }, mine: true, kid: { id: z.id, name: "Zosia" }, text: "Zosia is drawing", photo: null });
+    expect(u1).not.toHaveProperty("photoPath");
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.client}`, `user:${U.siosia}`]));
+    expect(await pushes()).toEqual([
+      expect.objectContaining({
+        kind: "session_update",
+        user_id: U.client,
+        appointment_id: a.id,
+        params: expect.objectContaining({ sender: "Siosia", text: "Zosia is drawing", kid: "Zosia", photo: false, updateId: u1.id, service: "Childcare", serviceId: "childcare", client: "Toria", provider: "Siosia" })
+      })
+    ]);
+    await quiet();
+    // A photo alone, under my folder for this appointment: the row holds the path; the parties
+    // may read (sign) it, nobody else; the policies let the parties write under their own folder.
+    await upload(mine);
+    const u2 = await post(U.siosia, a.id, "", null, mine);
+    expect(u2).toMatchObject({ kid: null, text: "", photoPath: mine });
+    expect(await errorOf(post(U.siosia, a.id, "again", null, mine))).toBe("bad_input"); // one object, one update
+    expect((await pushes())[0].params).toMatchObject({ text: "", photo: true, kid: null });
+    expect(await can(mine, U.client)).toBe(true);
+    expect(await can(mine, U.siosia)).toBe(true);
+    expect(await can(mine, U.driver)).toBe(false);
+    expect(await can(mine, U.other)).toBe(false);
+    expect(await up(mine, U.siosia)).toBe(true);
+    expect(await up(`update/${await pidOf(U.client)}/${a.id}/${randomUUID()}.jpg`, U.client)).toBe(true);
+    expect(await up(`update/${await pidOf(U.client)}/${a.id}/${randomUUID()}.jpg`, U.other)).toBe(false);
+    expect(await up(`update/${await pidOf(U.other)}/${a.id}/${randomUUID()}.jpg`, U.other)).toBe(false); // not a party
+    expect(await up(`update/${await pidOf(U.siosia)}/${randomUUID()}/${randomUUID()}.jpg`, U.siosia)).toBe(false); // no such appointment
+    // The parent's note: the same feed, pushed to the provider.
+    await quiet();
+    const u3 = await post(U.client, a.id, "Thanks! She loves it", z.id);
+    expect((await pushes()).map((p) => [p.kind, p.user_id])).toEqual([["session_update", U.siosia]]);
+    expect((await pushes())[0].params).toMatchObject({ sender: "Toria", kid: "Zosia", kids: ["Zosia"] }); // the provider's copy names the attached kids, as always
+    const seen = await items(U.client, a.id);
+    expect(seen.map((u) => [u.text, u.mine, (u.kid as Json | null)?.name ?? null])).toEqual([
+      ["Hi", false, null],
+      ["Zosia is drawing", false, "Zosia"],
+      ["", false, null],
+      ["Thanks! She loves it", true, "Zosia"]
+    ]);
+    expect(seen[2]).toMatchObject({ photoPath: mine });
+    expect((await items(U.siosia, a.id)).map((u) => u.mine)).toEqual([true, true, true, false]);
+    expect(await getAppt(U.siosia, a.id)).toMatchObject({ updateCount: 4, feedOpen: true });
+    expect(await getAppt(U.client, a.id)).toMatchObject({ updateCount: 4 });
+    // The author deletes their own: the object row goes server-side too; never the other's.
+    expect(await errorOf(del(U.client, u2.id))).toBe("not_found");
+    expect(await errorOf(del(U.siosia, randomUUID()))).toBe("not_found");
+    await quiet();
+    expect(await del(U.siosia, u2.id)).toBe(mine);
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.client}`, `user:${U.siosia}`]));
+    expect(await objects()).toEqual([]);
+    expect((await items(U.client, a.id)).map((u) => u.id).slice(1)).toEqual([u1.id, u3.id]);
+    expect(await del(U.client, u3.id)).toBeNull();
+  });
+
+  it("keeps the kid's name when the kid is removed; no push to a party looking at the feed; 60 per hour; retention drops the photos (FR-231, FR-232, FR-235, V54, V55)", async () => {
+    const { a, z } = await session(29);
+    await post(U.siosia, a.id, "Playing", z.id);
+    await h.call(U.client, "siosia_remove_kid", [z.id]);
+    expect((await items(U.siosia, a.id))[0].kid).toEqual({ id: null, name: "Zosia" });
+    // The parent has the feed in front (seen within 45 s): no push for what they are looking at.
+    await quiet();
+    await feed(U.client, a.id, true);
+    await post(U.siosia, a.id, "Snack time");
+    expect(await pushes()).toEqual([]);
+    await h.admin("update public.chat_presence set seen_at = now() - interval '50 seconds' where user_id = $1", [U.client]);
+    await post(U.siosia, a.id, "Nap");
+    expect((await pushes()).map((p) => p.kind)).toEqual(["session_update"]);
+    // Looking at the chat of the same appointment is not looking at the feed.
+    await quiet();
+    await h.call(U.client, "siosia_chat", [`appt:${a.id}`, true]);
+    await post(U.siosia, a.id, "Awake");
+    expect((await pushes()).map((p) => p.kind)).toEqual(["session_update"]);
+    // 60 in an hour, then too_many — per author.
+    for (let i = 0; i < 56; i++) await post(U.siosia, a.id, `n${i}`); // 4 + 56
+    expect(await errorOf(post(U.siosia, a.id, "one more"))).toBe("too_many");
+    await post(U.client, a.id, "mine is fine");
+    await h.admin("update public.appointment_updates set created_at = created_at - interval '61 minutes' where author = $1", [U.siosia]);
+    await post(U.siosia, a.id, "later");
+    // Retention: an appointment 13 months old goes with its updates and their photo objects.
+    const path = `update/${await pidOf(U.siosia)}/${a.id}/${randomUUID()}.jpg`;
+    await upload(path);
+    await post(U.siosia, a.id, "", null, path);
+    expect(await objects()).toEqual([path]);
+    await h.admin("update public.appointments set starts_at = now() - interval '13 months', ended_at = now() - interval '13 months', status = 'done' where id = $1", [a.id]);
+    await h.admin("select public.siosia_retention()");
+    expect((await h.admin("select count(*)::int as n from public.appointment_updates")).rows[0].n).toBe(0);
+    expect(await objects()).toEqual([]);
+  });
+
+  it("heading home: the client only, while live, minutes 0–600, repeatable; one client_coming push; shown to both until 2 h after the end (FR-240–242, V56)", async () => {
+    const { a } = await session(60);
+    expect(await errorOf(coming(U.client, a.id, 20))).toBe("illegal_transition"); // 60 min before
+    await shift(a.id, 29);
+    expect(await errorOf(coming(U.siosia, a.id, 20))).toBe("not_found");
+    expect(await errorOf(coming(U.other, a.id, 20))).toBe("not_found");
+    for (const bad of [-1, 601, null]) expect(await errorOf(coming(U.client, a.id, bad)), String(bad)).toBe("bad_input");
+    const v = await coming(U.client, a.id, 25);
+    const c = v.coming as { at: number; etaAt: number };
+    expect(c.etaAt - c.at).toBe(25 * MIN);
+    expect(Math.abs(c.at - Date.now())).toBeLessThan(5000);
+    expect(await changed()).toEqual(expect.arrayContaining([`user:${U.client}`, `user:${U.siosia}`]));
+    expect(await pushes()).toEqual([
+      expect.objectContaining({
+        kind: "client_coming",
+        user_id: U.siosia,
+        appointment_id: a.id,
+        params: expect.objectContaining({ client: "Toria", provider: "Siosia", minutes: 25, service: "Childcare" })
+      })
+    ]);
+    expect(typeof (await pushes())[0].params.etaAt).toBe("string"); // a timestamp, as Postgres sends it
+    expect((await getAppt(U.siosia, a.id)).coming).toEqual(c);
+    // Again within a minute: the notice updates, the provider is not rung twice; a minute later it rings again.
+    await quiet();
+    const again = (await coming(U.client, a.id, 0)).coming as { at: number; etaAt: number };
+    expect(again.etaAt).toBe(again.at);
+    expect(await pushes()).toEqual([]);
+    await h.admin("update public.appointments set coming_at = now() - interval '61 seconds' where id = $1", [a.id]);
+    expect((await coming(U.client, a.id, 10)).coming).not.toBeNull();
+    expect(await pushes()).toHaveLength(1);
+    // Just after the end (done by the sweep) it still works; 2 h after the end it is over.
+    await endIn(a.id, -1);
+    expect((await getAppt(U.siosia, a.id)).status).toBe("done");
+    expect((await getAppt(U.siosia, a.id)).coming).not.toBeNull();
+    await coming(U.client, a.id, 5);
+    await endIn(a.id, -121);
+    expect((await getAppt(U.siosia, a.id)).coming).toBeNull();
+    expect((await getAppt(U.client, a.id)).coming).toBeNull();
+    expect(await errorOf(coming(U.client, a.id, 5))).toBe("illegal_transition");
+    // Never on a request nobody took yet, or one still waiting for an answer.
+    const o = await request(U.client, null, 60);
+    expect(await errorOf(coming(U.client, o.id, 5))).toBe("illegal_transition");
+    const w = await request(U.client, "siosia", 60);
+    expect(await errorOf(coming(U.client, w.id, 5))).toBe("illegal_transition");
+  });
+
+  it("deleting a profile removes that person's updates and photos; the account move re-keys them (FR-235, V49)", async () => {
+    const { a, z } = await session(29);
+    const path = `update/${await pidOf(U.siosia)}/${a.id}/${randomUUID()}.jpg`;
+    await upload(path);
+    await post(U.siosia, a.id, "", null, path);
+    await post(U.client, a.id, "Note", z.id);
+    // The parent moves to a new phone: the note is theirs there (the old account is no member).
+    const NEW = "00000000-0000-4000-8000-000000000250";
+    await h.admin("insert into auth.users (id) values ($1) on conflict do nothing", [NEW]);
+    await h.call(NEW, "siosia_join", ["pilot 2026", "dev-new25"]);
+    const { code } = await h.call<Json>(U.client, "siosia_create_transfer");
+    await h.call(NEW, "siosia_redeem_transfer", [code, "dev-new25", false]);
+    expect((await h.admin("select author from public.appointment_updates order by created_at")).rows.map((r) => r.author)).toEqual([U.siosia, NEW]);
+    expect((await items(NEW, a.id)).map((u) => u.mine)).toEqual([false, true]);
+    expect(await can(path, NEW)).toBe(true);
+    // The provider leaves: her update and its photo object go; the parent's note stays.
+    await h.call(U.siosia, "siosia_delete_profile");
+    expect(await objects()).toEqual([]);
+    expect((await h.admin("select author, text from public.appointment_updates")).rows).toEqual([{ author: NEW, text: "Note" }]);
+    // Back to the usual cast for the tests that follow (the move left U.client without a profile).
+    await h.admin("delete from public.memberships where user_id = $1", [NEW]);
+    await h.admin("update public.profiles set user_id = $1 where user_id = $2", [U.client, NEW]);
+    await h.admin("insert into public.memberships (user_id, device_id) values ($1, 'dev-nt') on conflict do nothing", [U.client]);
+    await h.onboard(U.siosia, "Siosia");
+    await h.call(U.siosia, "siosia_set_offers", [["learning", "childcare"]]);
+  });
+});

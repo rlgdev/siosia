@@ -223,6 +223,12 @@ export interface AppointmentView {
   kidCount: number;
   /** Unread chat messages in this appointment's room (accepted appointments). */
   unread: number;
+  /** 2.5 (FR-230–233): how many session updates the feed holds (the two parties; a candidate 0). */
+  updateCount: number;
+  /** 2.5: posting to the feed is allowed right now (30 min before the start … 7 days after the end). */
+  feedOpen: boolean;
+  /** 2.5 (FR-240–241): the client said they are heading home — when, and when they expect to be there. */
+  coming: { at: number; etaAt: number } | null;
 }
 
 export interface RepeatInput {
@@ -431,6 +437,35 @@ export interface ChatThread {
 
 /** Unread counts per room the viewer belongs to (badges). */
 export type ChatUnread = Record<string, number>;
+
+/** 2.5 (FR-230): one session update as a party sees it. */
+export interface SessionUpdate {
+  id: string;
+  appointmentId: string;
+  author: PublicParty;
+  /** True when the viewer posted it. */
+  mine: boolean;
+  /** The kid it is about (null = everyone); the name as it was when posted. */
+  kid: { id: string | null; name: string } | null;
+  text: string;
+  /** A signed URL (demo: a data URL), or null. */
+  photo: string | null;
+  createdAt: number;
+}
+
+/** 2.5: the feed of one appointment (FR-231). */
+export interface SessionFeed {
+  appointmentId: string;
+  /** Posting still allowed (30 min before the start … 7 days after the end, accepted or done). */
+  open: boolean;
+  items: SessionUpdate[];
+}
+
+/** 2.5: what a party posts — a text (may be empty with a photo) about one attached kid or everyone. */
+export interface UpdateInput {
+  text: string;
+  kidId: string | null;
+}
 
 export interface PublicDriver extends PublicParty {
   /** Only present once the driver is assigned to the viewer's ride (FR-044). */

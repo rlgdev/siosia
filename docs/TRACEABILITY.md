@@ -155,4 +155,13 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 223 | Send while live + 24 h; then read-only; deleted with the ride/appointment; parties only | appt + sql2 send rules, cascades, RLS |
 | 224 | Read marks when the thread is visible | screens chat marks read; appt + sql2 readAt |
 | 225 | 30 messages per room per sender per 10 min → too_many | appt + sql2 rate limit |
+| 230 | Session updates: text ≤ 500 and/or a photo, about everyone or one attached kid, 30 min before the start … 7 days after the end, 60/h | appt + sql2 "opens the feed 30 min before…", "posts a text and/or a photo…", "keeps the kid's name…"; services "2.5 demo round trip" |
+| 231 | C3 Session section: author, time, kid chip, text, photo full size, live, delete own | screens "shows the feed…"; appt + sql2 delete rules; e2e2 "session updates" |
+| 232 | session_update push (kid or service, the words, 📷), tag per appointment, opens C3; not while the feed is in front or driving | push "2.5 session update…"; appt + sql2 presence; navigation "?appointment=" |
+| 233 | H1 expandable "Session updates · N" (read-only); P1 count | screens "a closed feed is read-only…" |
+| 234 | The two parties only, photos included (update/<public id>/<appointment>/…) | sql2 Storage checks (can_see / upload_ok); appt + sql2 not_found for others; RLS |
+| 235 | Retention with the appointment; delete profile; account move | appt + sql2 "deleting a profile removes…"; sql2 retention |
+| 240 | Heading home: location → road time, else a searched address or picked minutes; 0–600; repeatable; no position stored | screens "heading home…"; appt + sql2 "heading home…" |
+| 241 | client_coming push; the notice on C3 and P1 until 2 h after the end | push "2.5 … heading-home texts"; screens coming-line; appt + sql2 |
+| 242 | Kept on the appointment; none on a request, a declined or cancelled one | appt + sql2 illegal_transition cases |
 | 170 | Car icon tap → colour; vehicle colour + paint; icon drawn in the paint everywhere | appt + sql2 "sets the colour name and paint…", "shows the paint to the rider…", "carries the paint in every party…"; components car-icon / paint-<id>; e2e2 "the car icon picks the car's colour" |

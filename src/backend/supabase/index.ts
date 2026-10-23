@@ -39,7 +39,10 @@ import {
   type RiderPos,
   type Role,
   type ServerErrorCode,
+  type SessionFeed,
+  type SessionUpdate,
   type SharingStop,
+  type UpdateInput,
   type Vehicle
 } from "../../core/types";
 import type {
@@ -539,6 +542,35 @@ export class SupabaseBackend implements Backend {
   chat(room: ChatRoom, markRead = false) {
     return this.rpc<ChatThread>("siosia_chat", { p_room: room, p_mark_read: markRead });
   }
+  // ---------- 2.5: session updates and heading home ----------
+
+  updates(appointmentId: string, seen = false) {
+    return this.rpc<SessionFeed>("siosia_updates", { p_appt: appointmentId, p_seen: seen });
+  }
+  /** The photo goes to the bucket first, under my folder for this appointment; the row points at it. */
+  async postUpdate(appointmentId: string, input: UpdateInput, jpeg: Blob | null = null) {
+    let path: string | null = null;
+    if (jpeg) {
+      const folder = await this.photoFolder();
+      path = `update/${folder}/${appointmentId}/${randomKey()}.jpg`;
+      const { error } = await this.sb.storage.from(PHOTOS_BUCKET).upload(path, jpeg, { upsert: true, contentType: "image/jpeg" });
+      if (error) throw new ServerError("unavailable", error.message);
+    }
+    try {
+      return await this.rpc<SessionUpdate>("siosia_post_update", { p_appt: appointmentId, p_text: input.text, p_kid: input.kidId, p_photo: path });
+    } catch (e) {
+      if (path) void this.removePhotos([path]); // no row points at it
+      throw e;
+    }
+  }
+  async deleteUpdate(id: string) {
+    const old = await this.rpc<string | null>("siosia_delete_update", { p_id: id });
+    if (old) await this.removePhotos([old]);
+  }
+  comingHome(appointmentId: string, minutes: number) {
+    return this.rpc<AppointmentView>("siosia_coming_home", { p_appt: appointmentId, p_minutes: minutes });
+  }
+
   async sendMessage(room: ChatRoom, text: string) {
     const m = await this.rpc<ChatMessage>("siosia_send_message", { p_room: room, p_text: text });
     // The caller shows it from this result; the live feed on this device skips it.

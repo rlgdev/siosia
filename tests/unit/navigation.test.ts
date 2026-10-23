@@ -628,3 +628,46 @@ describe("2.3: the profile's photo URL expires while the app stays open (C16)", 
     }
   });
 });
+
+describe("2.5: a session update or a heading-home notice opens its appointment (FR-232, FR-241, V55)", () => {
+  it("./?appointment=<id> opens C3 as a panel over the current screen; the demo toasts link there", async () => {
+    const store = await launch("/");
+    store.openFromUrl("./?appointment=a1");
+    expect(store.get().screen).toBe("home");
+    expect(store.get().panel).toBe("appointment");
+    expect(store.get().panelArg).toBe("a1");
+    expect(history.state).toEqual({ panel: "appointment", arg: "a1", screen: "home", depth: 1 });
+    store.openFromUrl("./?appointment=../x"); // not a link of ours
+    expect(store.get().panelArg).toBe("a1");
+    const show = (store as unknown as { showPush(m: PushMessage): Promise<void> }).showPush.bind(store);
+    await show({ kind: "session_update", rideId: null, appointmentId: "a2", params: { sender: "Siosia", text: "Zosia is drawing", kid: "Zosia", service: "Childcare" } });
+    expect(store.get().pushToast).toEqual({ title: "Siosia · Zosia", body: "Zosia is drawing", url: "./?appointment=a2" });
+    store.openFromUrl(store.get().pushToast!.url!);
+    expect(store.get().panelArg).toBe("a2");
+    await show({ kind: "client_coming", rideId: null, appointmentId: "a3", params: { client: "Toria", minutes: 25, etaAt: Date.now() + 25 * 60_000 } });
+    expect(store.get().pushToast?.url).toBe("./?appointment=a3");
+    expect(store.get().pushToast?.title).toBe("Toria is heading home");
+  });
+
+  it("opened from a closed app (the notification's tap): S1 with C3 over it, the parameter gone; ← closes it, then leaves", async () => {
+    const store = await launch("/?appointment=a1");
+    expect(store.get().screen).toBe("home");
+    expect(store.get().panel).toBe("appointment");
+    expect(store.get().panelArg).toBe("a1");
+    expect(location.search).toBe("");
+    expect(history.state).toEqual({ panel: "appointment", arg: "a1", screen: "home", depth: 1 });
+    history.back();
+    await settle();
+    expect(store.get().panel).toBeNull();
+    expect(store.get().screen).toBe("home");
+    history.back();
+    await settle();
+    expect(history.state).toEqual({ outside: true });
+    // Not an id of ours: nothing opens; the chat link wins when both are given.
+    const odd = await launch("/?appointment=..%2Fx");
+    expect(odd.get().panel).toBeNull();
+    const both = await launch("/?chat=appt:a1&appointment=a2");
+    expect(both.get().panel).toBe("chat");
+    expect(location.search).toBe("");
+  });
+});

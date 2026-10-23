@@ -6,6 +6,7 @@ import type { ReactNode, SVGProps } from "react";
 
 export type IconName =
   | "users"
+  | "image"
   | "calendar"
   | "calendarPlus"
   | "history"
@@ -116,7 +117,14 @@ const GLYPHS: Record<IconName, ReactNode> = {
       <path d="M12 7v7M9 11l3 3 3-3" />
     </>
   ),
-  check: <path d="M5 12l5 5L20 7" />
+  check: <path d="M5 12l5 5L20 7" />,
+  image: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <circle cx="8.5" cy="10" r="1.5" />
+      <path d="M21 16l-5-5-7 7M3 17l4-4 3 3" />
+    </>
+  )
 };
 
 type Props = { name: IconName; size?: number } & Omit<SVGProps<SVGSVGElement>, "name">;

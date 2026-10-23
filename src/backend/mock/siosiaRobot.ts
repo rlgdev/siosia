@@ -22,6 +22,10 @@ const TAKE_MS = 15_000;
 /** A chat is answered this long after its first unread message (2.3). */
 const REPLY_MS = 3000;
 const REPLY = { en: "Thanks, I will be there on time 🙂", pl: "Dzięki, będę na czas 🙂" };
+/** 2.5: one answer to the parent's first note in a session feed, one to a heading-home notice. */
+const FEED_REPLY = { en: "All good here 🙂 — playing outside", pl: "U nas wszystko dobrze 🙂 — bawimy się na dworze" };
+const COMING_REPLY = { en: "Great, see you soon 🙂", pl: "Super, do zobaczenia 🙂" };
+const isAck = (text: string) => text === COMING_REPLY.en || text === COMING_REPLY.pl;
 /**
  * The other party's language is not hers to see (Backend shows nicknames only), so she reads it off
  * their words: Polish letters or everyday Polish words → Polish, else English.
@@ -43,6 +47,11 @@ export class RobotSiosia {
   private busy = false;
   private stopped = false;
   private lastRepair = 0;
+  /** 2.5: feeds she answered in, notices she acknowledged, since when a feed waits for her, and the size she last saw. */
+  private readonly answeredFeeds = new Set<string>();
+  private readonly ackedComing = new Set<string>();
+  private readonly feedSince = new Map<string, number>();
+  private readonly feedSeen = new Map<string, number>();
 
   constructor(
     private readonly cfg: EngineConfig,
@@ -98,6 +107,40 @@ export class RobotSiosia {
         if (now - since >= REPLY_MS) await this.reply(room);
       }
       for (const room of this.unreadSince.keys()) if (!rooms.includes(room)) this.unreadSince.delete(room);
+      // 2.5: the parent's first note in a session feed gets one answer (after REPLY_MS), a
+      // heading-home notice one acknowledgement — in the parent's language as far as their words show it.
+      for (const a of planned.appointments) {
+        if (a.role !== "provider" || a.status !== "accepted" || !a.feedOpen) continue;
+        if (a.coming && !this.ackedComing.has(a.id)) {
+          this.ackedComing.add(a.id);
+          // The feed, not her memory, says whether she acknowledged already (a reload starts her afresh).
+          const feed = await this.api.updates(a.id).catch(() => null);
+          if (feed && !feed.items.some((u) => u.mine && isAck(u.text)))
+            await this.api.postUpdate(a.id, { text: COMING_REPLY[this.langOf(a)], kidId: null }).catch(() => {});
+        }
+        // The feed is read again only when it grew since she last looked.
+        if (a.updateCount > 0 && !this.answeredFeeds.has(a.id) && this.feedSeen.get(a.id) !== a.updateCount) {
+          const feed = await this.api.updates(a.id).catch(() => null);
+          if (!feed) continue;
+          this.feedSeen.set(a.id, feed.items.length);
+          const theirs = feed.items.filter((u) => !u.mine);
+          if (theirs.length === 0) continue;
+          // Her own acknowledgement of a heading-home notice is no answer to the parent's note.
+          if (feed.items.some((u) => u.mine && !isAck(u.text))) {
+            this.answeredFeeds.add(a.id);
+            continue;
+          }
+          const since = this.feedSince.get(a.id) ?? now;
+          this.feedSince.set(a.id, since);
+          if (now - since < REPLY_MS) {
+            this.feedSeen.delete(a.id); // look again next tick
+            continue;
+          }
+          this.answeredFeeds.add(a.id);
+          const words = theirs.map((u) => u.text).join(" ");
+          await this.api.postUpdate(a.id, { text: PL_RE.test(words) ? FEED_REPLY.pl : FEED_REPLY.en, kidId: null }).catch(() => {});
+        }
+      }
     } catch (e) {
       if (e instanceof ServerError && (e.code === "no_profile" || e.code === "not_member") && Date.now() - this.lastRepair > 10_000) {
         this.lastRepair = Date.now();
@@ -106,6 +149,11 @@ export class RobotSiosia {
     } finally {
       this.busy = false;
     }
+  }
+
+  /** The language the page runs in (the parent's choice): the demo's only clue without any words. */
+  private langOf(_a: AppointmentView): "en" | "pl" {
+    return typeof document !== "undefined" && /^pl/i.test(document.documentElement.lang) ? "pl" : "en";
   }
 
   private async accept(a: AppointmentView): Promise<void> {

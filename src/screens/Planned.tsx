@@ -11,6 +11,7 @@ import { AddToCalendar } from "../components/AddToCalendar";
 import { apptRoom, kidsLine, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ChatButton } from "../components/ChatSheet";
 import { Avatar } from "../components/ProfileIcon";
+import { comingText, updateCountText } from "../components/SessionFeed";
 import { dayText, rangeTimes, sameDay, timeText } from "../components/when";
 import { Money, Page, RatingBadge, useBusy } from "../components/ui";
 import type { AppointmentView, Planned as PlannedData, RideView } from "../core/types";
@@ -194,6 +195,16 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
         {marker && (
           <span className="muted small" data-testid="series-marker">
             {marker}
+          </span>
+        )}
+        {a.updateCount > 0 && (
+          <span className="muted small" data-testid="feed-count">
+            {updateCountText(a.updateCount, t)}
+          </span>
+        )}
+        {comingText(a, now, locale, t) && (
+          <span className="small" data-testid="coming-line">
+            {comingText(a, now, locale, t)}
           </span>
         )}
         {rideLines(a, lang, t, app.deployment?.booking.maxDays ?? 30, now).map((l, i) => (

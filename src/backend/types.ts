@@ -20,6 +20,9 @@ import type {
   ChatThread,
   Kid,
   KidInput,
+  SessionFeed,
+  SessionUpdate,
+  UpdateInput,
   DeploymentConfig,
   HistoryItem,
   Leg,
@@ -192,6 +195,14 @@ export interface Backend {
   sendMessage(room: ChatRoom, text: string): Promise<ChatMessage>;
   /** Live messages of a room (both directions) while subscribed. */
   onMessage(room: ChatRoom, cb: (m: ChatMessage) => void): Unsub;
+  /** 2.5 (FR-230–233): the session feed of an appointment I am a party of; `seen` stamps my presence in it. */
+  updates(appointmentId: string, seen?: boolean): Promise<SessionFeed>;
+  /** Posts a text and/or a photo (already resized by the app), about one attached kid or everyone. */
+  postUpdate(appointmentId: string, input: UpdateInput, jpeg?: Blob | null): Promise<SessionUpdate>;
+  /** Removes my own update (its photo goes too). */
+  deleteUpdate(id: string): Promise<void>;
+  /** 2.5 (FR-240): the client is heading home, about this many minutes away (computed on the phone). */
+  comingHome(appointmentId: string, minutes: number): Promise<AppointmentView>;
 
   onMyChanges(cb: () => void): Unsub;
   /** Web Push subscription of this device (notifications). */

@@ -21,6 +21,7 @@ import type {
   RiderPos,
   Role,
   SharingStop,
+  UpdateInput,
   Vehicle
 } from "../../core/types";
 import type { Backend, DriverPresenceHandle, OfferDecision, PushMessage, RideChannel, RideChannelHandlers, Unsub } from "../types";
@@ -281,6 +282,20 @@ export class MockBackend implements Backend {
   }
   sendMessage(room: ChatRoom, text: string) {
     return this.call((e) => e.sendMessage(this.uid, room, text));
+  }
+  // ---------- 2.5: session updates and heading home ----------
+  updates(appointmentId: string, seen = false) {
+    return this.call((e) => e.updates(this.uid, appointmentId, seen));
+  }
+  async postUpdate(appointmentId: string, input: UpdateInput, jpeg: Blob | null = null) {
+    const dataUrl = jpeg ? await blobToDataUrl(jpeg) : null;
+    return this.call((e) => e.postUpdate(this.uid, appointmentId, input, dataUrl));
+  }
+  deleteUpdate(id: string) {
+    return this.call((e) => e.deleteUpdate(this.uid, id));
+  }
+  comingHome(appointmentId: string, minutes: number) {
+    return this.call((e) => e.comingHome(this.uid, appointmentId, minutes));
   }
 
   // ---------- realtime ----------

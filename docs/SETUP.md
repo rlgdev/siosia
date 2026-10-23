@@ -233,9 +233,13 @@ a notice that it could not, create it by hand: **Storage → New bucket**, name 
 bucket* **off**, then re-run the migration (it adds the object policies). Nothing else: photos are
 resized on the phone (≤ 512 px, ≤ 150 KB), uploaded by their owner only, and shown through signed
 links that expire within an hour — the bucket must stay private. Objects sit under
-`profile/<public id>/…` and `kid/<public id>/<kid id>/…` (never the account id), and a member may
-only write under their own folders; removing a kid or a profile removes its objects. The demo
-keeps photos in the browser.
+`profile/<public id>/…`, `kid/<public id>/<kid id>/…` and (2.5) `update/<public id>/<appointment
+id>/…` (never the account id), and a member may only write under their own folders; removing a
+kid, an update or a profile removes its objects. The demo keeps photos in the browser.
+
+Session updates and "heading home" (2.5) need nothing new either: re-run the migration (the
+`appointment_updates` table, two columns on `appointments`) and redeploy `push-dispatch` (two new
+notification kinds, `session_update` and `client_coming`).
 
 Chat (2.3) needs nothing new: messages live in the `messages` table and travel over the private
 realtime channels already set up; the `chat_message` notification goes out through `push-dispatch`

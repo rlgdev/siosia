@@ -1992,6 +1992,113 @@ body:has(.sharing-banner) .panel-head {
   margin-left: 4px;
 }
 
+/* ---------- 2.5: session updates (FR-231) and heading home (FR-241) ---------- */
+.feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.feed-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.feed-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.feed-meta {
+  font-size: 0.8rem;
+}
+.feed-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.feed-photo {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  width: 132px;
+  height: 132px;
+  overflow: hidden;
+}
+.feed-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.feed-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+}
+.feed-lightbox img {
+  max-width: 100%;
+  max-height: 80vh;
+  border-radius: var(--radius-sm);
+}
+.feed-compose textarea {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+}
+.feed-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.feed-chip {
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0 14px;
+  min-height: 44px;
+  cursor: pointer;
+  font: inherit;
+}
+.feed-chip[aria-pressed="true"] {
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+.feed-preview {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+.feed-details summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 12px 0;
+}
+.feed-details > :not(summary) {
+  margin-top: 8px;
+}
+.coming-line {
+  margin: 0;
+}
+
 /* ---------- 2.4: the launch (V52) ---------- */
 /* Over everything (panels 1500, dialogs 2000, banners 2200) while it plays; the ground is its own
    layer so it can fade out on its own while the mark morphs into S1's avatar. */

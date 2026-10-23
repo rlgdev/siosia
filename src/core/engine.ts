@@ -29,6 +29,9 @@ import {
   type ChatMessage,
   type ChatRoom,
   type ChatThread,
+  type SessionFeed,
+  type SessionUpdate,
+  type UpdateInput,
   type HistoryItem,
   type Kid,
   type KidInput,
@@ -194,6 +197,9 @@ export interface ApptRow {
   reminded: number[];
   seriesId: string | null;
   seq: number | null;
+  /** 2.5 (FR-240): the client's heading-home notice — when they said so and when they expect to be there. */
+  comingAt?: number | null;
+  etaAt?: number | null;
 }
 
 export interface StoredTemplate {
@@ -284,6 +290,19 @@ export interface MessageRow {
   readAt: number | null;
 }
 
+/** 2.5 (FR-230): a session update (Supabase: appointment_updates). */
+export interface UpdateRow {
+  id: string;
+  appointmentId: string;
+  author: string;
+  /** The kid it is about (null = everyone) — the row, and the name as it was when posted. */
+  kidId: string | null;
+  kidName: string | null;
+  text: string;
+  photoPath: string | null;
+  createdAt: number;
+}
+
 export interface DbState {
   version: 1;
   seq: number;
@@ -313,6 +332,8 @@ export interface DbState {
   photos?: Record<string, string>;
   /** user id → room → when they last had that thread open and visible (FR-222; Supabase: chat_presence). */
   chatPresence?: Record<string, Record<string, number>>;
+  /** 2.5 (optional: demo databases saved before 2.5 lack it) */
+  updates?: UpdateRow[];
 }
 
 /** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
@@ -338,7 +359,8 @@ export function emptyDb(): DbState {
     kidRatings: [],
     messages: [],
     photos: {},
-    chatPresence: {}
+    chatPresence: {},
+    updates: []
   };
 }
 
@@ -409,6 +431,19 @@ const CHAT_PRESENCE_MS = 45_000;
 /** A photo as uploaded: a JPEG data URL; the app resizes to ≤ 150 KB, base64 adds a third (FR-210). */
 const PHOTO_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/;
 const PHOTO_MAX_CHARS = 220_000;
+/** 2.5 (FR-230, FR-240, V54, V56): the feed opens 30 min before the start and closes 7 days after the
+ *  end; the heading-home notice is for the live session (until 2 h after the end); 60 updates per
+ *  author per appointment per hour; at most 600 minutes away (twins of siosia_feed_open and co.). */
+const FEED_BEFORE_MS = 30 * 60_000;
+const FEED_AFTER_MS = 7 * 24 * 3600_000;
+const FEED_RATE_N = 60;
+const FEED_RATE_MS = 3600_000;
+const COMING_AFTER_MS = 2 * 3600_000;
+const COMING_MAX_MIN = 600;
+/** A heading-home notice repeated within this long rings no second time (the screen still updates). */
+const COMING_PUSH_GAP_MS = 60_000;
+/** Trims the whitespace a keyboard produces, the same set as the SQL btrim(…, E' \t\n\r\f' || chr(11)) (V19). */
+const trimWs = (s: string): string => s.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
 
 export class Engine {
   readonly effects: Effects = { notify: new Set(), pingDrivers: false, push: [], chat: [] };
@@ -555,6 +590,7 @@ export class Engine {
     for (const k of Object.values(this.db.kids ?? {})) if (k.ownerId === old) k.ownerId = uid;
     for (const g of this.db.kidRatings ?? []) if (g.fromUser === old) g.fromUser = uid;
     for (const m of this.db.messages ?? []) if (m.sender === old) m.sender = uid;
+    for (const u of this.db.updates ?? []) if (u.author === old) u.author = uid; // 2.5 (FR-235)
     const pres = this.db.chatPresence;
     if (pres?.[old]) {
       pres[uid] = { ...pres[old], ...(pres[uid] ?? {}) };
@@ -758,6 +794,9 @@ export class Engine {
     for (const k of this.kidsOf(uid)) this.deleteKid(k);
     if (u.photoPath) delete this.db.photos?.[u.photoPath];
     if (this.db.messages?.length) this.db.messages = this.db.messages.filter((m) => m.sender !== uid);
+    // 2.5 (FR-235): my session updates and their photos.
+    for (const x of (this.db.updates ?? []).filter((u) => u.author === uid)) if (x.photoPath) delete this.db.photos?.[x.photoPath];
+    if (this.db.updates?.length) this.db.updates = this.db.updates.filter((u) => u.author !== uid);
     delete this.db.chatPresence?.[uid];
     this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null, offers: [], home: null, photoPath: null };
   }
@@ -1945,6 +1984,8 @@ export class Engine {
     if (k.photoPath) delete this.db.photos?.[k.photoPath];
     this.db.kidRatings = (this.db.kidRatings ?? []).filter((g) => g.kidId !== k.id);
     for (const [aid, ids] of Object.entries(this.db.appointmentKids ?? {})) if (ids.includes(k.id)) this.db.appointmentKids![aid] = ids.filter((x) => x !== k.id);
+    // 2.5: an update about the kid keeps the name, not the row (appointment_updates.kid_id → null).
+    for (const u of this.db.updates ?? []) if (u.kidId === k.id) u.kidId = null;
     delete this.db.kids![k.id];
   }
 
@@ -2076,7 +2117,7 @@ export class Engine {
     this.sweep();
     const info = this.room(room, uid);
     if (!info.open) throw new ServerError("illegal_transition");
-    const clean = String(text ?? "").trim();
+    const clean = trimWs(String(text ?? ""));
     if (clean.length < 1 || clean.length > CHAT_TEXT_MAX) throw new ServerError("bad_input");
     const all = (this.db.messages ??= []);
     if (all.filter((m) => m.room === room && m.sender === uid && m.sentAt > this.now - CHAT_RATE_MS).length >= CHAT_RATE_N) throw new ServerError("too_many");
@@ -2099,6 +2140,123 @@ export class Engine {
         params: { sender: this.nick(uid), text: clean, room, messageId: m.id }
       });
     return this.messageView(m, uid);
+  }
+
+  // ---------- 2.5: session updates and heading home (FR-230–242, V54–V56) ----------
+
+  /** From 30 min before the start until 7 days after the end, on an accepted or done appointment (V54). */
+  private feedOpen(a: ApptRow): boolean {
+    return (a.status === "accepted" || a.status === "done") && this.now >= a.startsAt - FEED_BEFORE_MS && this.now <= (a.endedAt ?? this.endOf(a)) + FEED_AFTER_MS;
+  }
+
+  /** The appointment behind a feed, for one of its two parties — not_found for anyone else (an open request has no feed yet). */
+  private feedAppt(uid: string, id: string): ApptRow {
+    const a = this.db.appointments?.[id];
+    if (!a || !a.providerId || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    return a;
+  }
+
+  private updateView(u: UpdateRow, viewer: string): SessionUpdate {
+    return {
+      id: u.id,
+      appointmentId: u.appointmentId,
+      author: this.party(u.author, true),
+      mine: u.author === viewer,
+      kid: u.kidName === null ? null : { id: u.kidId, name: u.kidName },
+      text: u.text,
+      photo: this.signedUrl(u.photoPath),
+      createdAt: u.createdAt
+    };
+  }
+
+  /** The feed as one of its parties sees it (FR-231); `seen` — it is in front — stamps my presence (V55). */
+  updates(uid: string, appointmentId: string, seen = false): SessionFeed {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.feedAppt(uid, appointmentId);
+    if (seen) {
+      const pres = (this.db.chatPresence ??= {});
+      pres[uid] = { ...(pres[uid] ?? {}), [`feed:${a.id}`]: this.now };
+    }
+    return {
+      appointmentId: a.id,
+      open: this.feedOpen(a),
+      items: (this.db.updates ?? [])
+        .filter((u) => u.appointmentId === a.id)
+        .sort((x, y) => x.createdAt - y.createdAt || (x.id < y.id ? -1 : 1))
+        .map((u) => this.updateView(u, uid))
+    };
+  }
+
+  /**
+   * Posts an update (FR-230, FR-232): a text and/or a photo (a JPEG data URL here; Supabase takes the
+   * uploaded object's path), about one attached kid or everyone. Stored; both parties refetch; one
+   * notification to the other party unless they have the feed in front or are driving (V55).
+   */
+  postUpdate(uid: string, appointmentId: string, input: UpdateInput, photo: string | null = null): SessionUpdate {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.feedAppt(uid, appointmentId);
+    if (!this.feedOpen(a)) throw new ServerError("illegal_transition");
+    const text = trimWs(String(input?.text ?? ""));
+    if (text.length > CHAT_TEXT_MAX || (text === "" && photo === null)) throw new ServerError("bad_input");
+    if (photo !== null && (typeof photo !== "string" || photo.length > PHOTO_MAX_CHARS || !PHOTO_RE.test(photo))) throw new ServerError("bad_input");
+    const kidId = input?.kidId ?? null;
+    let kidName: string | null = null;
+    if (kidId !== null) {
+      const k = this.kidsIn(a.id).find((x) => x.id === kidId);
+      if (!k) throw new ServerError("bad_input");
+      kidName = k.name;
+    }
+    const all = (this.db.updates ??= []);
+    if (all.filter((u) => u.appointmentId === a.id && u.author === uid && u.createdAt > this.now - FEED_RATE_MS).length >= FEED_RATE_N) throw new ServerError("too_many");
+    let photoPath: string | null = null;
+    if (photo !== null) {
+      photoPath = `updates/${this.nextId("ph")}.jpg`;
+      (this.db.photos ??= {})[photoPath] = photo;
+    }
+    const u: UpdateRow = { id: this.nextId("u"), appointmentId: a.id, author: uid, kidId, kidName, text, photoPath, createdAt: this.now };
+    all.push(u);
+    this.notifyAppt(a);
+    const other = a.clientId === uid ? a.providerId! : a.clientId;
+    if (this.isMember(other) && !this.driving(other) && !this.inRoom(other, `feed:${a.id}`))
+      this.pushAppt(other, "session_update", a, { sender: this.nick(uid), text, kid: kidName, photo: photoPath !== null, updateId: u.id });
+    return this.updateView(u, uid);
+  }
+
+  /** Removes my own update, its photo too (FR-231), while the feed is open — the same window as posting (V54). */
+  deleteUpdate(uid: string, id: string): void {
+    this.requireUser(uid);
+    const all = this.db.updates ?? [];
+    const u = all.find((x) => x.id === id && x.author === uid);
+    if (!u) throw new ServerError("not_found");
+    const a = this.db.appointments?.[u.appointmentId];
+    if (!a || !this.feedOpen(a)) throw new ServerError("illegal_transition");
+    this.db.updates = all.filter((x) => x !== u);
+    if (u.photoPath) delete this.db.photos?.[u.photoPath];
+    this.notifyAppt(a);
+  }
+
+  /**
+   * The client is heading home (FR-240–242): about `minutes` away (computed on the phone — no
+   * position comes here, FR-043), while the session is live; repeating replaces the estimate. One
+   * client_coming notification to the provider.
+   */
+  comingHome(uid: string, appointmentId: string, minutes: number): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[appointmentId];
+    if (!a || a.clientId !== uid) throw new ServerError("not_found");
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > COMING_MAX_MIN) throw new ServerError("bad_input");
+    if ((a.status !== "accepted" && a.status !== "done") || !a.providerId || this.now < a.startsAt - FEED_BEFORE_MS || this.now > this.endOf(a) + COMING_AFTER_MS)
+      throw new ServerError("illegal_transition");
+    const prev = a.comingAt ?? null;
+    a.comingAt = this.now;
+    a.etaAt = this.now + minutes * 60_000;
+    this.notifyAppt(a);
+    // A notice repeated within a minute replaces the previous one on screen but rings no second time.
+    if (prev === null || prev < this.now - COMING_PUSH_GAP_MS) this.pushAppt(a.providerId, "client_coming", a, { minutes, etaAt: a.etaAt });
+    return this.apptView(a, uid);
   }
 
   /** Seen in the room within the presence window: the thread is open on their screen (FR-222). */
@@ -2484,6 +2642,13 @@ export class Engine {
       kids: candidate ? [] : this.attachedKids(a, viewer),
       kidCount: this.kidsIn(a.id).length,
       unread: candidate || !this.roomOf(`appt:${a.id}`) ? 0 : this.unreadIn(`appt:${a.id}`, viewer),
+      // 2.5 (FR-230–234, FR-241): the feed's size and state and the heading-home notice — parties only (V54).
+      updateCount: candidate ? 0 : (this.db.updates ?? []).filter((u) => u.appointmentId === a.id).length,
+      feedOpen: !candidate && this.feedOpen(a),
+      coming:
+        !candidate && a.comingAt != null && (a.status === "accepted" || a.status === "done") && this.now <= this.endOf(a) + COMING_AFTER_MS
+          ? { at: a.comingAt, etaAt: a.etaAt ?? a.comingAt }
+          : null,
       series: s
         ? {
             id: s.id,

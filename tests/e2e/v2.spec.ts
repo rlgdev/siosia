@@ -394,3 +394,76 @@ test("a kid's photo: picked, resized in the browser, shown on the card (FR-210)"
   expect(await photo.getAttribute("src")).toMatch(/^(data:image\/jpeg|https?:|blob:)/);
   await expect(kids.getByRole("button", { name: "Remove photo" })).toBeVisible();
 });
+
+/** A datetime-local value in the page's local time (the request form's start). */
+const localInput = (ms: number) => {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+test("session updates and heading home: Toria's note, Siosia's answer, a photo, the notice and its answer (FR-230–241)", async ({ context }) => {
+  await isolate(context);
+  const page = await context.newPage();
+  // The page's clock is ours to move: the feed opens 30 min before the start (V54).
+  await page.clock.install({ time: Date.now() });
+  await onboard(page, "Toria", "?robots=0");
+  await addKid(page, "Zosia", new Date().getFullYear() - 7);
+  await page.getByRole("dialog").getByRole("button", { name: "Back", exact: true }).click();
+  await page.getByTestId("start-siosia").click();
+  await expect(page.getByTestId("catalog-childcare")).toContainText("Siosia", { timeout: 8000 });
+  await page.getByTestId("catalog-childcare").click();
+  await expect(page.getByTestId("request-form")).toBeVisible();
+  // The next quarter hour at least 31 min ahead (the form's 15-minute steps and the 30-min lead).
+  await page.getByTestId("request-start").fill(localInput(Math.ceil((Date.now() + 31 * 60_000) / 900_000) * 900_000));
+  await page.getByTestId("request-kids").getByRole("checkbox").check();
+  await page.getByTestId("request-place-here").click();
+  await expect(page.getByTestId("request-place-value")).not.toHaveText("—");
+  await page.getByTestId("request-send").click();
+  const item = page.getByTestId("planned-appointment");
+  await expect(item.getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 8000 }); // the robot accepts
+  await expect(item.getByTestId("kids-line")).toHaveText("with Zosia");
+  // Not open yet (the start is 31–46 min away); 17 minutes later it is (30 min before the start).
+  await item.getByTestId("open-appointment").click();
+  await expect(page.getByTestId("appt-status")).toHaveText("Confirmed");
+  await expect(page.getByTestId("feed")).toHaveCount(0);
+  await page.getByRole("dialog").getByRole("button", { name: "Back", exact: true }).click();
+  await page.clock.fastForward(17 * 60_000);
+  await item.getByTestId("open-appointment").click();
+  const feed = page.getByTestId("feed");
+  await expect(feed).toBeVisible({ timeout: 8000 });
+  await expect(feed.getByTestId("feed-empty")).toBeVisible();
+  // The parent's note about Zosia (the second chip; the first is Everyone); Siosia answers a few
+  // seconds later, and the demo shows her notification.
+  await feed.locator('[data-testid^="feed-about-"]').nth(1).click();
+  await feed.getByTestId("feed-input").fill("Zosia has a nut allergy — snacks are in the blue box");
+  await feed.getByTestId("feed-send").click();
+  const mine = feed.getByTestId("feed-item-mine");
+  await expect(mine).toHaveCount(1);
+  await expect(mine.getByTestId("feed-kid")).toHaveText("Zosia");
+  await expect(mine.getByTestId("feed-author")).toHaveText("You");
+  const theirs = feed.getByTestId("feed-item-theirs");
+  await expect(theirs).toHaveCount(1, { timeout: 10_000 });
+  await expect(theirs.first().getByTestId("feed-text")).toHaveText("All good here 🙂 — playing outside");
+  // The feed is in front: her update lands live and brings no notification (V55).
+  await expect(page.getByTestId("push-toast")).toHaveCount(0);
+  // A photo from the gallery: resized in the browser, shown in the feed.
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+  await feed.getByTestId("feed-file").setInputFiles({ name: "park.png", mimeType: "image/png", buffer: png });
+  await expect(feed.getByTestId("feed-preview")).toBeVisible({ timeout: 8000 });
+  await feed.getByTestId("feed-send").click();
+  await expect(mine).toHaveCount(2);
+  await expect(feed.getByTestId("feed-photo")).toHaveCount(1);
+  expect(await feed.getByTestId("feed-photo").locator("img").getAttribute("src")).toMatch(/^data:image\/jpeg/);
+  // Heading home: no location in this browser → the minutes are picked; Siosia sees the notice and answers once.
+  await page.getByTestId("coming-open").click();
+  await expect(page.getByTestId("coming-sheet")).toBeVisible();
+  await page.getByTestId("coming-pick").selectOption("30");
+  await page.getByTestId("coming-send").click();
+  await expect(page.getByTestId("coming-line")).toContainText(/You told Siosia at \d\d:\d\d: about 30 min\./, { timeout: 8000 });
+  await expect(theirs).toHaveCount(2, { timeout: 10_000 });
+  await expect(theirs.nth(1).getByTestId("feed-text")).toHaveText("Great, see you soon 🙂");
+  // P1 carries the count.
+  await page.getByRole("dialog").getByRole("button", { name: "Back", exact: true }).click();
+  await expect(item.getByTestId("feed-count")).toHaveText("4 updates", { timeout: 8000 });
+});

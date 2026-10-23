@@ -58,8 +58,10 @@ export interface DispatchResult {
  *  "./" is S1; 2.1: appt_open's I can do it too, FR-162); ride ones open the app (the active ride
  *  shows). A held ride / D1 still wins on launch. 2.3: a chat message opens its room (FR-222) — the
  *  room comes from params; without one, the app. */
-export const openUrl = (kind: PushKind, params?: PushParams): string => {
+export const openUrl = (kind: PushKind, params?: PushParams, appointmentId?: string | null): string => {
   if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
+  // 2.5 (FR-232, FR-241): the feed and the notice live on C3 of that appointment.
+  if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 };
 
@@ -105,7 +107,7 @@ export async function dispatch(deps: Deps, limit = 100): Promise<DispatchResult>
     // kind and room (chat) let the service worker hand a message to the thread that is open (push-sw.js).
     const payload = JSON.stringify({
       ...text,
-      url: openUrl(row.kind, params),
+      url: openUrl(row.kind, params, row.appointment_id),
       kind: row.kind,
       ...(row.kind === "chat_message" && params.room ? { room: params.room } : {})
     });

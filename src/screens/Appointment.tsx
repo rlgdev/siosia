@@ -8,6 +8,9 @@
 // 2.3 (FR-201–203, FR-221): the attached kids — the client changes them until the end, the
 // provider sees their cards and rates each once the appointment is done, a candidate sees only
 // how many — and the chat with the other party once accepted.
+// 2.5 (FR-230–233, FR-240–241): the session feed (updates with photos, about everyone or one kid)
+// while it is open or has anything, the client's "I'm heading home" during the session and the
+// notice it leaves for both parties.
 
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,6 +21,7 @@ import { fromInput, toLocalInput } from "../components/datetime";
 import { AttachedKidCards, KidPicker, RateKidBox, useMyKids } from "../components/Kids";
 import { PlaceInput } from "../components/PlaceInput";
 import { Avatar } from "../components/ProfileIcon";
+import { ComingHomeBox, ComingLine, SessionFeedSection } from "../components/SessionFeed";
 import { rangeTimes, timeText, whenText } from "../components/when";
 import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui";
 import { computeFare } from "../core/fare";
@@ -184,6 +188,9 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
       )}
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
+      {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
+      {a.role !== "candidate" && (a.updateCount > 0 || a.feedOpen) && <SessionFeedSection a={a} />}
+
       {(lines.length > 0 || myTemplates.length > 0) && (
         <section className="card stack" data-testid="appt-rides">
           {lines.map((l, i) => (
@@ -264,8 +271,9 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
             </div>
           )}
           {room && (
-            <div className="row">
+            <div className="row wrap">
               <ChatButton room={room} unread={a.unread} />
+              <ComingHomeBox a={a} reload={reload} />
             </div>
           )}
           {a.status === "accepted" && <AddToCalendar appointment={a} />}

@@ -40,6 +40,8 @@ export type LinkNotice =
 export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | null;
 /** A chat room as a link or a notification names it: ride:<id> | appt:<id>, nothing else (FR-220). */
 export const chatRoomOf = (s: string | null | undefined): ChatRoom | null => (s && /^(ride|appt):[\w-]+$/.test(s) ? (s as ChatRoom) : null);
+/** 2.5: an appointment id as a link or a notification names it (./?appointment=<id>), nothing else. */
+export const appointmentIdOf = (s: string | null | undefined): string | null => (s && /^[\w-]+$/.test(s) ? s : null);
 /** S1 Home, C1 Catalog ("Siosia"), P1 Planned, H1 History, the v1 rider (R) and driver (D) screens. */
 export type Screen = "home" | "catalog" | "planned" | "history" | "ride" | "drive";
 const modeOf = (s: Screen): Mode | null => (s === "ride" ? "ride" : s === "drive" ? "drive" : null);
@@ -160,6 +162,8 @@ export class AppStore {
   private afterPop: Screen | null = null;
   /** A chat notification opened the app (./?chat=<room>): that room opens once the screen is up. */
   private launchChat: ChatRoom | null = null;
+  /** 2.5: ./?appointment=<id> at launch (a session update or heading-home notice tapped while the app was closed). */
+  private launchAppointment: string | null = null;
   /** When the profile in the snapshot was fetched: its photo URL expires (C16). */
   private profileAt = Date.now();
 
@@ -370,6 +374,10 @@ export class AppStore {
     const room = this.launchChat;
     this.launchChat = null;
     if (room) this.openPanel("chat", room);
+    // 2.5: a session update or a heading-home notice tapped while the app was closed (V55).
+    const appointment = this.launchAppointment;
+    this.launchAppointment = null;
+    if (appointment && !room) this.openPanel("appointment", appointment);
   }
 
   /**
@@ -430,12 +438,15 @@ export class AppStore {
         else if (open === "siosia") screen = "catalog";
         else if (open === "planned" || open === "history") screen = open;
       }
-      // ./?chat=<room> (2.3): the thread opens as a panel over whatever screen applies.
+      // ./?chat=<room> (2.3): the thread opens as a panel over whatever screen applies;
+      // ./?appointment=<id> (2.5): C3 of that appointment, the same way.
       this.launchChat = chatRoomOf(url.searchParams.get("chat"));
-      if (url.searchParams.has("mode") || url.searchParams.has("open") || url.searchParams.has("chat")) {
+      this.launchAppointment = appointmentIdOf(url.searchParams.get("appointment"));
+      if (url.searchParams.has("mode") || url.searchParams.has("open") || url.searchParams.has("chat") || url.searchParams.has("appointment")) {
         url.searchParams.delete("mode");
         url.searchParams.delete("open");
         url.searchParams.delete("chat");
+        url.searchParams.delete("appointment");
         history.replaceState(history.state, "", url);
       }
     }
@@ -513,6 +524,12 @@ export class AppStore {
       // A panel over the current screen: an online driver keeps D1 and still reads the message.
       if (room) {
         this.openPanel("chat", room);
+        return;
+      }
+      // 2.5: a session update or a heading-home notice opens its appointment (C3) the same way.
+      const appointment = appointmentIdOf(params.get("appointment"));
+      if (appointment) {
+        this.openPanel("appointment", appointment);
         return;
       }
       const open = params.get("open");
@@ -642,7 +659,12 @@ export class AppStore {
     // A message in the thread the user is looking at needs no banner (FR-222).
     if (room && inFront && this.snap.panel === "chat" && this.snap.panelArg === room) return;
     const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.appointmentId ?? m.rideId);
-    if (inFront) this.patch({ pushToast: { title: text.title, body: text.body, url: room ? `./?chat=${encodeURIComponent(room)}` : null } });
+    const url = room
+      ? `./?chat=${encodeURIComponent(room)}`
+      : (m.kind === "session_update" || m.kind === "client_coming") && m.appointmentId
+        ? `./?appointment=${encodeURIComponent(m.appointmentId)}`
+        : null;
+    if (inFront) this.patch({ pushToast: { title: text.title, body: text.body, url } });
     else await showLocal(text.title, text.body, text.tag);
   }
 

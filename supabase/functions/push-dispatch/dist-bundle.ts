@@ -113,7 +113,11 @@ var TEXTS = {
     appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
     appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."],
     // 2.3 (FR-222): the sender's own words; the tag is the room, so a newer message replaces the older.
-    chat_message: ["{sender}", "{text}"]
+    chat_message: ["{sender}", "{text}"],
+    // 2.5 (FR-232, FR-241): a session update names the kid it is about (else the service); the
+    // heading-home notice says how far away the client is.
+    session_update: ["{sender}{about}", "{update}"],
+    client_coming: ["{client} is heading home", "About {minutes} min \u2014 around {eta}."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -137,7 +141,9 @@ var TEXTS = {
     appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowc\u0119."],
     appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} zn\xF3w bez kierowcy."],
     appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."],
-    chat_message: ["{sender}", "{text}"]
+    chat_message: ["{sender}", "{text}"],
+    session_update: ["{sender}{about}", "{update}"],
+    client_coming: ["{client} wraca do domu", "Za oko\u0142o {minutes} min \u2014 na miejscu ok. {eta}."]
   }
 };
 var CHAT_PUSH_CHARS = 80;
@@ -167,9 +173,15 @@ function pushText(kind, params, lang, tz, id) {
   const total = (params.accepted ?? 0) + declined.length;
   const kids = params.role === "client" ? "" : kidsText(params.kids, l);
   const chat = (params.text ?? "").replace(/\s+/g, " ").trim();
+  const cut = chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}\u2026` : chat;
   const vars = {
     sender: params.sender || SOMEONE[l],
-    text: chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}\u2026` : chat,
+    text: cut,
+    // 2.5: an update's words, "📷" marking a photo — alone when there are no words.
+    update: params.photo ? cut ? `${cut} \u{1F4F7}` : l === "pl" ? "\u{1F4F7} Zdj\u0119cie" : "\u{1F4F7} Photo" : cut,
+    about: params.kid || params.service ? ` \xB7 ${params.kid || params.service}` : "",
+    minutes: params.minutes === void 0 || params.minutes === null ? "" : String(params.minutes),
+    eta: fmt(toMs(params.etaAt), l, tz, false),
     kids: kids ? WITH_KIDS[l](kids) : "",
     when: fmt(ms, l, tz, true),
     time: fmt(toMs(params.time) ?? ms, l, tz, false),
@@ -193,17 +205,18 @@ function pushText(kind, params, lang, tz, id) {
     clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const tidy = (s) => kind === "chat_message" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
+  const tidy = (s) => kind === "chat_message" || kind === "session_update" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
   const fill = (s) => tidy(
     s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
   );
-  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : `${kind}:${id ?? ""}`;
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }
 
 // supabase/functions/push-dispatch/dispatch.ts
-var openUrl = (kind, params) => {
+var openUrl = (kind, params, appointmentId) => {
   if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
+  if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 };
 var MAX_ATTEMPTS = 5;
@@ -235,7 +248,7 @@ async function dispatch(deps, limit = 100) {
     const text = pushText(row.kind, params, row.lang, row.tz, row.appointment_id ?? row.ride_id);
     const payload = JSON.stringify({
       ...text,
-      url: openUrl(row.kind, params),
+      url: openUrl(row.kind, params, row.appointment_id),
       kind: row.kind,
       ...row.kind === "chat_message" && params.room ? { room: params.room } : {}
     });

@@ -725,3 +725,44 @@ describe("turning notifications on and off (demo backend)", () => {
     expect(await pushState({ kind: "supabase" } as Backend, "")).toBe("not-configured");
   });
 });
+
+describe("2.5 session update and heading-home texts (FR-232, FR-241, V55, V56)", () => {
+  const TZ = "Europe/Warsaw";
+
+  it("names the kid or the service, keeps the words, marks a photo, tags per appointment and opens C3", () => {
+    expect(pushText("session_update", { sender: "Siosia", text: "Zosia is drawing", kid: "Zosia", photo: false, service: "Childcare" }, "en", TZ, "a1")).toEqual({
+      title: "Siosia · Zosia",
+      body: "Zosia is drawing",
+      tag: "update:a1"
+    });
+    expect(pushText("session_update", { sender: "Siosia", text: "Snack time", kid: null, photo: true, service: "Opieka nad dziećmi" }, "pl", TZ, "a1")).toEqual({
+      title: "Siosia · Opieka nad dziećmi",
+      body: "Snack time 📷",
+      tag: "update:a1"
+    });
+    expect(pushText("session_update", { sender: "Siosia", text: "", photo: true, service: "Opieka" }, "pl", TZ, "a1").body).toBe("📷 Zdjęcie");
+    expect(pushText("session_update", { sender: "Siosia", text: "", photo: true }, "en", TZ, "a1").body).toBe("📷 Photo");
+    // The author's own words, cut like a chat message; no nickname → Someone.
+    expect(pushText("session_update", { text: "x".repeat(100) }, "en", TZ, "a1")).toEqual({ title: "Someone", body: "x".repeat(80) + "…", tag: "update:a1" });
+    expect(pushText("session_update", { sender: "Siosia", text: "  Wait...  \n .ok " }, "en", TZ, "a1").body).toBe("Wait... .ok");
+    expect(openUrl("session_update", {}, "a1")).toBe("./?appointment=a1");
+    expect(openUrl("client_coming", {}, "a1")).toBe("./?appointment=a1");
+    expect(openUrl("client_coming", {})).toBe("./?open=planned");
+    expect(openUrl("chat_message", { room: "appt:a1" }, "a1")).toBe("./?chat=appt:a1"); // unchanged
+  });
+
+  it("says the client is heading home with the minutes and the time, in both languages", () => {
+    const eta = Date.UTC(2026, 9, 23, 15, 40); // 17:40 in Warsaw (CEST)
+    expect(pushText("client_coming", { client: "Toria", minutes: 25, etaAt: eta, service: "Childcare" }, "en", TZ, "a1")).toEqual({
+      title: "Toria is heading home",
+      body: "About 25 min — around 17:40.",
+      tag: "coming:a1"
+    });
+    expect(pushText("client_coming", { client: "Toria", minutes: 25, etaAt: new Date(eta).toISOString() }, "pl", TZ, "a1")).toEqual({
+      title: "Toria wraca do domu",
+      body: "Za około 25 min — na miejscu ok. 17:40.",
+      tag: "coming:a1"
+    });
+    expect(pushText("client_coming", { minutes: 0, etaAt: eta }, "en", TZ, "a1").title).toBe("Someone is heading home");
+  });
+});

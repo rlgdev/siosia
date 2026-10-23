@@ -750,3 +750,62 @@ the two people involved; nothing reaches the group, the catalog or drivers.
 **Demo**: the robot Siosia attaches no kids and answers a chat message once ("Thanks, I will be
 there on time 🙂" / Polish) a few seconds after the first message in a room.
 
+## Amendment 2.5 (2026-10-23): session updates, photos from the session, heading home
+
+Operator request of 2026-10-23. During time with the kids the person looking after them tells the
+parent how it goes — in words and pictures, about everyone or one kid at a time — and the parent
+answers in the same place and says when they are on the way back. Everything below is visible only
+to the two parties of the appointment.
+
+**Session updates (FR-230–235)**
+
+- **FR-230**: Either party of an `accepted` appointment MAY post a *session update*: a text (≤ 500
+  characters) and/or one photo (the FR-210 rules: resized on the phone, JPEG ≤ 150 KB), optionally
+  *about one attached kid* (FR-201) or about everyone; any number of them, from 30 minutes before
+  the start until 7 days after the end — also once the appointment is `done` (a photo sent later,
+  a note the next morning). Stored in `appointment_updates` (appointment, author, kid, the kid's
+  name as it was when posted — a kid removed later keeps its name here — text, photo path, created
+  at). The provider's updates are the nanny's news; the client's are the parent's
+  notes, "in chat mode": the same feed, oldest first. Rate limit: 60 per author per appointment
+  per hour (`too_many`).
+- **FR-231**: C3 shows the feed as a *Session* section: each update with its author (nickname and
+  photo), time, the kid's name when it is about one kid, the text and the photo (a thumbnail; tap
+  → full size). New updates MUST appear live on both sides (realtime refetch) and MUST be stored so
+  a reload shows them. The author MAY delete their own update while the feed takes posts (its photo
+  object goes with it).
+- **FR-232**: Each update MUST notify the other party (`session_update`: title "{sender} · {kid}" or
+  "{sender} · {service}", body = the first words of the text, "📷 Photo" without text; tag
+  `update:<appointment>` so a later update replaces the notification; the tap opens C3 of that
+  appointment, `./?appointment=<id>`) — unless the recipient has that feed in front (seen within
+  45 s), and never a driver with a ride `in_progress` (FR-222).
+- **FR-233**: H1 History MUST show, on a done appointment that has updates, an expandable *Session ·
+  N updates* section with the same feed (read-only there; posting stays on C3 while FR-230 allows).
+  P1's item shows the count ("3 updates").
+- **FR-234**: Only the two parties read a feed and its photos (RLS + server checks; signed URLs ≤
+  1 h, FR-212); a candidate of an open request, drivers of attached rides and other members MUST
+  see nothing, not even the count. Photo objects live at `update/<author's public id>/<appointment
+  id>/<key>.jpg`; ownership is the row's (V49).
+- **FR-235**: Updates and their photos go with the appointment (12-month retention); deleting a
+  profile deletes that person's updates and photos; the account move re-keys them (V49).
+
+**Heading home (FR-240–242)**
+
+- **FR-240**: While a session is live — `accepted` (or just marked `done`), from 30 minutes before
+  the start until 2 hours after the end — the *client* MAY tell the provider they are *heading home*. The app takes the
+  phone's location (or an address the client searches for when location is off), computes the
+  *driving* time to the appointment's place (road route, FR-031; straight-line fallback, FR-032),
+  shows "About N min — around HH:MM" and sends it on confirmation (`siosia_coming_home(appointment,
+  minutes)`, 0–600). Without a place, or without any location, the client picks the minutes
+  (15 / 30 / 45 / 60 / 90); a straight-line fallback is marked "(estimate)" and the picker stays
+  available. Repeating it updates the estimate (the latest wins; a repeat within a minute rings the
+  provider no second time). Only the minutes travel to the server — never a position (FR-043).
+- **FR-241**: The provider MUST be notified (`client_coming`: "{client} is heading home" / "About
+  N min — around HH:MM", tag `coming:<appointment>`, tap → C3) and MUST see it on C3 and in P1's
+  item ("{client} is on the way home · ~N min (HH:MM)") until 2 hours after the end or a newer
+  notice; the client sees their own notice on C3 ("You told {provider} at HH:MM: about N min").
+- **FR-242**: The notice is kept on the appointment (`coming_at`, `eta_at`) and goes with it; a
+  cancelled or expired appointment takes none and shows none.
+
+**Demo**: the robot Siosia (as provider) answers the parent's first note in a feed once ("All good
+here 🙂 — playing outside" / Polish) a few seconds later, and a heading-home notice once ("Great,
+see you soon 🙂" / Polish); she posts no photos.

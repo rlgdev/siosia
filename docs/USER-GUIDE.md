@@ -210,6 +210,20 @@ to the other person, see when they read it, and get a notification when they wri
 are driving — the message waits in the thread). The chat stays open until a day after the ride or
 appointment ends, then becomes read-only, and is deleted with it.
 
+## Session updates and heading home
+
+During childcare (or a lesson) the person with the kids can post short **session updates** — a line
+and, if they like, a photo — about everyone or about one kid: open the appointment and write in the
+*Session updates* section. You get a notification for each one (unless you are already looking at
+it) and see them live; you can answer there too. The section opens 30 minutes before the start and
+takes posts until 7 days after the end; afterwards it stays under the appointment in History,
+read-only. Only the two of you see it, and each of you can delete your own posts.
+
+On the way back, tap **I'm heading home** on the appointment: Siosia takes your phone's location,
+works out the driving time to the place and tells the other person "about N min — around HH:MM".
+Only the minutes are sent, never where you are. With location off, search for where you are or pick
+the minutes yourself. Repeating it updates the estimate.
+
 ## The round *i*
 
 Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
@@ -457,6 +471,20 @@ Gdy kierowca weźmie Twój kurs albo termin zostanie potwierdzony, pojawia się 
 napisz do drugiej osoby, zobacz, kiedy przeczyta, i dostań powiadomienie, gdy odpisze (nie w
 trakcie jazdy — wiadomość czeka w wątku). Czat jest otwarty do dnia po zakończeniu kursu lub
 terminu, potem można go tylko czytać, a znika razem z nim.
+
+## Relacja z opieki i „Wracam do domu”
+
+W czasie opieki (albo lekcji) osoba z dziećmi może wysyłać krótkie **wiadomości z relacji** — zdanie
+i, jeśli chce, zdjęcie — o wszystkich albo o jednym dziecku: otwiera termin i pisze w sekcji
+*Relacja*. Dostajesz powiadomienie o każdej (chyba że właśnie na nią patrzysz) i widzisz je na
+żywo; możesz tam też odpowiedzieć. Sekcja otwiera się 30 minut przed początkiem i przyjmuje wpisy
+do 7 dni po zakończeniu; potem zostaje pod terminem w Historii, tylko do czytania. Widzicie ją
+tylko wy oboje, a każde z was może usunąć własne wpisy.
+
+W drodze powrotnej dotknij **Wracam do domu** w terminie: Siosia bierze położenie telefonu, liczy
+czas jazdy autem na miejsce i mówi drugiej osobie „około N min — około HH:MM”. Wysyłane są tylko
+minuty, nigdy Twoje położenie. Przy wyłączonej lokalizacji wyszukaj, gdzie jesteś, albo wybierz
+minuty. Powtórzenie aktualizuje szacunek.
 
 ## Okrągłe *i*
 

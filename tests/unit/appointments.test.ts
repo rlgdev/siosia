@@ -1410,3 +1410,227 @@ describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () =>
     expect(code(() => at((e) => e.deleteProfile("app")))).toBe("ok");
   });
 });
+
+describe("session updates and heading home (2.5: FR-230–242, V54–V56)", () => {
+  const JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHR8eHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z";
+  const H = 60 * MIN;
+  const feed = (uid: string, id: string, seen = false) => at((e) => e.updates(uid, id, seen));
+  const post = (uid: string, id: string, text: string, kidId: string | null = null, photo: string | null = null) => at((e) => e.postUpdate(uid, id, { text, kidId }, photo));
+  const del = (uid: string, id: string) => at((e) => e.deleteUpdate(uid, id));
+  const coming = (uid: string, id: string, min: number) => at((e) => e.comingHome(uid, id, min));
+  const kid = (uid: string, name: string) => at((e) => e.addKid(uid, { name, bornYear: null, note: "" }));
+  const chat = (uid: string, room: ChatRoom, markRead = false) => at((e) => e.chat(uid, room, markRead));
+
+  /** An accepted childcare with Zosia attached, starting in `startMin` minutes (asked for with the 30-min lead, then the clock moves). */
+  function session(startMin = 60) {
+    const z = kid("client", "Zosia");
+    const ahead = Math.max(startMin, 31);
+    const a = request("client", "siosia", ahead, { kidIds: [z.id] });
+    answer("siosia", a.id, "accept");
+    now += (ahead - startMin) * MIN;
+    pushes = [];
+    return { a, z };
+  }
+
+  it("opens the feed 30 min before the start, to the two parties only, and keeps it 7 days after the end (FR-230, FR-234, V54)", () => {
+    const { a } = session(60);
+    expect(getAppt("client", a.id)).toMatchObject({ updateCount: 0, feedOpen: false, coming: null });
+    expect(feed("client", a.id)).toEqual({ appointmentId: a.id, open: false, items: [] });
+    expect(code(() => post("client", a.id, "Hi"))).toBe("illegal_transition");
+    now += 30 * MIN; // start − 30 min
+    expect(feed("siosia", a.id).open).toBe(true);
+    expect(getAppt("siosia", a.id).feedOpen).toBe(true);
+    // Nobody else: not the driver of an attached ride, not another member, not a stranger.
+    expect(code(() => feed("driver", a.id))).toBe("not_found");
+    expect(code(() => post("other", a.id, "Hi"))).toBe("not_found");
+    expect(code(() => feed("stranger", a.id))).toBe("not_member");
+    expect(code(() => feed("client", "a-none"))).toBe("not_found");
+    // An open request has no feed yet; a candidate learns nothing of it.
+    const o = request("client", null, 60);
+    expect(code(() => feed("client", o.id))).toBe("not_found");
+    expect(getAppt("other", o.id)).toMatchObject({ role: "candidate", updateCount: 0, feedOpen: false, coming: null });
+    // Open once done, until 7 days after the end.
+    now += 30 * MIN + 180 * MIN; // the end
+    sweep();
+    expect(appt(a.id).status).toBe("done");
+    expect(feed("client", a.id).open).toBe(true);
+    now += 7 * 24 * H;
+    expect(feed("client", a.id).open).toBe(true);
+    now += MIN;
+    expect(feed("client", a.id).open).toBe(false);
+    expect(getAppt("client", a.id).feedOpen).toBe(false);
+    expect(code(() => post("siosia", a.id, "Late"))).toBe("illegal_transition");
+    expect(code(() => del("client", feed("client", a.id).items[0]?.id ?? "u-none"))).toMatch(/illegal_transition|not_found/);
+  });
+
+  it("posts a text and/or a photo, about everyone or one attached kid; both parties refetch; one push to the other party; the author deletes their own (FR-230–232, V54, V55)", () => {
+    const { a, z } = session(20); // already open (start − 20 min)
+    const k2 = kid("client", "Kuba"); // not attached
+    const bad: [string, string | null, string | null][] = [
+      ["", null, null],
+      ["   ", null, null],
+      ["\n", null, null],
+      ["\t \r\n", null, null],
+      ["x".repeat(501), null, null],
+      ["Hi", k2.id, null],
+      ["Hi", "k-none", null],
+      ["Hi", null, "data:image/png;base64,AAAA"],
+      ["Hi", null, "data:image/jpeg;base64," + "A".repeat(220_001)]
+    ];
+    for (const b of bad) expect(code(() => post("siosia", a.id, b[0], b[1], b[2])), JSON.stringify(b).slice(0, 60)).toBe("bad_input");
+    expect(post("siosia", a.id, "Hi\n\n").text).toBe("Hi"); // keyboard whitespace trimmed, as the SQL does
+    pushes = [];
+    const u1 = post("siosia", a.id, "  Zosia is drawing  ", z.id);
+    expect(u1).toEqual({
+      id: expect.any(String),
+      appointmentId: a.id,
+      author: expect.objectContaining({ nickname: "Siosia" }),
+      mine: true,
+      kid: { id: z.id, name: "Zosia" },
+      text: "Zosia is drawing",
+      photo: null,
+      createdAt: now
+    });
+    expect(changed).toEqual(["client", "siosia"]);
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        userId: "client",
+        kind: "session_update",
+        appointmentId: a.id,
+        params: expect.objectContaining({ sender: "Siosia", text: "Zosia is drawing", kid: "Zosia", photo: false, updateId: u1.id, service: "Childcare", client: "Toria", provider: "Siosia" })
+      })
+    ]);
+    pushes = [];
+    now += MIN;
+    const u2 = post("siosia", a.id, "", null, JPEG); // a photo alone
+    expect(u2).toMatchObject({ kid: null, text: "", photo: JPEG });
+    expect(pushes[0].params).toMatchObject({ text: "", photo: true, kid: null });
+    expect(Object.keys(db.photos!)).toHaveLength(1);
+    // The parent's note: the same feed, pushed to the provider (no kids param for a client's words).
+    pushes = [];
+    now += MIN;
+    const u3 = post("client", a.id, "Thanks! She loves it", z.id);
+    expect(pushes.map((p) => [p.kind, p.userId])).toEqual([["session_update", "siosia"]]);
+    expect(pushes[0].params).toMatchObject({ sender: "Toria", kid: "Zosia", kids: ["Zosia"] }); // the provider's copy names the attached kids, as always
+    // As each side sees it: oldest first, mine / theirs, the count on the appointment.
+    const mine = feed("client", a.id);
+    expect(mine.items.map((u) => [u.text, u.mine, u.kid?.name ?? null])).toEqual([
+      ["Hi", false, null],
+      ["Zosia is drawing", false, "Zosia"],
+      ["", false, null],
+      ["Thanks! She loves it", true, "Zosia"]
+    ]);
+    expect(mine.items[2].photo).toBe(JPEG);
+    expect(mine.items[1].author).toMatchObject({ nickname: "Siosia" });
+    expect(feed("siosia", a.id).items.map((u) => u.mine)).toEqual([true, true, true, false]);
+    expect(getAppt("siosia", a.id)).toMatchObject({ updateCount: 4, feedOpen: true });
+    expect(getAppt("client", a.id)).toMatchObject({ updateCount: 4 });
+    // The author deletes their own — the photo goes too; never the other's.
+    expect(code(() => del("client", u2.id))).toBe("not_found");
+    expect(code(() => del("siosia", "u-none"))).toBe("not_found");
+    del("siosia", u2.id);
+    expect(changed).toEqual(["client", "siosia"]);
+    expect(db.photos).toEqual({});
+    expect(feed("client", a.id).items.map((u) => u.id).slice(1)).toEqual([u1.id, u3.id]);
+    // Deleting is for the open feed only, like posting (V54).
+    now += 180 * MIN + 7 * 24 * H + 20 * MIN;
+    sweep();
+    expect(feed("client", a.id).open).toBe(false);
+    expect(code(() => del("client", u3.id))).toBe("illegal_transition");
+  });
+
+  it("keeps the kid's name on an update when the kid is removed; no push to a party looking at the feed; 60 per author per hour (FR-231, FR-232, V54, V55)", () => {
+    const { a, z } = session(20);
+    post("siosia", a.id, "Playing", z.id);
+    at((e) => e.removeKid("client", z.id));
+    expect(feed("siosia", a.id).items[0].kid).toEqual({ id: null, name: "Zosia" });
+    expect(getAppt("siosia", a.id).kids).toEqual([]);
+    // The parent has the feed in front (seen within 45 s): no push for what they are looking at.
+    pushes = [];
+    feed("client", a.id, true);
+    now += 30_000;
+    post("siosia", a.id, "Snack time");
+    expect(pushes).toEqual([]);
+    now += 20_000; // 50 s since the stamp
+    post("siosia", a.id, "Nap");
+    expect(pushes.map((p) => p.kind)).toEqual(["session_update"]);
+    // Looking at the chat of the same appointment is not looking at the feed.
+    pushes = [];
+    chat("client", `appt:${a.id}`, true);
+    post("siosia", a.id, "Awake");
+    expect(pushes.map((p) => p.kind)).toEqual(["session_update"]);
+    // 60 in an hour, then too_many; an hour later it flows again.
+    for (let i = 0; i < 56; i++) post("siosia", a.id, `n${i}`); // 4 + 56 = 60
+    expect(code(() => post("siosia", a.id, "one more"))).toBe("too_many");
+    expect(code(() => post("client", a.id, "mine is fine"))).toBe("ok");
+    now += H + 1;
+    expect(code(() => post("siosia", a.id, "later"))).toBe("ok");
+  });
+
+  it("heading home: the client only, while live, minutes 0–600, repeatable; one client_coming push; shown to both until 2 h after the end (FR-240–242, V56)", () => {
+    const { a } = session(60);
+    expect(code(() => coming("client", a.id, 20))).toBe("illegal_transition"); // 60 min before
+    now += 30 * MIN;
+    expect(code(() => coming("siosia", a.id, 20))).toBe("not_found");
+    expect(code(() => coming("other", a.id, 20))).toBe("not_found");
+    for (const bad of [-1, 601, 1.5, Number.NaN]) expect(code(() => coming("client", a.id, bad)), String(bad)).toBe("bad_input");
+    const v = coming("client", a.id, 25);
+    expect(v.coming).toEqual({ at: now, etaAt: now + 25 * MIN });
+    expect(changed).toEqual(["client", "siosia"]);
+    expect(pushes).toEqual([
+      expect.objectContaining({
+        userId: "siosia",
+        kind: "client_coming",
+        appointmentId: a.id,
+        params: expect.objectContaining({ client: "Toria", provider: "Siosia", minutes: 25, etaAt: now + 25 * MIN, service: "Childcare" })
+      })
+    ]);
+    expect(getAppt("siosia", a.id).coming).toEqual({ at: now, etaAt: now + 25 * MIN });
+    // Again within a minute: the notice updates, the provider is not rung twice; later it rings again.
+    now += 30_000;
+    pushes = [];
+    expect(coming("client", a.id, 20).coming).toEqual({ at: now, etaAt: now + 20 * MIN });
+    expect(pushes).toEqual([]);
+    now += 5 * MIN;
+    expect(coming("client", a.id, 0).coming).toEqual({ at: now, etaAt: now });
+    expect(pushes).toHaveLength(1);
+    // Still possible just after the end (marked done), until 2 h after it; then gone.
+    now += 25 * MIN + 180 * MIN; // the end
+    sweep();
+    expect(appt(a.id).status).toBe("done");
+    expect(getAppt("siosia", a.id).coming).not.toBeNull();
+    expect(code(() => coming("client", a.id, 5))).toBe("ok");
+    now += 2 * H + MIN;
+    expect(getAppt("siosia", a.id).coming).toBeNull();
+    expect(getAppt("client", a.id).coming).toBeNull();
+    expect(code(() => coming("client", a.id, 5))).toBe("illegal_transition");
+    // Never on a request nobody took yet, or one still waiting for an answer.
+    const o = request("client", null, 60);
+    expect(code(() => coming("client", o.id, 5))).toBe("illegal_transition");
+    const w = request("client", "siosia", 60);
+    expect(code(() => coming("client", w.id, 5))).toBe("illegal_transition");
+    // A cancelled appointment shows no notice (FR-242).
+    const { a: c } = session(20);
+    expect(coming("client", c.id, 15).coming).not.toBeNull();
+    cancel("client", c.id);
+    expect(getAppt("siosia", c.id)).toMatchObject({ status: "cancelled", coming: null });
+    expect(code(() => coming("client", c.id, 5))).toBe("illegal_transition");
+  });
+
+  it("deleting a profile removes that person's updates and photos; the account move re-keys them (FR-235, V49)", () => {
+    const { a, z } = session(20);
+    post("siosia", a.id, "", null, JPEG);
+    post("client", a.id, "Note", z.id);
+    expect(Object.keys(db.photos!)).toHaveLength(1);
+    // The parent moves to a new phone: the note is theirs there.
+    const { code: tcode } = at((e) => e.createTransfer("client"));
+    at((e) => e.join("client2", "pilot", "dev-c2"));
+    at((e) => e.redeemTransfer("client2", tcode, "dev-c2"));
+    expect(db.updates!.map((u) => u.author).sort()).toEqual(["client2", "siosia"]);
+    expect(feed("client2", a.id).items.map((u) => u.mine)).toEqual([false, true]);
+    // The provider leaves: her update and its photo go; the parent's note stays.
+    at((e) => e.deleteProfile("siosia"));
+    expect(db.photos).toEqual({});
+    expect(db.updates!.map((u) => [u.author, u.text])).toEqual([["client2", "Note"]]);
+  });
+});

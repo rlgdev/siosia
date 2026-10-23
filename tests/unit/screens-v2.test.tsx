@@ -31,6 +31,8 @@ import type {
   ServiceRequestInput
 } from "../../src/core/types";
 import { ServerError } from "../../src/core/types";
+import type { SessionUpdate } from "../../src/core/types";
+import { geo } from "../../src/services/geolocation";
 import { I18nProvider } from "../../src/i18n";
 import { en } from "../../src/i18n/en";
 import { pl } from "../../src/i18n/pl";
@@ -251,6 +253,9 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     kids: [],
     kidCount: 0,
     unread: 0,
+    updateCount: 0,
+    feedOpen: false,
+    coming: null,
     ...over
   };
 }
@@ -1542,5 +1547,136 @@ describe("2.3 the chat sheet (FR-220–225)", () => {
       expect(enPart, k).toContain(en[k]);
       expect(plPart, k).toContain(pl[k]);
     }
+  });
+});
+
+describe("2.5 C3: the session feed and heading home (FR-230–233, FR-240–241, V55–V57)", () => {
+  const TORIA_PARTY = { nickname: "Toria", rating: { mean: null, count: 0 }, icon: null, photo: null };
+  const SIOSIA_PARTY = { nickname: "Siosia", rating: { mean: 4.8, count: 5 }, icon: null, photo: null };
+  const update = (over: Partial<SessionUpdate> = {}): SessionUpdate => ({
+    id: "u1",
+    appointmentId: "a1",
+    author: SIOSIA_PARTY,
+    mine: false,
+    kid: { id: KID_ZOSIA.id, name: "Zosia" },
+    text: "Zosia is drawing",
+    photo: null,
+    createdAt: Date.now() - 60_000,
+    ...over
+  });
+  const myState = async () => ({ ...MY, serverNow: Date.now() });
+  const feedOf = (items: SessionUpdate[], open = true) => vi.fn(async () => ({ appointmentId: "a1", open, items }));
+
+  it("shows the feed (author, kid chip, text, a photo full size on tap), posts a note about one kid and a photo, deletes my own", async () => {
+    const live = appt({ kids: [attached(KID_ZOSIA)], kidCount: 1, updateCount: 2, feedOpen: true, startsAt: Date.now() - 30 * 60_000 });
+    const updates = feedOf([update(), update({ id: "u2", mine: true, author: TORIA_PARTY, kid: null, text: "", photo: "data:image/jpeg;base64,/9j/PHOTO" })]);
+    const postUpdate = vi.fn(async (_id: string, input: { text: string; kidId: string | null }, jpeg?: Blob | null) =>
+      update({ id: `u${Math.random()}`, mine: true, author: TORIA_PARTY, kid: input.kidId ? { id: input.kidId, name: "Zosia" } : null, text: input.text, photo: jpeg ? "data:image/jpeg;base64,/9j/NEW" : null })
+    );
+    const deleteUpdate = vi.fn(async () => {});
+    setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates, postUpdate, deleteUpdate, myState }, { panel: "appointment", panelArg: "a1" });
+    await waitFor(() => expect(updates).toHaveBeenCalledWith("a1", true)); // in front: seen (presence)
+    const items = await screen.findAllByTestId(/^feed-item-/);
+    expect(items).toHaveLength(2);
+    expect(within(items[0]).getByTestId("feed-author")).toHaveTextContent("Siosia");
+    expect(within(items[0]).getByTestId("feed-kid")).toHaveTextContent("Zosia");
+    expect(within(items[0]).getByTestId("feed-text")).toHaveTextContent("Zosia is drawing");
+    expect(within(items[0]).queryByTestId("feed-delete")).toBeNull(); // not mine
+    expect(within(items[1]).getByTestId("feed-author")).toHaveTextContent("You");
+    expect(within(items[1]).queryByTestId("feed-kid")).toBeNull();
+    await userEvent.click(within(items[1]).getByTestId("feed-photo"));
+    expect(screen.getByTestId("feed-lightbox").querySelector("img")).toHaveAttribute("src", "data:image/jpeg;base64,/9j/PHOTO");
+    await userEvent.click(screen.getByTestId("feed-lightbox-close"));
+    expect(screen.queryByTestId("feed-lightbox")).toBeNull();
+    // A note about Zosia.
+    const send = screen.getByTestId("feed-send");
+    expect(send).toBeDisabled();
+    expect(screen.getByTestId("feed-about-all")).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByTestId(`feed-about-${KID_ZOSIA.id}`));
+    await userEvent.type(screen.getByTestId("feed-input"), "Thanks!");
+    expect(send).toBeEnabled();
+    await userEvent.click(send);
+    await waitFor(() => expect(postUpdate).toHaveBeenCalledWith("a1", { text: "Thanks!", kidId: KID_ZOSIA.id }, null));
+    await waitFor(() => expect(screen.getAllByTestId(/^feed-item-/)).toHaveLength(3));
+    expect(screen.getByTestId("feed-input")).toHaveValue("");
+    // A photo alone: picked, resized, previewed, posted as a Blob.
+    const file = new File([new Uint8Array([0xff, 0xd8, 0xff])], "kuba.jpg", { type: "image/jpeg" });
+    await userEvent.upload(screen.getByTestId("feed-file"), file);
+    expect(await screen.findByTestId("feed-preview")).toHaveAttribute("src", expect.stringMatching(/^data:image\/jpeg;base64,/));
+    await userEvent.click(screen.getByTestId("feed-send"));
+    await waitFor(() => expect(postUpdate).toHaveBeenCalledWith("a1", { text: "", kidId: KID_ZOSIA.id }, expect.any(Blob)));
+    await waitFor(() => expect(screen.getAllByTestId(/^feed-item-/)).toHaveLength(4));
+    expect(screen.queryByTestId("feed-preview")).toBeNull();
+    // Delete my own: the app's own confirm dialog, No keeps it, Delete removes it.
+    await userEvent.click(within(screen.getAllByTestId("feed-item-mine")[0]).getByTestId("feed-delete"));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Delete this update?");
+    await userEvent.click(within(dialog).getByRole("button", { name: "No" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(deleteUpdate).not.toHaveBeenCalled();
+    await userEvent.click(within(screen.getAllByTestId("feed-item-mine")[0]).getByTestId("feed-delete"));
+    await userEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(deleteUpdate).toHaveBeenCalledWith("u2"));
+    await waitFor(() => expect(screen.getAllByTestId(/^feed-item-/)).toHaveLength(3));
+  });
+
+  it("a closed feed is read-only (PL); H1 shows it under the appointment, fetched on expand; the P1 item carries the count and the notice", async () => {
+    const done = appt({ status: "done", updateCount: 3, feedOpen: false, startsAt: Date.now() - 20 * 86_400_000 });
+    const updates = feedOf([update()], false);
+    const first = setup("pl", <AppointmentPanel />, { getAppointment: async () => done, updates }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("feed-closed")).toHaveTextContent("Relacja jest zamknięta");
+    expect(screen.queryByTestId("feed-compose")).toBeNull();
+    expect(screen.queryByTestId("coming-open")).toBeNull(); // over for days
+    first.unmount();
+    // H1: the summary, then the feed on expand.
+    const timeline = async () => [{ kind: "appointment" as const, at: done.startsAt, appointment: done }];
+    const second = setup("en", <HistoryScreen />, { timeline, updates });
+    const summary = await screen.findByTestId("history-feed-summary");
+    expect(summary).toHaveTextContent("Session updates · 3");
+    expect(updates).toHaveBeenCalledTimes(1); // the panel above — nothing yet for H1
+    const details = screen.getByTestId("history-feed") as HTMLDetailsElement;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(await screen.findByTestId("feed-item-theirs")).toHaveTextContent("Zosia is drawing");
+    expect(updates).toHaveBeenCalledTimes(2);
+    expect(updates).toHaveBeenLastCalledWith("a1", false); // read-only: no presence stamp from H1 (V57)
+    second.unmount();
+    // P1: the provider sees the count and the parent on the way.
+    const soon = appt({ role: "provider", client: TORIA, provider: SIOSIA, updateCount: 2, feedOpen: true, startsAt: Date.now() - 10 * 60_000, coming: { at: Date.now() - 60_000, etaAt: Date.now() + 25 * 60_000 } });
+    setup("en", <Planned />, { planned: async () => ({ appointments: [soon], rides: [], open: [] }) });
+    expect(await screen.findByTestId("feed-count")).toHaveTextContent("2 updates");
+    expect(screen.getByTestId("coming-line")).toHaveTextContent(/Toria is on the way home · about 2[45] min \(\d\d:\d\d\)/);
+  });
+
+  it("heading home: the phone's location → the road time → Tell Siosia sends the minutes; without location, the picker (FR-240, V56)", async () => {
+    const live = appt({ startsAt: Date.now() - 10 * 60_000, feedOpen: true });
+    const comingHome = vi.fn(async (_id: string, minutes: number) => ({ ...live, coming: { at: Date.now(), etaAt: Date.now() + minutes * 60_000 } }));
+    const updates = feedOf([]);
+    const first = setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates, comingHome, myState }, { panel: "appointment", panelArg: "a1" });
+    const { store } = first;
+    await userEvent.click(await screen.findByTestId("coming-open"));
+    expect(screen.getByTestId("coming-sheet")).toBeInTheDocument();
+    expect(screen.getByTestId("coming-send")).toBeDisabled();
+    // A fix arrives: the (mocked) road route says 12 min.
+    act(() => geo.push({ lat: 52.2, lng: 21.0, accuracy: 10, heading: null, speed: null, t: Date.now() }));
+    expect(await screen.findByTestId("coming-estimate")).toHaveTextContent(/About 12 min — around \d\d:\d\d/);
+    await userEvent.click(screen.getByTestId("coming-send"));
+    await waitFor(() => expect(comingHome).toHaveBeenCalledWith("a1", 12));
+    await waitFor(() => expect(screen.queryByTestId("coming-sheet")).toBeNull());
+    expect(store.get().panel).toBe("appointment");
+    first.unmount();
+    // The client's own notice once the appointment comes back with it.
+    const told = { ...live, coming: { at: Date.now(), etaAt: Date.now() + 12 * 60_000 } };
+    const again = setup("pl", <AppointmentPanel />, { getAppointment: async () => told, updates, myState }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("coming-line")).toHaveTextContent(/Siosia dostał\(a\) wiadomość: około 12 min/);
+    again.unmount();
+    // No place on the appointment: the picker only.
+    const online = appt({ startsAt: Date.now() - 10 * 60_000, feedOpen: true, place: null });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => online, updates, comingHome, myState }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("coming-open"));
+    expect(screen.queryByTestId("coming-estimate")).toBeNull();
+    await userEvent.selectOptions(screen.getByTestId("coming-pick"), "30");
+    await userEvent.click(screen.getByTestId("coming-send"));
+    await waitFor(() => expect(comingHome).toHaveBeenLastCalledWith("a1", 30));
   });
 });
