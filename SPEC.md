@@ -149,7 +149,7 @@ T27|x|icons: `components/Icon.tsx` stroke set + `Logo`; emoji → icons ∀ scre
 T28|x|launch: `components/Launch.tsx` overlay (route draws, pin lands, wordmark, morph → S1 avatar, S1 rows spring in via `html[data-launch]`), cold-start gate, skip, reduced motion, `?launch=0`; tests: theme pref/apply/meta, dark token twins identical, icons map, launch gate/skip/reduced/no-block, S2 select|V52
 T29|x|2.5 backend: `appointment_updates` + appointments.coming_at/eta_at, RLS, photo helpers for update/ paths (folder, owner, can_see, upload_ok, drop_objects, my_photo_paths), siosia_updates/post_update/delete_update/coming_home, appointment_json + updateCount/feedOpen/coming, presence feed:<appt>, push kinds session_update/client_coming (push-text EN/PL, dispatch url), retention/delete_profile/redeem re-key; engine twin; adapters (upload under update/ folder, sign, remove) + mock; types; tests sql-v2 + appointments + push + services|V54–V56,FR-230–242
 T30|x|2.5 UI: C3 Session section (feed, kid chips, photo thumbnail + full-size view, delete own, composer w/ kid pick + photo pick, presence heartbeat), Heading-home sheet (fix | address | picked minutes → route → confirm), provider/client notices on C3 + P1 item, H1 expandable feed, `?appointment=<id>` open, i18n EN/PL, robot replies, tests screens-v2/components/navigation + e2e; docs (USER-GUIDE, guide.html, TRACEABILITY, ARCHITECTURE, SETUP)|V55–V57,FR-231–241
-T31|~|release 2.5: review, live DB migration, push-dispatch + calendar bundles, main, live check|§15,V54–V57
+T31|x|release 2.5: review, live DB migration, push-dispatch + calendar bundles, main, live check|§15,V54–V57
 
 ## §B bugs
 
