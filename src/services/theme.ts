@@ -51,13 +51,23 @@ export function applyTheme(pref: ThemePref): ThemeMode {
   return mode;
 }
 
-/** While the choice is "system", the phone switching modes re-applies the meta colour. */
+/**
+ * While the choice is "system", the phone switching modes re-applies the meta colour: on the
+ * media query's change event, and again whenever the app comes back to the front (a phone that
+ * went dark at sunset while the app was in the background, or a browser that never sent the event).
+ */
 export function watchSystemTheme(pref: () => ThemePref): () => void {
-  if (typeof matchMedia !== "function") return () => {};
-  const mq = matchMedia("(prefers-color-scheme: dark)");
   const on = () => {
     if (pref() === "system") applyTheme("system");
   };
-  mq.addEventListener?.("change", on);
-  return () => mq.removeEventListener?.("change", on);
+  const mq = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : null;
+  mq?.addEventListener?.("change", on);
+  const onVisible = () => {
+    if (document.visibilityState === "visible") on();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  return () => {
+    mq?.removeEventListener?.("change", on);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }

@@ -127,6 +127,28 @@ describe("appearance (V50): system by default, a fixed choice per device", () =>
     expect(mq.listeners).toHaveLength(0);
   });
 
+  it("re-applies the mode when the app comes back to the front, even without a change event", () => {
+    fakeMatchMedia(false);
+    applyTheme("system");
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')!;
+    let pref: "system" | "light" | "dark" = "system";
+    const stop = watchSystemTheme(() => pref);
+    fakeMatchMedia(true); // the phone went dark while the app was in the background: no event
+    document.dispatchEvent(new Event("visibilitychange")); // jsdom's visibilityState is "visible"
+    expect(meta.content).toBe(THEME_COLOR.dark);
+    pref = "light";
+    applyTheme("light");
+    fakeMatchMedia(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(meta.content).toBe(THEME_COLOR.light); // a fixed choice is left alone
+    expect(document.documentElement.dataset.theme).toBe("light");
+    stop();
+    fakeMatchMedia(true);
+    pref = "system";
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(meta.content).toBe(THEME_COLOR.light); // stopped: nothing listens any more
+  });
+
   it("the store keeps this phone's choice and applies it; the server never hears of it", () => {
     fakeMatchMedia(false);
     const store = new AppStore();
