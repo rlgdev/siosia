@@ -14,6 +14,8 @@ Chrome (Android) or Safari (iOS). No app store, no account, no payment details.
 3. Optional: **install it** like an app — Android Chrome: menu ⋮ → *Add to Home screen*;
    iPhone: see *Siosia as an app on iPhone* below (the app needs a one-time code).
 4. Language: English or Polski on the start screen (it follows your phone by default).
+5. Light or dark: Siosia follows your phone's setting; *Profile → Appearance* fixes one for this
+   phone.
 
 When asked, **allow location**. If you said no by mistake:
 Android Chrome → 🔒 next to the address → *Permissions → Location → Allow*;
@@ -253,6 +255,8 @@ Potrzebujesz: **linku** i **kodu zaproszenia** od organizatora oraz telefonu z a
 3. Opcjonalnie **zainstaluj** jak aplikację — Android Chrome: menu ⋮ → *Dodaj do ekranu
    głównego*; iPhone Safari: Udostępnij → *Do ekranu początkowego*.
 4. Język: English lub Polski na ekranie startowym (domyślnie jak w telefonie).
+5. Jasny lub ciemny: Siosia podąża za ustawieniem telefonu; *Profil → Wygląd* ustawia jeden na
+   stałe na tym telefonie.
 
 Gdy telefon zapyta, **zezwól na lokalizację**. Jeśli odmówiłeś przez pomyłkę:
 Android Chrome → 🔒 obok adresu → *Uprawnienia → Lokalizacja → Zezwól*;

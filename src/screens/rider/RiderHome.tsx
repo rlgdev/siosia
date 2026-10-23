@@ -1,5 +1,6 @@
 // R1 Rider home sheet: pickup (GPS, pin, address), dropoff (pin, address), estimate, Request ride.
 
+import { Icon } from "../../components/Icon";
 import { AppHint, PushPrompt } from "../../components/AppInstall";
 import { useState, type FormEvent } from "react";
 import { MasterChip } from "../../components/ProfileIcon";
@@ -206,7 +207,7 @@ function PlaceField({ which, place, setPlace, pickMode, setPickMode, gps, near }
             title={t("rider.useGps")}
             onClick={() => setPlace("pickup", { lat: gps.fix!.lat, lng: gps.fix!.lng, label: t("rider.myLocation") }, "gps")}
           >
-            ◎
+            <Icon name="locate" />
           </button>
         )}
         <button
@@ -218,7 +219,7 @@ function PlaceField({ which, place, setPlace, pickMode, setPickMode, gps, near }
           onClick={() => setPickMode(pickMode === which ? null : which)}
           data-testid={`${which}-pin`}
         >
-          📌
+          <Icon name="pin" />
         </button>
       </div>
       {open && (

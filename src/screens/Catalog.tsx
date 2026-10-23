@@ -4,6 +4,7 @@
 // everyone in the group sees (FR-160); open requests of others lead to P1 (FR-161).
 
 import { useCallback, useEffect, useState } from "react";
+import { EMOJI_ICONS, Icon } from "../components/Icon";
 import { Avatar, ProfileIcon } from "../components/ProfileIcon";
 import { profileIcon } from "../components/profileIcons";
 import { Money, Page, RatingBadge } from "../components/ui";
@@ -22,8 +23,11 @@ export function durationText(min: number, t: (k: "common.hours" | "common.hoursM
   return t("common.minutes", { m });
 }
 
+/** A catalog entry's icon: a profile icon, else the stroke icon its emoji maps to (V53), else as given. */
 export function EntryIcon({ icon }: { icon: string }) {
-  return profileIcon(icon) ? <ProfileIcon icon={icon} size="sm" /> : <span aria-hidden="true">{icon}</span>;
+  if (profileIcon(icon)) return <ProfileIcon icon={icon} size="sm" />;
+  const name = EMOJI_ICONS[icon];
+  return name ? <Icon name={name} size={24} /> : <span aria-hidden="true">{icon}</span>;
 }
 
 export function Catalog() {
@@ -65,13 +69,13 @@ export function Catalog() {
       {!!my?.toAnswer && (
         <button type="button" className="notice notice-info row spread" onClick={() => store.go("planned")} data-testid="catalog-to-answer">
           <span>{t("catalog.toAnswer", { n: my.toAnswer })}</span>
-          <span aria-hidden="true">→</span>
+          <Icon name="chevron" className="ico-end" />
         </button>
       )}
       {!!my?.openRequests && (
         <button type="button" className="notice notice-info row spread" onClick={() => store.go("planned")} data-testid="catalog-open-requests">
           <span>{t("catalog.openRequests", { n: my.openRequests })}</span>
-          <span aria-hidden="true">→</span>
+          <Icon name="chevron" className="ico-end" />
         </button>
       )}
       {(role !== "rider" || mine.length > 0) && (
@@ -79,14 +83,16 @@ export function Catalog() {
           <h2 className="section-title">{t("catalog.youOffer")}</h2>
           {role !== "rider" && (
             <button type="button" className="entry-card" onClick={() => store.go("drive")} data-testid="catalog-drive">
-              <span className="entry-icon" aria-hidden="true">🚗</span>
+              <span className="entry-icon" aria-hidden="true">
+                <Icon name="car" size={24} />
+              </span>
               <span className="entry-main">
                 <strong>{app.vehicle ? t("catalog.goOnline") : t("catalog.addCar")}</strong>
                 <span className="muted small">
                   {app.vehicle ? t("catalog.ridesToTake", { n: my?.openBookings ?? 0 }) : t("catalog.addCarBody")}
                 </span>
               </span>
-              <span aria-hidden="true">→</span>
+              <Icon name="chevron" className="ico-end" />
             </button>
           )}
           {mine.map((e) => (
@@ -122,7 +128,7 @@ export function Catalog() {
               <strong>{localText(ride.name, lang)}</strong>
               <span className="muted small">{localText(ride.description, lang)}</span>
             </span>
-            <span aria-hidden="true">→</span>
+            <Icon name="chevron" className="ico-end" />
           </button>
         )}
         {services
@@ -170,7 +176,7 @@ export function Catalog() {
                     </span>
                   )}
                 </span>
-                <span aria-hidden="true">→</span>
+                <Icon name="chevron" className="ico-end" />
               </button>
             );
           })}

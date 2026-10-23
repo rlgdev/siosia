@@ -22,6 +22,7 @@ import { browserLang } from "../i18n";
 import { setGeocodeUrl } from "../services/geocode";
 import { setRoutingUrl } from "../services/routing";
 import { deviceId, readPref, unsupportedFeatures, writePref } from "../services/device";
+import { applyTheme, readThemePref, saveThemePref, type ThemePref } from "../services/theme";
 
 export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nickname" | "ready";
 /** Outcome of opening a master-profile link, shown once. */
@@ -58,6 +59,8 @@ export interface AppSnapshot {
   profile: Profile | null;
   vehicle: Vehicle | null;
   lang: Lang;
+  /** Appearance (2.4, V50): this phone's choice. */
+  theme: ThemePref;
   screen: Screen;
   /** The v1 mode of the screen (ride / drive), null elsewhere. */
   mode: Mode | null;
@@ -94,6 +97,7 @@ const INITIAL: AppSnapshot = {
   profile: null,
   vehicle: null,
   lang: readPref<Lang | null>("lang", null) ?? browserLang(),
+  theme: readThemePref(),
   screen: "home",
   mode: null,
   panel: null,
@@ -143,7 +147,8 @@ function clearMasterToken(): void {
 }
 
 export class AppStore {
-  private snap: AppSnapshot = INITIAL;
+  // This phone's appearance choice is read per store (V50): a store made after a change sees it.
+  private snap: AppSnapshot = { ...INITIAL, theme: readThemePref() };
   private readonly listeners = new Set<() => void>();
   backend: Backend | null = null;
   private unsubs: (() => void)[] = [];
@@ -549,6 +554,13 @@ export class AppStore {
       const profile = await this.api.saveProfile(this.snap.profile.nickname, lang).catch(() => null);
       if (profile) this.patch({ profile });
     }
+  }
+
+  /** Appearance (2.4, V50): this phone's choice, kept here only (never on the server). */
+  setTheme(theme: ThemePref): void {
+    saveThemePref(theme);
+    applyTheme(theme);
+    this.patch({ theme });
   }
 
   /** v1 compatibility: the ride / drive screens (null = S1). */

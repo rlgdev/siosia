@@ -10,7 +10,7 @@ async function isolate(context: BrowserContext) {
 }
 
 async function onboard(page: Page, nick: string) {
-  await page.goto("/?robots=0");
+  await page.goto("/?launch=0&robots=0");
   await page.getByLabel("Nickname").fill(nick);
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: `Hi, ${nick}` })).toBeVisible();
@@ -205,10 +205,10 @@ test("the Toria link rides from her default places at a fixed 18; rider only", a
   await goOnlineAsDriver(driver, "Adam", "WX 4242");
 
   const rider = await context.newPage();
-  await rider.goto("/?robots=0#master=demo-master");
+  await rider.goto("/?launch=0&robots=0#master=demo-master");
   await rider.bringToFront();
   await expect(rider.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Toria.");
-  await expect(rider).toHaveURL(/\/\?robots=0$/); // the token left the address bar
+  await expect(rider).toHaveURL(/\/\?launch=0&robots=0$/); // the token left the address bar
   await openRide(rider);
   const chip = rider.getByTestId("master-chip");
   await expect(chip).toContainText("Toria");
@@ -235,7 +235,7 @@ test("the Toria link rides from her default places at a fixed 18; rider only", a
 test("the Roman link opens a driver profile with his green Taycan; riders see it on the driver card", async ({ context }) => {
   await isolate(context);
   const roman = await context.newPage();
-  await roman.goto("/?robots=0#master=demo-roman");
+  await roman.goto("/?launch=0&robots=0#master=demo-roman");
   await roman.bringToFront(); // GPS for going online
   await expect(roman.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
   await roman.getByTestId("start-siosia").click();
@@ -274,7 +274,7 @@ test("the Roman link opens a driver profile with his green Taycan; riders see it
 test("a wrong master-profile link says so and falls back to the normal start", async ({ context }) => {
   await isolate(context);
   const page = await context.newPage();
-  await page.goto("/?robots=0#master=not-a-real-link");
+  await page.goto("/?launch=0&robots=0#master=not-a-real-link");
   await expect(page.getByTestId("link-toast")).toHaveText("This link is not valid any more. Ask the organiser for a new one.");
   await expect(page.getByLabel("Nickname")).toBeVisible();
 });
@@ -283,7 +283,7 @@ test("a master link on a phone with its own profile asks before replacing it", a
   await isolate(context);
   const page = await context.newPage();
   await onboard(page, "Ola");
-  await page.goto("/?robots=0#master=demo-master"); // only the #hash changes: the app reloads itself
+  await page.goto("/?launch=0&robots=0#master=demo-master"); // only the #hash changes: the app reloads itself
   const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText("It replaces your profile “Ola” here");
   await page.reload(); // e.g. an app update mid-question: the link is still waiting for an answer
@@ -294,7 +294,7 @@ test("a master link on a phone with its own profile asks before replacing it", a
   await page.waitForTimeout(1000);
   await expect(dialog).toHaveCount(0); // answered: not asked again
 
-  await page.goto("/?robots=0#master=demo-master");
+  await page.goto("/?launch=0&robots=0#master=demo-master");
   await page.getByRole("alertdialog").getByRole("button", { name: "Use shared profile" }).click();
   await expect(page.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Toria.");
   await expect(page.getByRole("heading", { name: "Hi, Toria" })).toBeVisible();
@@ -315,7 +315,7 @@ test("a one-time code moves a profile into another app (the iOS Home Screen app 
 
   // Another tab is another account here — like the Home Screen app on an iPhone.
   const appPage = await context.newPage();
-  await appPage.goto("/?robots=0");
+  await appPage.goto("/?launch=0&robots=0");
   await appPage.getByText("Moving from the browser or another phone?").click();
   await appPage.getByTestId("move-code").fill(code.toLowerCase());
   await appPage.getByTestId("move-submit").click();
@@ -464,7 +464,7 @@ test("a driver whose app went quiet stays on standby and is back online with the
   expect(drivers.some((d) => !d.online && (d.standbyUntil ?? 0) > 0)).toBe(true); // offline, on standby
 
   await driver.bringToFront(); // GPS for the driver
-  await driver.goto("/?robots=0"); // opened from the notification
+  await driver.goto("/?launch=0&robots=0"); // opened from the notification
   await expect(driver.getByTestId("driver-state")).toHaveText("Online", { timeout: 10_000 });
   await expect(driver.getByTestId("offer-card")).toContainText("Ola", { timeout: 10_000 });
 });
@@ -487,7 +487,7 @@ test("cancelling a request withdraws the offer card from the driver (US3, §5)",
 test("demo robots accept a request without any second device (FR-070)", async ({ context }) => {
   await isolate(context);
   const rider = await context.newPage();
-  await rider.goto("/?robots=2");
+  await rider.goto("/?launch=0&robots=2");
   await rider.getByLabel("Nickname").fill("Solo");
   await rider.getByRole("button", { name: "Continue" }).click();
   await openRide(rider);

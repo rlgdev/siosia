@@ -14,7 +14,7 @@ async function isolate(context: BrowserContext) {
 
 /** Onboards a user; `query` picks robots: the robot Siosia is on unless siosia=0. */
 async function onboard(page: Page, nick: string, query = "?robots=0&siosia=0") {
-  await page.goto(`/${query}`);
+  await page.goto(`/${query}${query.includes("?") ? "&" : "?"}launch=0`);
   await page.getByLabel("Nickname").fill(nick);
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: `Hi, ${nick}` })).toBeVisible();
@@ -176,12 +176,12 @@ test("opening rules: S1 by default, ?open=planned and ?open=history once, an onl
   await isolate(context);
   const page = await context.newPage();
   await onboard(page, "Toria");
-  await page.goto("/?robots=0&siosia=0&open=planned");
+  await page.goto("/?launch=0&robots=0&siosia=0&open=planned");
   await expect(page.getByTestId("planned")).toBeVisible();
   expect(new URL(page.url()).searchParams.has("open")).toBe(false);
   await page.getByTestId("page-back").click();
   await expect(page.getByTestId("start-planned")).toBeVisible();
-  await page.goto("/?robots=0&siosia=0&open=history");
+  await page.goto("/?launch=0&robots=0&siosia=0&open=history");
   await expect(page.getByTestId("history")).toBeVisible();
   await page.reload(); // the link opened it once; a reload is back on S1
   await expect(page.getByTestId("start-siosia")).toBeVisible();
@@ -256,7 +256,7 @@ test("an open request: nobody offers Learning → Anyone who can → Ewa sees it
 test("the car icon picks the car's colour: the Roman link → plate → Red → his icon and car are red, for riders too (FR-170)", async ({ context }) => {
   await isolate(context);
   const roman = await context.newPage();
-  await roman.goto("/?robots=0&siosia=0#master=demo-roman");
+  await roman.goto("/?launch=0&robots=0&siosia=0#master=demo-roman");
   await roman.bringToFront(); // GPS for going online
   await expect(roman.getByTestId("link-toast")).toHaveText("This phone now uses the shared profile Roman.");
   await roman.getByTestId("start-siosia").click();

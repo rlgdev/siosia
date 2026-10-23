@@ -2,6 +2,7 @@
 // Riders: their booking with the driver once one took it, and Cancel. Drivers: bookings to take
 // (with the distance from here) and the ones they took (with when to leave) — Take and Give back.
 
+import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InfoTip } from "../components/InfoTip";
 import { AddToCalendar } from "../components/AddToCalendar";
@@ -24,7 +25,7 @@ export function Route({ r }: { r: Pick<RideView, "pickup" | "dropoff"> }) {
   return (
     <div className="trip-line">
       <span>{r.pickup.label}</span>
-      <span aria-hidden="true">→</span>
+      <Icon name="chevron" className="ico-end" />
       <span>{r.dropoff.label}</span>
     </div>
   );
@@ -42,7 +43,7 @@ export function RiderBookingCard({ r, onChanged }: { r: RideView; onChanged: () 
     <div className="card stack" data-testid="booking">
       <div className="kv">
         <strong>
-          🚗 {when(r.scheduledFor ?? r.requestedAt)}
+          <Icon name="car" className="ico-inline" /> {when(r.scheduledFor ?? r.requestedAt)}
         </strong>
         <strong>
           <Money amount={r.fare} currency={r.currency} />
@@ -112,7 +113,9 @@ export function DriverBookingCard({ r, onChanged }: { r: RideView; onChanged: ()
   return (
     <div className="card stack" data-testid="my-booking">
       <div className="kv">
-        <strong>🚗 {when(r.scheduledFor ?? r.requestedAt)}</strong>
+        <strong>
+          <Icon name="car" className="ico-inline" /> {when(r.scheduledFor ?? r.requestedAt)}
+        </strong>
         <strong>
           <Money amount={r.fare} currency={r.currency} />
         </strong>

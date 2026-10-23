@@ -5,6 +5,7 @@
 // Opening the thread marks it read (FR-224); the unread badges follow. The backend notifies and
 // pushes; nothing is sent from here but the message itself.
 
+import { Icon } from "./Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatRoom, ChatThread } from "../core/types";
 import { ServerError } from "../core/types";
@@ -222,7 +223,7 @@ export function ChatButton({ room, unread, small }: { room: ChatRoom; unread?: n
       onClick={() => store.openPanel("chat", room)}
       data-testid="chat-open"
     >
-      <span aria-hidden="true">💬</span> {t("chat.open")}
+      <Icon name="chat" className="ico-inline" /> {t("chat.open")}
       {n > 0 && (
         <span className="badge badge-accent" data-testid="chat-unread">
           {n}

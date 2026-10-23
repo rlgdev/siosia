@@ -1,6 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { MessageKey } from "./i18n/en";
+import { Launch, launchWanted } from "./components/Launch";
 import { OfflineBanner, SharingBanner } from "./components/SharingBanner";
+import { applyTheme, watchSystemTheme } from "./services/theme";
 import { I18nProvider, useI18n } from "./i18n";
 import { InviteScreen, Loading, NicknameScreen, Unavailable, Unsupported } from "./screens/Boot";
 import { DriverApp } from "./screens/driver/DriverApp";
@@ -178,12 +180,20 @@ function Screens() {
 
 function LangRoot() {
   const app = useApp();
+  // The launch overlay (V52): once per page load, over the boot, gone for good when it ends.
+  const [launch, setLaunch] = useState(launchWanted);
   useEffect(() => {
     document.documentElement.lang = app.lang;
   }, [app.lang]);
+  // Appearance (V50): the choice on <html> and the meta colour; "system" follows the phone live.
+  useEffect(() => {
+    applyTheme(app.theme);
+    return watchSystemTheme(() => app.theme);
+  }, [app.theme]);
   return (
     <I18nProvider lang={app.lang}>
       <Screens />
+      {launch && <Launch onDone={() => setLaunch(false)} />}
     </I18nProvider>
   );
 }

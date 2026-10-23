@@ -18,8 +18,8 @@ export default defineConfig({
         name: "Siosia",
         short_name: "Siosia",
         description: "Ride or drive — one link, no app store.",
-        theme_color: "#14161a",
-        background_color: "#14161a",
+        theme_color: "#0b1020",
+        background_color: "#0b1020",
         display: "standalone",
         orientation: "portrait",
         start_url: ".",
@@ -34,7 +34,8 @@ export default defineConfig({
       workbox: {
         // App shell only. Tiles, routing, geocoding and the backend are always network (D-03: no
         // offline tile storage). config.json is never cached so operators can change it live.
-        globPatterns: ["**/*.{js,css,html,svg,png,webmanifest}"],
+        // woff2: the bundled Geist font (2.4), so the installed app has its type offline too.
+        globPatterns: ["**/*.{js,css,html,svg,png,webmanifest,woff2}"],
         navigateFallback: "index.html",
         navigateFallbackDenylist: [/config\.json$/, /guide\.html$/],
         // A new version takes over at once instead of waiting until every tab is closed.

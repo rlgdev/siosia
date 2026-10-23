@@ -1,6 +1,7 @@
 // R4 Receipt (rider) and D4 Trip summary (driver): frozen fare next to actual totals (FR-052),
 // Mark as paid / Collected flags (FR-053), one immutable 1–5 star rating each way (FR-060).
 
+import { Icon } from "../components/Icon";
 import { useState } from "react";
 import { Money, Notice, Sheet, StarInput, fmtKm, fmtMin, useBusy } from "../components/ui";
 import type { RideView } from "../core/types";
@@ -58,7 +59,9 @@ export function AfterRide({ ride, onDone }: { ride: RideView; onDone: () => void
 
       {rider && !r.paid && <p className="hint">{t("receipt.payHint")}</p>}
       {flagged ? (
-        <Notice kind="ok">✓ {t(rider ? "receipt.paid" : "summary.collected")}</Notice>
+        <Notice kind="ok">
+          <Icon name="check" className="ico-inline" /> {t(rider ? "receipt.paid" : "summary.collected")}
+        </Notice>
       ) : (
         <button
           type="button"

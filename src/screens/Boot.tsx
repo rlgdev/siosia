@@ -2,6 +2,7 @@
 // (FR-007) and nickname (FR-002 — the only thing a rider ever has to provide).
 
 import { MoveHere } from "../components/AppInstall";
+import { Logo } from "../components/Icon";
 import { useState, type FormEvent } from "react";
 import { useBusy } from "../components/ui";
 import { useI18n } from "../i18n";
@@ -11,7 +12,7 @@ export function Loading() {
   const { t } = useI18n();
   return (
     <main className="center-screen" aria-busy="true">
-      <div className="logo" aria-hidden="true">S</div>
+      <Logo />
       <p>{t("common.loading")}</p>
     </main>
   );
@@ -22,7 +23,7 @@ export function Unsupported() {
   const app = useApp();
   return (
     <main className="center-screen">
-      <div className="logo" aria-hidden="true">S</div>
+      <Logo />
       <p role="alert">{t("boot.unsupported", { list: app.missing.join(", ") })}</p>
     </main>
   );
@@ -39,7 +40,7 @@ export function Unavailable() {
   })();
   return (
     <main className="center-screen">
-      <div className="logo" aria-hidden="true">S</div>
+      <Logo />
       <h1>{t("boot.unavailableTitle")}</h1>
       <p>{t("boot.unavailableBody")}</p>
       {app.cfg?.operatorContact && <p>{t("boot.contact", { contact: app.cfg.operatorContact })}</p>}
@@ -66,7 +67,7 @@ export function InviteScreen() {
   };
   return (
     <main className="center-screen">
-      <div className="logo" aria-hidden="true">S</div>
+      <Logo />
       <h1>{t("invite.title")}</h1>
       <p>{t("invite.body")}</p>
       <form onSubmit={submit} className="stack">
@@ -96,7 +97,7 @@ export function NicknameScreen() {
   };
   return (
     <main className="center-screen">
-      <div className="logo" aria-hidden="true">S</div>
+      <Logo />
       <h1>{t("nick.title")}</h1>
       <p>{t("nick.body")}</p>
       <form onSubmit={submit} className="stack">

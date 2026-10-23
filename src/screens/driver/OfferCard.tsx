@@ -1,6 +1,7 @@
 // D2 Offer card (FR-022): rider, distance and ETA from the driver's current position to the pickup,
 // trip, fare, a 20 s countdown on the SERVER clock, Accept / Decline.
 
+import { Icon } from "../../components/Icon";
 import { ProfileIcon } from "../../components/ProfileIcon";
 import { useEffect, useRef, useState } from "react";
 import { Money, RatingBadge, fmtKm, fmtMin, useCountdown } from "../../components/ui";
@@ -69,7 +70,7 @@ export function OfferCard({ offer, queued, offerS, from, busy, onAccept, onDecli
       <p className="muted">{t("offer.trip", { km: fmtKm(offer.estKm), min: fmtMin(offer.estMin) })}</p>
       <div className="trip-line">
         <span>{offer.pickup.label}</span>
-        <span aria-hidden="true">→</span>
+        <Icon name="arrow" className="ico-inline" />
         <span>{offer.dropoff.label}</span>
       </div>
       <p className="offer-fare">

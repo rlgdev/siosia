@@ -4,6 +4,7 @@
 // Replaces the v1 Ride history and Earnings & history panels; an online driver, who keeps D1,
 // opens the same list as a panel.
 
+import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { otherName, partyText, statusChip } from "../components/apptWords";
 import { Money, Page, Panel } from "../components/ui";
@@ -151,7 +152,9 @@ function RideRow({ r }: { r: RideView }) {
         <small className="muted">{date(r.scheduledFor ?? r.requestedAt)}</small>
         <span className={`status status-${r.status}`}>{t(`status.${r.status}` as MessageKey)}</span>
       </div>
-      <strong>🚗 {t(r.role === "driver" ? "history.drove" : "history.rode")}</strong>
+      <strong>
+        <Icon name="car" className="ico-inline" /> {t(r.role === "driver" ? "history.drove" : "history.rode")}
+      </strong>
       <Route r={r} />
       <div className="row spread">
         <small className="muted">{r.role === "driver" ? r.rider.nickname : (r.driver?.nickname ?? "")}</small>

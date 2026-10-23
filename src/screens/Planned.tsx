@@ -5,6 +5,7 @@
 // 2.3 (FR-202, FR-221): "with Zosia and Kuba" on an item with kids attached (a candidate: the
 // count), the other party's photo, and the chat of an accepted appointment with its unread count.
 
+import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { apptRoom, kidsLine, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
@@ -277,7 +278,9 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
         <span className="row small">
           <Avatar photo={a.client.photo} icon={a.client.icon} size="sm" paint={a.client.paint} /> {partyText(a, t)} <RatingBadge rating={a.client.rating} />
         </span>
-        <span className="muted small">📍 {a.place ? a.place.label : t("appt.noPlace")}</span>
+        <span className="muted small">
+          <Icon name="place" className="ico-inline" /> {a.place ? a.place.label : t("appt.noPlace")}
+        </span>
         {kidsLine(a, lang, t) && (
           <span className="muted small" data-testid="kids-line">
             {kidsLine(a, lang, t)}
@@ -306,7 +309,9 @@ function RideItem({ r, onChanged }: { r: RideView; onChanged: () => void }) {
   if (r.status === "scheduled") return r.role === "rider" ? <RiderBookingCard r={r} onChanged={onChanged} /> : <DriverBookingCard r={r} onChanged={onChanged} />;
   return (
     <article className="card stack" data-testid="planned-active-ride">
-      <strong>🚗 {t("planned.activeRide")}</strong>
+      <strong>
+        <Icon name="car" className="ico-inline" /> {t("planned.activeRide")}
+      </strong>
       <Route r={r} />
       <button type="button" className="btn btn-primary" onClick={() => store.go(r.role === "driver" ? "drive" : "ride")}>
         {t("planned.openRide")}

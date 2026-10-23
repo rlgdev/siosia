@@ -14,6 +14,7 @@ import { ACTIVE_STATUSES, type Place } from "../core/types";
 import { EntryIcon, localText } from "./Catalog";
 import { MyKids } from "./MyKids";
 import { useI18n } from "../i18n";
+import { isThemePref } from "../services/theme";
 import { resetDemo } from "../state/demo";
 import { useApp, useStore } from "../state/store";
 
@@ -76,6 +77,15 @@ export function ProfilePanel() {
           <select value={lang} onChange={(e) => void store.setLang(e.target.value === "pl" ? "pl" : "en")}>
             <option value="en">English</option>
             <option value="pl">Polski</option>
+          </select>
+        </label>
+        {/* Appearance (2.4, V50): this phone's choice; "Same as the phone" follows the system setting. */}
+        <label className="field">
+          <span>{t("profile.appearance")}</span>
+          <select value={app.theme} onChange={(e) => store.setTheme(isThemePref(e.target.value) ? e.target.value : "system")} data-testid="appearance">
+            <option value="system">{t("profile.appearanceSystem")}</option>
+            <option value="light">{t("profile.appearanceLight")}</option>
+            <option value="dark">{t("profile.appearanceDark")}</option>
           </select>
         </label>
         {p && (

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { formatMoney } from "../core/fare";
+import { Icon } from "./Icon";
 import type { RatingSummary } from "../core/types";
 import { errorMessage, useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
@@ -123,11 +124,11 @@ export function TopBar({ title, right, onBack }: { title: string; right?: ReactN
     <header className="topbar">
       {onBack && (
         <button type="button" className="icon-btn" aria-label={t("common.back")} onClick={onBack} data-testid="back-home">
-          <span aria-hidden="true">←</span>
+          <Icon name="back" />
         </button>
       )}
       <button type="button" className="icon-btn" aria-label={t("common.menu")} onClick={() => store.openPanel("profile")}>
-        <span aria-hidden="true">☰</span>
+        <Icon name="menu" />
       </button>
       <h1 className="topbar-title">{title}</h1>
       {app.cfg?.backend === "mock" && <span className="badge badge-demo">DEMO</span>}
@@ -144,11 +145,11 @@ export function Page({ title, children, testId }: { title: string; children: Rea
     <main className="page" data-testid={testId}>
       <header className="page-head">
         <button type="button" className="icon-btn" aria-label={t("common.back")} onClick={() => store.home()} data-testid="page-back">
-          <span aria-hidden="true">←</span>
+          <Icon name="back" />
         </button>
         <h1>{title}</h1>
         <button type="button" className="icon-btn page-menu" aria-label={t("common.menu")} onClick={() => store.openPanel("profile")}>
-          <span aria-hidden="true">☰</span>
+          <Icon name="menu" />
         </button>
       </header>
       <div className="page-body">{children}</div>
@@ -162,7 +163,7 @@ export function Panel({ title, children, onClose }: { title: string; children: R
     <div className="panel" role="dialog" aria-modal="true" aria-label={title}>
       <header className="panel-head">
         <button type="button" className="icon-btn" aria-label={t("common.back")} onClick={onClose}>
-          <span aria-hidden="true">←</span>
+          <Icon name="back" />
         </button>
         <h2>{title}</h2>
       </header>

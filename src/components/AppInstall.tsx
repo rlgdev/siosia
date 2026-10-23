@@ -2,6 +2,7 @@
 // session — so a one-time code moves the profile (with its history, vehicle and master link) into
 // the app. The same code moves a profile to another phone.
 
+import { Icon } from "./Icon";
 import { useEffect, useState, type FormEvent } from "react";
 import { InfoTip } from "./InfoTip";
 import { disablePush, enablePush, pushState, type PushState } from "../services/push";
@@ -141,7 +142,9 @@ export function PushPrompt() {
   if (hidden || state !== "off") return null;
   return (
     <Notice kind="info">
-      <span>🔔 {t("push.prompt")}</span>{" "}
+      <span>
+        <Icon name="bell" className="ico-inline" /> {t("push.prompt")}
+      </span>{" "}
       <button type="button" className="btn btn-link" disabled={busy} onClick={() => void run(enable)} data-testid="push-prompt-enable">
         {t("push.enable")}
       </button>
@@ -210,7 +213,9 @@ export function AppHint() {
   if (hidden || !isIOS() || isStandalone()) return null;
   return (
     <Notice kind="info">
-      <span>📲 {t("app.hint")}</span>{" "}
+      <span>
+        <Icon name="install" className="ico-inline" /> {t("app.hint")}
+      </span>{" "}
       <button type="button" className="btn btn-link" onClick={() => store.openPanel("profile")} data-testid="app-hint-how">
         {t("app.how")}
       </button>

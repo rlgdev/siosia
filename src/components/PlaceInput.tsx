@@ -1,6 +1,7 @@
 // A place chosen like an R1 field (FR-094, FR-140): My place, this phone's location, or an address
 // search (geocoding only on an explicit tap, FR-033). Used by C2, the ride sheets and S2.
 
+import { Icon } from "./Icon";
 import { useState } from "react";
 import type { LatLng, Place } from "../core/types";
 import { useI18n } from "../i18n";
@@ -65,14 +66,14 @@ export function PlaceInput({ label, value, onChange, home, near, testId, optiona
       <div className="row wrap">
         {home && (
           <button type="button" className="btn btn-secondary btn-small" onClick={() => onChange(home)} data-testid={`${testId}-home`}>
-            🏠 {t("place.myPlace")}
+            <Icon name="home" className="ico-inline" /> {t("place.myPlace")}
           </button>
         )}
         <button type="button" className="btn btn-secondary btn-small" disabled={busy} onClick={() => void here()} data-testid={`${testId}-here`}>
-          ◎ {t("place.here")}
+          <Icon name="locate" className="ico-inline" /> {t("place.here")}
         </button>
         <button type="button" className="btn btn-secondary btn-small" onClick={() => setSearching((s) => !s)} aria-expanded={searching} data-testid={`${testId}-search`}>
-          🔎 {t("place.search")}
+          <Icon name="search" className="ico-inline" /> {t("place.search")}
         </button>
         {optional && value && (
           <button type="button" className="btn btn-link btn-small" onClick={() => onChange(null)}>

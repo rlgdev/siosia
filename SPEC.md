@@ -103,6 +103,10 @@ V46: photos: client-resized (≤512 px, JPEG ≤150 KB) → private bucket `phot
 V47: chat room = ride:<id> (driver assigned) | appt:<id> (accepted); parties only (RLS + server; re-dispatched driver loses room); text ≤500; stored + live; writable while live + 24 h after end, then read-only; deleted with the ride/appt; ≤ 30 msgs / room / sender / 10 min → too_many
 V48: chat push `chat_message` to the other party (tag per room, opens the chat) unless they have the thread open; ⊥ to a driver while in_progress; read receipts (read_at) set when the thread is visible
 V49: ∀ per-user table (kids, kid_ratings, messages, photo paths, chat_presence) is re-keyed by the account move (redeem_transfer) and removed by delete_profile — both twins, tested together; photo ownership row-based (profile/kid row → path), object folders keyed by public_id (⊥ auth uid in any URL a viewer gets); 2-arg policy helpers ⊥ granted to clients (1-arg auth.uid() wrappers); chat push suppressed by server-side presence (chat_presence, 45 s) + dispatch read-check; removing a kid drops its object server-side
+V50: appearance ∈ {system, light, dark} per device (pref `siosia.theme`); system = `prefers-color-scheme` live; light|dark → `<html data-theme>`; `theme-color` meta = shown mode; both token sets ∀ screen; applied before first paint (⊥ flash)
+V51: glass (backdrop blur) only on chrome: map top bar, sheets, page/panel heads, floating bars, toasts; content surfaces plain (⊥ blur over scrolling lists); `prefers-reduced-transparency` → opaque; text ≥ 4.5:1 both modes; 44 px targets kept
+V52: launch overlay 1× per page load (cold start), ⊥ on re-render | resume; intro ≤ 1.2 s then out ≤ 0.5 s once boot left `loading` (cap 4 s); tap skips; `prefers-reduced-motion` → ≤ 200 ms fade; ⊥ input blocked after it ends; `?launch=0` → none (e2e); morph into S1 avatar only when S1 is under it
+V53: UI glyphs = inline stroke SVG (`components/Icon.tsx`, 1.5 px, `aria-hidden`); catalog `icon` config emoji → mapped icon, unknown → shown as given; ⊥ emoji in markup
 
 ## §T tasks
 
@@ -132,6 +136,9 @@ T22|x|release 2.2: review, live DB migration (departed_at + siosia_depart), push
 T23|x|2.3 backend: kids + kid_ratings + messages tables, photos bucket + signed-URL read, RPCs (kids CRUD, attach, rate kid, photo set/clear, chat send/list/read, room access), push kind chat_message, retention, RLS; engine twin (mock photos as data URLs, mock realtime chat); adapters; sql + engine tests|V44–V48,FR-200–225
 T24|x|2.3 UI: S2 My kids + photo pickers (resize), C2/C3 attach kids, provider's kid cards + rate-kid after done, kid card w/ ratings, photos everywhere nickname is, chat sheet (R3/D3/C3/P1 badge, live, read marks), i18n EN/PL, robot Siosia chat reply, tests (components, e2e)|V44–V48,FR-200–225
 T25|x|release 2.3: review, live DB migration + bucket, push-dispatch bundle, main, live check|§15,V44–V48
+T26|x|2.4 Liquid Glass: tokens light+dark in `theme.css` (`:root`, `@media dark` + `[data-theme]` twins), `services/theme.ts` (pref, apply, meta colour, system watch), store.theme + setTheme, inline pre-paint script in `index.html`, S2 Appearance select, Geist font bundled (`@fontsource-variable/geist`, woff2 precached), dark map tiles, i18n EN/PL, USER-GUIDE|V50,V51,FR-072,FR-074
+T27|x|icons: `components/Icon.tsx` stroke set + `Logo`; emoji → icons ∀ screens (S1 cards, C1 entries, bars, place fields, chat/calendar/ride lines), config emoji map in `EntryIcon`|V53
+T28|x|launch: `components/Launch.tsx` overlay (route draws, pin lands, wordmark, morph → S1 avatar, S1 rows spring in via `html[data-launch]`), cold-start gate, skip, reduced motion, `?launch=0`; tests: theme pref/apply/meta, dark token twins identical, icons map, launch gate/skip/reduced/no-block, S2 select|V52
 
 ## §B bugs
 

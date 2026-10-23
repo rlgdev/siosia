@@ -3,6 +3,7 @@
 // on the demo backend the file is built in the browser and downloaded, or shared on iPhone). The
 // event is a copy: the action says that it does not update by itself.
 
+import { Icon } from "./Icon";
 import { useState } from "react";
 import {
   appointmentGoogleLink,
@@ -42,7 +43,7 @@ export function AddToCalendar(props: Props) {
   return (
     <div className="stack cal" data-testid={wholeSeries ? "add-to-calendar-series" : "add-to-calendar"}>
       <button type="button" className="btn btn-secondary btn-small" aria-expanded={open} onClick={() => setOpen((o) => !o)} data-testid={wholeSeries ? "cal-open-series" : "cal-open"}>
-        📅 {label}
+        <Icon name="calendarPlus" className="ico-inline" /> {label}
       </button>
       {open && (
         <div className="stack cal-choices">

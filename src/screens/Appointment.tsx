@@ -9,6 +9,7 @@
 // provider sees their cards and rates each once the appointment is done, a candidate sees only
 // how many — and the chat with the other party once accepted.
 
+import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
@@ -142,7 +143,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
           {other && <RatingBadge rating={other.rating} />}
         </p>
         <p data-testid="appt-place">
-          📍 {a.place ? a.place.label : t("appt.noPlace")}{" "}
+          <Icon name="place" className="ico-inline" /> {a.place ? a.place.label : t("appt.noPlace")}{" "}
           {a.place && (
             <a className="btn btn-link btn-small" href={navigationUrl(a.place)} target="_blank" rel="noreferrer">
               {t("appt.map")}
@@ -257,7 +258,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
                 .filter((leg) => !myLegs.has(leg) && !myTemplates.some((x) => x.leg === leg))
                 .map((leg) => (
                   <button key={leg} type="button" className="btn btn-secondary" onClick={() => setMode(leg)} data-testid={`add-ride-${leg}`}>
-                    🚗 {t(a.series ? "appt.addRideAll" : "appt.addRide", { leg: t(`appt.leg.${leg}` as MessageKey) })}
+                    <Icon name="car" className="ico-inline" /> {t(a.series ? "appt.addRideAll" : "appt.addRide", { leg: t(`appt.leg.${leg}` as MessageKey) })}
                   </button>
                 ))}
             </div>

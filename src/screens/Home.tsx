@@ -4,6 +4,7 @@
 // card says where they are; a driver profile's car icon picks the car's colour (FR-170).
 
 import { AppHint } from "../components/AppInstall";
+import { Icon, Logo } from "../components/Icon";
 import { Avatar, CarIconButton, ownCarIcon } from "../components/ProfileIcon";
 import { whenText } from "../components/when";
 import { useI18n } from "../i18n";
@@ -45,11 +46,7 @@ export function Home() {
             photo={app.profile?.photo}
             icon={app.profile?.icon}
             size="md"
-            fallback={
-              <div className="logo" aria-hidden="true">
-                S
-              </div>
-            }
+            fallback={<Logo />}
           />
         )}
         <div>
@@ -62,12 +59,14 @@ export function Home() {
       {receipt && (
         <button type="button" className="notice notice-info row spread" onClick={() => store.go(receipt)} data-testid="home-receipt">
           <span>{t(receipt === "drive" ? "home.receiptDriver" : "home.receiptRider")}</span>
-          <span aria-hidden="true">→</span>
+          <Icon name="chevron" />
         </button>
       )}
       <nav className="mode-cards" aria-label={t("start.nav")}>
         <button type="button" className="mode-card" onClick={() => store.go("catalog")} data-testid="start-siosia">
-          <span className="mode-icon" aria-hidden="true">🤝</span>
+          <span className="mode-icon mode-icon-siosia" aria-hidden="true">
+            <Icon name="users" size={26} />
+          </span>
           <span className="mode-title">
             {t("start.siosia")}
             {!!my?.toAnswer && (
@@ -84,7 +83,9 @@ export function Home() {
           <span className="mode-body">{t("start.siosiaBody")}</span>
         </button>
         <button type="button" className="mode-card" onClick={() => store.go("planned")} data-testid="start-planned">
-          <span className="mode-icon" aria-hidden="true">📅</span>
+          <span className="mode-icon mode-icon-planned" aria-hidden="true">
+            <Icon name="calendar" size={26} />
+          </span>
           <span className="mode-title">
             {t("start.planned")}
             {!!my?.planned && (
@@ -95,7 +96,7 @@ export function Home() {
             {/* 2.3: unread chat messages across my rooms (the threads are on the items). */}
             {!!my?.unreadChats && (
               <span className="badge badge-accent" data-testid="badge-chat">
-                💬 {my.unreadChats === 1 ? t("start.unreadChatsOne") : t("start.unreadChats", { n: my.unreadChats })}
+                <Icon name="chat" size={14} /> {my.unreadChats === 1 ? t("start.unreadChatsOne") : t("start.unreadChats", { n: my.unreadChats })}
               </span>
             )}
           </span>
@@ -112,7 +113,9 @@ export function Home() {
           </span>
         </button>
         <button type="button" className="mode-card" onClick={() => store.go("history")} data-testid="start-history">
-          <span className="mode-icon" aria-hidden="true">🕘</span>
+          <span className="mode-icon" aria-hidden="true">
+            <Icon name="history" size={26} />
+          </span>
           <span className="mode-title">{t("start.history")}</span>
           <span className="mode-body">{t("start.historyBody")}</span>
         </button>
