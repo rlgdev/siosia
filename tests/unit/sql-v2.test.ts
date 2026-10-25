@@ -1184,7 +1184,7 @@ describe("car colour (2.1: FR-170, V38)", () => {
       await h.call(M, "siosia_join_master", ["wozak-token-0123456789", "dev-wz", "pl", false]);
       await colour(M, "Zielony", "#2e7d32");
       const providers = (await h.call<Json[]>(U.client, "siosia_catalog")).find((e) => e.id === "learning")!.providers as Json[];
-      expect(providers.find((p) => p.nickname === "Roman")).toEqual({ nickname: "Roman", rating: { mean: null, count: 0 }, icon: null, paint: "#c62828", publicId: pub.driver });
+      expect(providers.find((p) => p.nickname === "Roman")).toEqual({ nickname: "Roman", rating: { mean: null, count: 0 }, icon: null, paint: "#c62828", publicId: pub.driver, contractRate: null });
       expect(providers.find((p) => p.nickname === "Wozak")).toMatchObject({ icon: "taycan-ct-green", paint: "#2e7d32" });
       expect(providers.find((p) => p.nickname === "Siosia")).toMatchObject({ paint: null }); // no car
       // Appointment parties, for either party and for a candidate; nothing of the car but its paint.
@@ -1272,7 +1272,7 @@ describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () =>
     ])
       expect(await errorOf(addKid(U.client, bad))).toBe("bad_input");
     const z = await addKid(U.client, { name: "  Zosia ", bornYear: 2016, note: " Nut allergy " });
-    expect(z).toEqual({ id: expect.any(String), name: "Zosia", photo: null, bornYear: 2016, note: "Nut allergy", rating: { mean: null, count: 0 }, ratings: [] });
+    expect(z).toEqual({ id: expect.any(String), name: "Zosia", photo: null, bornYear: 2016, note: "Nut allergy", rating: { mean: null, count: 0 }, ratings: [], ownerNickname: "Toria", mine: true });
     const k = await addKid(U.client, KUBA);
     expect(k).toMatchObject({ name: "Kuba", bornYear: null, note: "" });
     for (let i = 0; i < 6; i++) await addKid(U.client, { name: `Kid ${i}`, bornYear: year, note: "" });

@@ -279,3 +279,25 @@ engine mirrors all of it; the demo robot answers a parent's first note and a hea
   leaving it, so going online never hides them.
 - **Rider's own attached rides** appear inside the appointment's ride line in Planned rather than
   as separate booking cards, to show each item once; Remove ride is on the appointment.
+
+## 2.6: family, contracts, cost summaries, weekly reports
+
+- **Family** = `families` + `family_members` (user_id is the key: one family each) + `family_invites`.
+  Everything "for my family" goes through three helpers, twins in the engine: `siosia_household(uid)`
+  (me and everyone in my family, first joined first), `siosia_same_family(a, b)` and
+  `siosia_sees(uid, appointment)` (a party, or in the family of one). Planned, History, C3, the feed,
+  the kids and the photo policies use them; the appointments trigger notifies both parties' households.
+  A contract always belongs to a family: a provider proposing to someone without one gives them a
+  family of one, which merges into a family they join later.
+- **Role `family`** on AppointmentView: party data (kids, rides as a non-passenger, feed, notice,
+  cost) with no actions — the existing guards (`client_id = uid` / `provider_id = uid`) already refuse
+  them; the UI hides the buttons. A family member of the *client* may post to the feed.
+- **Contracts** (`contracts`, one active + one proposed per family and provider by partial unique
+  indexes) only set the rate at request time: `appointments.rate` + `contract_id` are frozen with the
+  price; ending or replacing a contract never touches booked appointments.
+- **Cost** is derived (`siosia_cost_json`): rate × (provider's `actual_min` ?? duration), else the
+  fixed price; `summary_sent` makes the done-transition notification once.
+- **Weekly report** is computed on read (`siosia_report` / `siosia_week_json`), nothing stored; the
+  Monday push is a sweep step gated by `app_config.report_week` (the migration sets it to the current
+  Monday, so an upgraded deployment starts next week). `siosia_sweep_family(p_now)` takes the clock
+  as an argument so the PGlite test can move it.

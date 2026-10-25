@@ -66,6 +66,10 @@ function HistoryList() {
 
   return (
     <div className="stack">
+      {/* 2.6 (FR-280): spent and earned, week by week */}
+      <button type="button" className="btn btn-secondary" onClick={() => store.openPanel("report")} data-testid="history-report">
+        <Icon name="calendar" className="ico-inline" /> {t("report.open")}
+      </button>
       {totals && (
         <div className="totals" data-testid="earnings">
           <div className="total-card">
@@ -115,7 +119,7 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
   const { t, lang } = useI18n();
   const store = useStore();
   const date = useDate();
-  const canRate = a.status === "done" && a.myRating === null && !!a.provider && store.serverNow() < (a.endedAt ?? a.endsAt) + RATE_WINDOW_MS;
+  const canRate = a.status === "done" && a.role !== "family" && a.myRating === null && !!a.provider && store.serverNow() < (a.endedAt ?? a.endsAt) + RATE_WINDOW_MS;
   const status = a.status === "accepted" || a.status === "requested" ? "done" : a.status;
   // An open request that nobody took reads so (V37); the other endings keep their words.
   const word = status === "expired" ? statusChip(a, lang, t).text : t(`appt.status.${status}` as MessageKey);
@@ -131,7 +135,14 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
         </strong>
         <span className="row spread">
           <small className="muted">{partyText(a, t)}</small>
-          {a.price !== null && <Money amount={a.price} currency={a.currency} />}
+          {/* 2.6 (FR-273): what it cost once done (a corrected time included), else the price asked */}
+          {a.cost?.total != null ? (
+            <span data-testid="history-cost">
+              <Money amount={a.cost.total} currency={a.cost.currency} />
+            </span>
+          ) : (
+            a.price !== null && a.status !== "done" && <Money amount={a.price} currency={a.currency} />
+          )}
         </span>
         {a.myRating !== null && <small className="muted">{t("history.rated", { n: a.myRating })}</small>}
       </button>

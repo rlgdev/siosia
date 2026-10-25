@@ -838,7 +838,8 @@ describe("car colour (2.1: FR-170, V38)", () => {
       ["Roman", "#1f7a3d"],
       ["Siosia", null]
     ]);
-    for (const p of chips) expect(Object.keys(p).sort()).toEqual(KEYS);
+    // 2.6: a catalog chip also says the viewer's contract rate (none here).
+    for (const p of chips) expect(Object.keys(p).sort()).toEqual(["contractRate", ...KEYS]);
     expect(JSON.stringify(chips)).not.toMatch(/W DRIVER|Zielony|Porsche|Taycan/);
     // Addressed to him: both sides see his paint on his party row, the client's (no car) is null.
     const a = request("client", "driver", 30 * 60, { service: "learning", duration: 60 });
@@ -876,7 +877,7 @@ describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () =>
     for (const bad of [{ name: "" }, { name: "   " }, { name: "x".repeat(31) }, { name: "Zosia", bornYear: 1899 }, { name: "Zosia", bornYear: 2027 }, { name: "Zosia", bornYear: 2018.5 }, { name: "Zosia", note: "x".repeat(201) }])
       expect(code(() => kid("client", bad.name, bad)), JSON.stringify(bad)).toBe("bad_input");
     const z = kid("client", "  Zosia ", { bornYear: 2018, note: "  Nut allergy " });
-    expect(z).toEqual({ id: expect.any(String), name: "Zosia", photo: null, bornYear: 2018, note: "Nut allergy", rating: { mean: null, count: 0 }, ratings: [] });
+    expect(z).toEqual({ id: expect.any(String), name: "Zosia", photo: null, bornYear: 2018, note: "Nut allergy", rating: { mean: null, count: 0 }, ratings: [], ownerNickname: "Toria", mine: true });
     expect(changed).toEqual(["client"]);
     const k = kid("client", "Kuba", { bornYear: 2026 }); // born this year
     expect(kids("client").map((x) => x.name)).toEqual(["Zosia", "Kuba"]);

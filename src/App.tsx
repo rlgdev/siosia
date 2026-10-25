@@ -16,6 +16,8 @@ import { HistoryPanel, HistoryScreen } from "./screens/HistoryScreen";
 import { Planned } from "./screens/Planned";
 import { RequestPanel } from "./screens/RequestForm";
 import { ProfilePanel } from "./screens/Profile";
+import { FamilyPanel } from "./screens/Family";
+import { ReportPanel } from "./screens/Report";
 import { RiderApp } from "./screens/rider/RiderApp";
 import { Confirm } from "./components/ui";
 import { useRobotSiosia } from "./state/demo";
@@ -174,6 +176,8 @@ function Screens() {
       {app.phase === "ready" && app.panel === "bookings" && <DriverBookingsPanel />}
       {app.phase === "ready" && app.panel === "request" && <RequestPanel />}
       {app.phase === "ready" && app.panel === "chat" && <ChatPanel />}
+      {app.phase === "ready" && app.panel === "family" && <FamilyPanel />}
+      {app.phase === "ready" && app.panel === "report" && <ReportPanel key={app.panelArg ?? "now"} />}
     </>
   );
 }

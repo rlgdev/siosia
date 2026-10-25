@@ -285,6 +285,7 @@ p {
 .total-card,
 .receipt,
 .kid-card,
+.contract-card,
 .repeat-box,
 .place-value,
 .results,
@@ -2281,4 +2282,38 @@ html[data-launch] .mode-card:nth-child(3) {
   to {
     opacity: 1;
   }
+}
+
+/* ---------- 2.6: family, contracts, cost summary, weekly report ---------- */
+.plain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.family-person {
+  gap: 10px;
+  align-items: center;
+}
+.contract-card {
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+}
+.contract-line {
+  gap: 10px;
+  align-items: center;
+}
+.rate-input {
+  width: 7.5em;
+  min-height: 44px;
+}
+.segmented {
+  display: inline-flex;
+  gap: 6px;
+}
+.report-line {
+  gap: 12px;
+  align-items: flex-start;
+}
+.cost-total {
+  font-size: 1.15rem;
 }

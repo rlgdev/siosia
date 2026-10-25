@@ -165,3 +165,29 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 241 | client_coming push; the notice on C3 and P1 until 2 h after the end | push "2.5 … heading-home texts"; screens coming-line; appt + sql2 |
 | 242 | Kept on the appointment; none on a request, a declined or cancelled one | appt + sql2 illegal_transition cases |
 | 170 | Car icon tap → colour; vehicle colour + paint; icon drawn in the paint everywhere | appt + sql2 "sets the colour name and paint…", "shows the paint to the rider…", "carries the paint in every party…"; components car-icon / paint-<id>; e2e2 "the car icon picks the car's colour" |
+
+## Siosia 2.6 (Amendment 2.6 in `siosia-spec-v2.0.md`, FR-250 – FR-284; SPEC.md V58–V65)
+
+| FR | Requirement (short) | Verified by |
+| --- | --- | --- |
+| 250 | Invite a member into my family (picked from the list); one family each, ≤ 6; 7-day invitation; withdraw; S1 notice | family + sqlfam "invites a member, who joins…", "declines, withdraws, lapses after 7 days…"; push family_invite; e2e family |
+| 251 | Join refused while in a family with someone else; a family of one merges in (contracts move unless the pair already has one) | family + sqlfam "…refuses someone in another family…", "a family of one merges in…" |
+| 252 | Leave; the family stays with those left; the last one out ends it and its contracts | family + sqlfam "leaving keeps the family…" |
+| 253 | Shared kids: see, edit, photo, remove, attach; owner kept; own kids leave with me | family + sqlfam "every member sees, edits, removes and attaches the family's kids…" (incl. photo upload / can-see) |
+| 254 | Each other's appointments in P1/H1 as role family: read-only, no candidate role for my family's open request | family + sqlfam "shows the other member's appointments…", "an open request of my family is mine to see, not to take"; e2e family (Anna's view) |
+| 255 | The client's family posts to the feed; fan-out to both parents and the provider | family + sqlfam feed part of "shows the other member's appointments…" |
+| 256 | Live refresh of every family member; S1 counters personal | sqlfam realtime topics; family myState planned/toAnswer |
+| 260 | Contract: 1–12 lines, offered services, 0–10 000/h to the cent, note ≤ 200, not within a family | family + sqlfam "proposes, the other side accepts…" (validation) |
+| 261 | Accept by the other side; withdraw / decline; newer proposal replaces the waiting one; accept replaces the active one; contract_* pushes | family + sqlfam "proposes, the other side accepts…"; push "tells the family and contract news…" |
+| 262 | New requests take the contract rate (series too); open requests repriced at take; C2 shows the contract rate | family + sqlfam "a contract sets the rate…", "an open request is repriced…"; e2e family (request-contract) |
+| 263 | End by either side; frozen prices kept; provider deleted / family gone → ended | family + sqlfam "a contract sets the rate…" (end), "a deleted provider's contracts end…" |
+| 264 | Family & contracts panel lists waiting, active, earlier | e2e family; browser check |
+| 270 | Rate and contract on every appointment; Summary on C3 once done | family + sqlfam "summarises a done appointment…"; e2e family (appt-cost) |
+| 271 | appt_summary once on done to the client, their family and the provider | family + sqlfam "summarises…"; push "sums up a done appointment…" |
+| 272 | Provider corrects the time within 24 h (15–1440, quarter hours); client's side told | family + sqlfam "summarises…" (set_actual rules) |
+| 273 | H1 shows the total | e2e family (history-cost) |
+| 280 | Weekly report: spent / earned / balance per person and service, rides, 52 weeks back | family + sqlfam "sums one week's spent and earned…"; e2e family |
+| 281 | Family scope with one line per member | family + sqlfam "sums one week's…" (family); e2e family (Anna) |
+| 282 | Monday 08:00 weekly_report once to everyone with something last week | family + sqlfam "tells everyone with something last week…"; push "sends the week's spent and earned…" |
+| 283 | Only own / family rows; the other side by nickname | family + sqlfam "…no user id" checks; report lines by nickname |
+| 284 | Retention unchanged | siosia_retention (invites, contracts after 12 months) |

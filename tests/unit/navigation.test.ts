@@ -51,6 +51,7 @@ const MY: MyState = {
   toAnswer: 0,
   openRequests: 0,
   unreadChats: 0,
+  familyPending: 0,
   planned: 0,
   nextPlanned: null
 };

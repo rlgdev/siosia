@@ -117,7 +117,15 @@ var TEXTS = {
     // 2.5 (FR-232, FR-241): a session update names the kid it is about (else the service); the
     // heading-home notice says how far away the client is.
     session_update: ["{sender}{about}", "{update}"],
-    client_coming: ["{client} is heading home", "About {minutes} min \u2014 around {eta}."]
+    client_coming: ["{client} is heading home", "About {minutes} min \u2014 around {eta}."],
+    family_invite: ["{sender} invites you to their family", "Share kids and appointments. Open Siosia to join."],
+    family_joined: ["{sender} joined your family", "You now see each other's kids and appointments."],
+    contract_proposed: ["{sender} proposes a contract", "Rates per hour: accept or decline in Siosia."],
+    contract_accepted: ["{sender} accepted the contract", "The rates apply to new requests."],
+    contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
+    contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
+    appt_summary: ["Summary: {service} {when}", "{duration} \xB7 {total}{corrected}"],
+    weekly_report: ["Your week in Siosia", "Last week: spent {spent} \xB7 earned {earned}."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -143,9 +151,31 @@ var TEXTS = {
     appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."],
     chat_message: ["{sender}", "{text}"],
     session_update: ["{sender}{about}", "{update}"],
-    client_coming: ["{client} wraca do domu", "Za oko\u0142o {minutes} min \u2014 na miejscu ok. {eta}."]
+    client_coming: ["{client} wraca do domu", "Za oko\u0142o {minutes} min \u2014 na miejscu ok. {eta}."],
+    family_invite: ["{sender} zaprasza Ci\u0119 do rodziny", "Wsp\xF3lne dzieci i wizyty. Otw\xF3rz Siosi\u0119, aby do\u0142\u0105czy\u0107."],
+    family_joined: ["{sender} do\u0142\u0105cza do Twojej rodziny", "Widzicie teraz nawzajem swoje dzieci i wizyty."],
+    contract_proposed: ["{sender} proponuje umow\u0119", "Stawki za godzin\u0119: zaakceptuj lub odrzu\u0107 w Siosi."],
+    contract_accepted: ["{sender} akceptuje umow\u0119", "Stawki obowi\u0105zuj\u0105 dla nowych pr\xF3\u015Bb."],
+    contract_declined: ["{sender} odrzuca umow\u0119", "Nic si\u0119 nie zmienia; mo\u017Cesz zaproponowa\u0107 inne stawki."],
+    contract_ended: ["{sender} ko\u0144czy umow\u0119", "Nowe pro\u015Bby zn\xF3w wed\u0142ug cennika."],
+    appt_summary: ["Podsumowanie: {service} {when}", "{duration} \xB7 {total}{corrected}"],
+    weekly_report: ["Tw\xF3j tydzie\u0144 w Siosi", "Ostatni tydzie\u0144: wydane {spent} \xB7 zarobione {earned}."]
   }
 };
+function moneyText(amount, currency, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  const n = Number(amount ?? 0);
+  const num = new Intl.NumberFormat(loc(l), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(Number.isFinite(n) ? n : 0);
+  return currency ? `${num} ${currency}` : num;
+}
+function durationText(minutes, lang) {
+  const l = lang === "pl" ? "pl" : "en";
+  const m = Math.max(0, Math.round(Number(minutes ?? 0)));
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  const hours = h ? l === "pl" ? `${h} godz.` : `${h} h` : "";
+  return [hours, rest || !h ? `${rest} min` : ""].filter(Boolean).join(" ");
+}
 var CHAT_PUSH_CHARS = 80;
 function kidsText(names, lang) {
   const l = lang === "pl" ? "pl" : "en";
@@ -181,6 +211,11 @@ function pushText(kind, params, lang, tz, id) {
     update: params.photo ? cut ? `${cut} \u{1F4F7}` : l === "pl" ? "\u{1F4F7} Zdj\u0119cie" : "\u{1F4F7} Photo" : cut,
     about: params.kid || params.service ? ` \xB7 ${params.kid || params.service}` : "",
     minutes: params.minutes === void 0 || params.minutes === null ? "" : String(params.minutes),
+    duration: durationText(params.minutes, l),
+    total: moneyText(params.total, params.currency, l),
+    corrected: params.corrected ? l === "pl" ? " (czas poprawiony)" : " (time corrected)" : "",
+    spent: moneyText(params.spent, params.currency, l),
+    earned: moneyText(params.earned, params.currency, l),
     eta: fmt(toMs(params.etaAt), l, tz, false),
     kids: kids ? WITH_KIDS[l](kids) : "",
     when: fmt(ms, l, tz, true),
@@ -209,7 +244,7 @@ function pushText(kind, params, lang, tz, id) {
   const fill = (s) => tidy(
     s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
   );
-  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : `${kind}:${id ?? ""}`;
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }
 
@@ -217,6 +252,9 @@ function pushText(kind, params, lang, tz, id) {
 var openUrl = (kind, params, appointmentId) => {
   if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
   if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
+  if (kind === "appt_summary") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=history";
+  if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
+  if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 };
 var MAX_ATTEMPTS = 5;

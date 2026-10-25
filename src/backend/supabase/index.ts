@@ -17,7 +17,12 @@ import {
   type ChatMessage,
   type ChatRoom,
   type ChatThread,
+  type ContractInput,
+  type ContractView,
   type DeploymentConfig,
+  type FamilyView,
+  type PublicProvider,
+  type WeeklyReport,
   type HistoryItem,
   type Kid,
   type KidInput,
@@ -70,7 +75,19 @@ const SIGNED_CACHE_MS = 50 * 60_000;
 
 // A database not upgraded to 2.1 / 2.3 yet (the migration is re-run on release) leaves out the
 // newer fields: no open requests, no paint, no kids or chat counts, no photo.
-const withOpen = (a: AppointmentView): AppointmentView => ({ ...a, open: a.open ?? false, kids: a.kids ?? [], kidCount: a.kidCount ?? 0, unread: a.unread ?? 0 });
+const withOpen = (a: AppointmentView): AppointmentView => ({
+  ...a,
+  open: a.open ?? false,
+  kids: a.kids ?? [],
+  kidCount: a.kidCount ?? 0,
+  unread: a.unread ?? 0,
+  // 2.6 fields (a server still on 2.5 sends none)
+  rate: a.rate ?? null,
+  contractId: a.contractId ?? null,
+  actualMin: a.actualMin ?? null,
+  cost: a.cost ?? null,
+  family: a.family ?? null
+});
 const withOpenCount = (s: MyState): MyState => ({ ...s, openRequests: s.openRequests ?? 0, unreadChats: s.unreadChats ?? 0 });
 const withPaint = (v: Vehicle): Vehicle => ({ ...v, paint: v.paint ?? null });
 const withPhoto = (p: Profile): Profile => ({ ...p, photo: p.photo ?? null });
@@ -464,8 +481,8 @@ export class SupabaseBackend implements Backend {
   async cancelAppointment(id: string, reason?: string | null, scope: "one" | "series" = "one") {
     await this.rpc("siosia_cancel_appointment", { p_id: id, p_reason: reason ?? null, p_scope: scope });
   }
-  getAppointment(id: string) {
-    return this.rpc<AppointmentView>("siosia_get_appointment", { p_id: id });
+  async getAppointment(id: string) {
+    return withOpen(await this.rpc<AppointmentView>("siosia_get_appointment", { p_id: id }));
   }
   setRideTemplate(seriesId: string, template: RideTemplateInput) {
     return this.rpc<AppointmentView>("siosia_set_ride_template", { p_series: seriesId, p_template: template });
@@ -477,8 +494,9 @@ export class SupabaseBackend implements Backend {
     const p = await this.rpc<Planned>("siosia_planned");
     return { ...p, appointments: p.appointments.map(withOpen), open: (p.open ?? []).map(withOpen) };
   }
-  timeline() {
-    return this.rpc<HistoryItem[]>("siosia_timeline");
+  async timeline() {
+    const items = await this.rpc<HistoryItem[]>("siosia_timeline");
+    return items.map((h) => (h.kind === "appointment" ? { ...h, appointment: withOpen(h.appointment) } : h));
   }
   async setOffers(ids: string[]) {
     return this.profile(await this.rpc<Profile>("siosia_set_offers", { p_ids: ids }));
@@ -569,6 +587,48 @@ export class SupabaseBackend implements Backend {
   }
   comingHome(appointmentId: string, minutes: number) {
     return this.rpc<AppointmentView>("siosia_coming_home", { p_appt: appointmentId, p_minutes: minutes });
+  }
+
+  // ---------- 2.6: family, contracts, cost, weekly reports ----------
+
+  family() {
+    return this.rpc<FamilyView>("siosia_family");
+  }
+  members() {
+    return this.rpc<PublicProvider[]>("siosia_members");
+  }
+  inviteToFamily(publicId: string) {
+    return this.rpc<FamilyView>("siosia_family_invite", { p_public: publicId });
+  }
+  answerInvite(id: string, decision: "join" | "decline") {
+    return this.rpc<FamilyView>("siosia_family_answer", { p_id: id, p_decision: decision });
+  }
+  withdrawInvite(id: string) {
+    return this.rpc<FamilyView>("siosia_family_withdraw", { p_id: id });
+  }
+  leaveFamily() {
+    return this.rpc<FamilyView>("siosia_family_leave");
+  }
+  contracts() {
+    return this.rpc<ContractView[]>("siosia_contracts");
+  }
+  proposeContract(input: ContractInput) {
+    return this.rpc<ContractView>("siosia_propose_contract", { p_to: input.to, p_as: input.as, p_rates: input.rates, p_note: input.note ?? "" });
+  }
+  answerContract(id: string, decision: "accept" | "decline") {
+    return this.rpc<ContractView>("siosia_answer_contract", { p_id: id, p_decision: decision });
+  }
+  async withdrawContract(id: string) {
+    await this.rpc("siosia_withdraw_contract", { p_id: id });
+  }
+  async endContract(id: string) {
+    await this.rpc("siosia_end_contract", { p_id: id });
+  }
+  async setActualTime(appointmentId: string, minutes: number) {
+    return withOpen(await this.rpc<AppointmentView>("siosia_set_actual", { p_id: appointmentId, p_minutes: minutes }));
+  }
+  report(week: string | null, scope: "me" | "family") {
+    return this.rpc<WeeklyReport>("siosia_report", { p_week: week, p_scope: scope });
   }
 
   async sendMessage(room: ChatRoom, text: string) {

@@ -224,6 +224,33 @@ works out the driving time to the place and tells the other person "about N min 
 Only the minutes are sent, never where you are. With location off, search for where you are or pick
 the minutes yourself. Repeating it updates the estimate.
 
+## Family, contracts and what it costs
+
+**Family.** ☰ Profile → **Family & contracts** → *Invite someone*: pick a person who already uses
+Siosia (your partner, say). They get a notification and a line on the start screen and tap *Join*.
+From then on you share the kids (either of you edits them and attaches them to a request) and you
+see each other's appointments in Planned and History, marked with whose they are ("Roman with
+Toria"). You can read and add to the session updates of each other's childcare, but cancelling,
+answering, rating and the chat stay with whoever made the appointment. Anyone may *Leave the family*;
+their own kids go with them. A family has at most 6 people.
+
+**Contracts.** In the same place, *Propose a contract*: the person who looks after your kids and a
+rate per hour for each service (childcare 40 PLN/h, say), or — if you offer services — the family
+you work for. It binds once the other side taps *Accept*. Every new request between your family and
+that person then takes the contract's rate ("Contract rate with Toria: 40.00 PLN/h" on the request
+form); requests already sent keep their price. *Propose new rates* replaces it once accepted; either
+side may *End contract*.
+
+**What it cost.** When an appointment is over, its page shows a **Summary** — the time, the rate and
+the total — and everyone in the family and the person who looked after the kids get a notification.
+Came back an hour late? The person who looked after them can *Correct the time* within 24 hours; the
+total follows the rate and you hear about it. Siosia never charges anything — settle between you.
+
+**Weekly report.** History → **Weekly report**: Monday to Sunday, what you spent (services as a
+client, rides as a passenger) and earned (services you gave, rides you drove), per person and
+service, with the balance; ‹ › steps through the last 52 weeks; in a family, *Family* sums all of
+you. Every Monday morning a notification brings last week's numbers.
+
 ## The round *i*
 
 Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
@@ -485,6 +512,33 @@ W drodze powrotnej dotknij **Wracam do domu** w terminie: Siosia bierze położe
 czas jazdy autem na miejsce i mówi drugiej osobie „około N min — około HH:MM”. Wysyłane są tylko
 minuty, nigdy Twoje położenie. Przy wyłączonej lokalizacji wyszukaj, gdzie jesteś, albo wybierz
 minuty. Powtórzenie aktualizuje szacunek.
+
+## Rodzina, umowy i ile to kosztuje
+
+**Rodzina.** ☰ Profil → **Rodzina i umowy** → *Zaproś kogoś*: wybierz osobę, która już używa Siosi
+(np. partnera). Dostaje powiadomienie i wiersz na ekranie startowym i dotyka *Dołącz*. Od tej chwili
+macie wspólne dzieci (każde z was je edytuje i dołącza do prośby) i widzicie nawzajem swoje terminy w
+Zaplanowanych i Historii, z oznaczeniem czyje są („Roman z: Toria”). Możecie czytać i uzupełniać
+relację z opieki drugiej osoby, ale odwołanie, odpowiedź, ocena i czat zostają przy tym, kto termin
+umówił. Każdy może *Opuścić rodzinę*; jego dzieci odchodzą z nim. Rodzina ma najwyżej 6 osób.
+
+**Umowy.** W tym samym miejscu *Zaproponuj umowę*: osoba, która zajmuje się Twoimi dziećmi, i stawka
+za godzinę dla każdej usługi (np. opieka 40 zł/godz.), albo — jeśli oferujesz usługi — rodzina, dla
+której pracujesz. Wiąże, gdy druga strona dotknie *Akceptuj*. Każda nowa prośba między Twoją rodziną a
+tą osobą ma wtedy stawkę z umowy („Stawka z umowy z: Toria — 40,00 zł/godz.” w formularzu); wysłane
+już prośby zachowują swoją cenę. *Zaproponuj nowe stawki* zastępuje umowę po akceptacji; każda strona
+może ją *Zakończyć*.
+
+**Ile to kosztowało.** Po zakończeniu termin pokazuje **Podsumowanie** — czas, stawkę i kwotę — a cała
+rodzina i osoba, która zajmowała się dziećmi, dostają powiadomienie. Wróciliście godzinę później?
+Opiekun(ka) może w ciągu 24 godzin *Poprawić czas*; kwota liczy się ze stawki, a Ty dostajesz
+informację. Siosia niczego nie pobiera — rozliczacie się sami.
+
+**Raport tygodniowy.** Historia → **Raport tygodniowy**: od poniedziałku do niedzieli, ile wydałeś
+(usługi jako klient, przejazdy jako pasażer) i zarobiłeś (usługi, które dałeś, kursy, które
+przejechałeś), na osobę i usługę, z bilansem; ‹ › przechodzi przez ostatnie 52 tygodnie; w rodzinie
+*Rodzina* sumuje was wszystkich. W każdy poniedziałek rano powiadomienie przynosi liczby z poprzedniego
+tygodnia.
 
 ## Okrągłe *i*
 

@@ -13,6 +13,7 @@
 // notice it leaves for both parties.
 
 import { Icon } from "../components/Icon";
+import { InfoTip } from "../components/InfoTip";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
@@ -33,7 +34,7 @@ import type { MessageKey } from "../i18n/en";
 import { navigationUrl } from "../services/device";
 import { getRoute } from "../services/routing";
 import { useApp, useListsKey, useStore } from "../state/store";
-import { EntryIcon, localText } from "./Catalog";
+import { durationText, EntryIcon, localText } from "./Catalog";
 
 export function AppointmentPanel() {
   const { t } = useI18n();
@@ -95,10 +96,12 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
   const lines = rideLines(a, lang, t, dep.booking.maxDays, now);
   const myLegs = new Set(a.rides.filter((r) => r.mine && r.status !== "failed" && r.status !== "done").map((r) => r.leg));
   const myTemplates = a.series?.rideTemplates.filter((x) => x.mine) ?? [];
-  const canCancel = (a.status === "accepted" || (a.status === "requested" && a.role === "client")) && now < a.startsAt;
-  const canAddRide = a.status === "accepted" && now < a.endsAt && !!a.place;
+  // 2.6 (FR-254): the family sees all of it but none of the actions.
+  const family = a.role === "family";
+  const canCancel = !family && (a.status === "accepted" || (a.status === "requested" && a.role === "client")) && now < a.startsAt;
+  const canAddRide = !family && a.status === "accepted" && now < a.endsAt && !!a.place;
   const rateUntil = (a.endedAt ?? a.endsAt) + 24 * 3600_000;
-  const canRate = a.status === "done" && a.myRating === null && now < rateUntil;
+  const canRate = !family && a.status === "done" && a.myRating === null && now < rateUntil;
   // 2.3: the kids — the client changes them until the end (FR-201), given they have kids to attach
   // (C20); the provider rates each once it is done, within 24 h (FR-203); a candidate learns only
   // the count (FR-202).
@@ -155,9 +158,20 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
           )}
         </p>
         {a.note && <p className="note" data-testid="appt-note">„{a.note}”</p>}
-        {a.price !== null && (
-          <p>
+        {a.price !== null && !a.cost && (
+          <p data-testid="appt-price">
             <Money amount={a.price} currency={a.currency} />
+            {a.rate !== null && (
+              <small className="muted">
+                {" · "}
+                {t("cost.planned", { rate: money(a.rate, a.currency, locale), source: t(a.contractId ? "cost.source.contract" : "cost.source.catalog") })}
+              </small>
+            )}
+          </p>
+        )}
+        {family && a.family && (
+          <p className="muted small" data-testid="appt-family">
+            {t("family.readOnly", { member: a.family.member })}
           </p>
         )}
         {a.status === "cancelled" && a.cancelledBy && (
@@ -187,6 +201,8 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
         </section>
       )}
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
+
+      {a.cost && <CostSection a={a} reload={reload} />}
 
       {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
       {a.role !== "candidate" && (a.updateCount > 0 || a.feedOpen) && <SessionFeedSection a={a} />}
@@ -294,6 +310,107 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
         </section>
       )}
     </div>
+  );
+}
+
+const money = (amount: number, currency: string, locale: string) => {
+  try {
+    return new Intl.NumberFormat(locale, { style: "currency", currency, minimumFractionDigits: 2 }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
+};
+
+/**
+ * 2.6 (FR-270, FR-272): the Summary of a done appointment — the time counted, the rate and where it
+ * came from, the total — and, for the provider within 24 h after the end, Correct the time.
+ */
+function CostSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
+  const { t, locale } = useI18n();
+  const store = useStore();
+  const [busy, run, error] = useBusy();
+  const [editing, setEditing] = useState(false);
+  const cost = a.cost!;
+  const [minutes, setMinutes] = useState(cost.minutes);
+  const canCorrect = a.role === "provider" && store.serverNow() < (a.endedAt ?? a.endsAt) + 24 * 3600_000;
+  const choices: number[] = [];
+  for (let m = Math.max(15, a.durationMin - 180); m <= Math.min(1440, a.durationMin + 360); m += 15) choices.push(m);
+  return (
+    <section className="card stack" data-testid="appt-cost">
+      <strong>{t("cost.title")}</strong>
+      <div className="kv">
+        <span>{t("cost.time")}</span>
+        <span data-testid="cost-time">{durationText(cost.minutes, t)}</span>
+      </div>
+      {cost.corrected && <small className="muted" data-testid="cost-corrected">{t("cost.corrected", { time: durationText(a.durationMin, t) })}</small>}
+      {cost.rate !== null && (
+        <div className="kv">
+          <span>{t("cost.rate")}</span>
+          <span data-testid="cost-rate">
+            {t("cost.perHour", { rate: money(cost.rate, cost.currency, locale) })} · {t(`cost.source.${cost.source}` as MessageKey)}
+          </span>
+        </div>
+      )}
+      <div className="kv big">
+        <span>{t("cost.total")}</span>
+        {cost.total === null ? (
+          <span className="muted" data-testid="cost-total">
+            {t("cost.none")}
+          </span>
+        ) : (
+          <strong className="cost-total" data-testid="cost-total">
+            <Money amount={cost.total} currency={cost.currency} />
+          </strong>
+        )}
+      </div>
+      {canCorrect &&
+        (editing ? (
+          <div className="stack">
+            <label className="field">
+              <span className="with-info">
+                {t("cost.correct")}
+                <InfoTip text={t("cost.correctHint")} testId="cost-correct" />
+              </span>
+              <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} data-testid="cost-minutes">
+                {choices.map((m) => (
+                  <option key={m} value={m}>
+                    {durationText(m, t)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="row">
+              <button
+                type="button"
+                className="btn btn-primary grow"
+                disabled={busy || minutes === cost.minutes}
+                onClick={() =>
+                  void run(async () => {
+                    await store.api.setActualTime(a.id, minutes);
+                    setEditing(false);
+                    reload();
+                  })
+                }
+                data-testid="cost-save"
+              >
+                {t("cost.correctSave")}
+              </button>
+              <button type="button" className="btn btn-secondary grow" onClick={() => setEditing(false)}>
+                {t("common.cancel")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="btn btn-link btn-small" onClick={() => setEditing(true)} data-testid="cost-correct">
+            {t("cost.correct")}
+          </button>
+        ))}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 

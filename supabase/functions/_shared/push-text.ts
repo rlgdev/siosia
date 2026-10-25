@@ -33,7 +33,16 @@ export type PushKind =
   | "chat_message"
   // 2.5: a session update (tag per appointment; opens C3) and the client heading home
   | "session_update"
-  | "client_coming";
+  | "client_coming"
+  // 2.6: the family, contracts (open the Family panel), the cost summary (C3), the weekly report
+  | "family_invite"
+  | "family_joined"
+  | "contract_proposed"
+  | "contract_accepted"
+  | "contract_declined"
+  | "contract_ended"
+  | "appt_summary"
+  | "weekly_report";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -81,9 +90,17 @@ export interface PushParams {
   kid?: string | null;
   photo?: boolean;
   updateId?: string;
-  /** 2.5: heading home — the minutes away and the expected arrival. */
+  /** 2.5: heading home — the minutes away and the expected arrival. 2.6: the time a summary counts. */
   minutes?: number;
   etaAt?: Moment;
+  /** 2.6 (FR-271, FR-272): what an appointment cost, in this currency; the provider corrected the time. */
+  total?: number;
+  currency?: string;
+  corrected?: boolean;
+  /** 2.6 (FR-282): the weekly report — spent, earned and its Monday ("YYYY-MM-DD"). */
+  spent?: number;
+  earned?: number;
+  week?: string;
   rides?: RideLine[];
   rule?: "weekly" | "biweekly";
   count?: number;
@@ -248,7 +265,15 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     // 2.5 (FR-232, FR-241): a session update names the kid it is about (else the service); the
     // heading-home notice says how far away the client is.
     session_update: ["{sender}{about}", "{update}"],
-    client_coming: ["{client} is heading home", "About {minutes} min — around {eta}."]
+    client_coming: ["{client} is heading home", "About {minutes} min — around {eta}."],
+    family_invite: ["{sender} invites you to their family", "Share kids and appointments. Open Siosia to join."],
+    family_joined: ["{sender} joined your family", "You now see each other's kids and appointments."],
+    contract_proposed: ["{sender} proposes a contract", "Rates per hour: accept or decline in Siosia."],
+    contract_accepted: ["{sender} accepted the contract", "The rates apply to new requests."],
+    contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
+    contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
+    appt_summary: ["Summary: {service} {when}", "{duration} · {total}{corrected}"],
+    weekly_report: ["Your week in Siosia", "Last week: spent {spent} · earned {earned}."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -274,9 +299,35 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszedł do skutku."],
     chat_message: ["{sender}", "{text}"],
     session_update: ["{sender}{about}", "{update}"],
-    client_coming: ["{client} wraca do domu", "Za około {minutes} min — na miejscu ok. {eta}."]
+    client_coming: ["{client} wraca do domu", "Za około {minutes} min — na miejscu ok. {eta}."],
+    family_invite: ["{sender} zaprasza Cię do rodziny", "Wspólne dzieci i wizyty. Otwórz Siosię, aby dołączyć."],
+    family_joined: ["{sender} dołącza do Twojej rodziny", "Widzicie teraz nawzajem swoje dzieci i wizyty."],
+    contract_proposed: ["{sender} proponuje umowę", "Stawki za godzinę: zaakceptuj lub odrzuć w Siosi."],
+    contract_accepted: ["{sender} akceptuje umowę", "Stawki obowiązują dla nowych próśb."],
+    contract_declined: ["{sender} odrzuca umowę", "Nic się nie zmienia; możesz zaproponować inne stawki."],
+    contract_ended: ["{sender} kończy umowę", "Nowe prośby znów według cennika."],
+    appt_summary: ["Podsumowanie: {service} {when}", "{duration} · {total}{corrected}"],
+    weekly_report: ["Twój tydzień w Siosi", "Ostatni tydzień: wydane {spent} · zarobione {earned}."]
   }
 };
+
+/** 2.6: money as the app shows it — "120.00 PLN" / "120,00 PLN" (two decimals, the locale's separator). */
+export function moneyText(amount: number | null | undefined, currency: string | null | undefined, lang: string): string {
+  const l: Lang = lang === "pl" ? "pl" : "en";
+  const n = Number(amount ?? 0);
+  const num = new Intl.NumberFormat(loc(l), { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }).format(Number.isFinite(n) ? n : 0);
+  return currency ? `${num} ${currency}` : num;
+}
+
+/** 2.6: a length of time — "3 h 30 min" / "3 godz. 30 min", "45 min", "2 h". */
+export function durationText(minutes: number | null | undefined, lang: string): string {
+  const l: Lang = lang === "pl" ? "pl" : "en";
+  const m = Math.max(0, Math.round(Number(minutes ?? 0)));
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  const hours = h ? (l === "pl" ? `${h} godz.` : `${h} h`) : "";
+  return [hours, rest || !h ? `${rest} min` : ""].filter(Boolean).join(" ");
+}
 
 /** A chat push carries at most this many characters of the message, then "…". The backends queue
  *  the full text (up to 500 characters, C21): this is the one place that cuts. */
@@ -335,6 +386,11 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
     update: params.photo ? (cut ? `${cut} 📷` : l === "pl" ? "📷 Zdjęcie" : "📷 Photo") : cut,
     about: params.kid || params.service ? ` · ${params.kid || params.service}` : "",
     minutes: params.minutes === undefined || params.minutes === null ? "" : String(params.minutes),
+    duration: durationText(params.minutes, l),
+    total: moneyText(params.total, params.currency, l),
+    corrected: params.corrected ? (l === "pl" ? " (czas poprawiony)" : " (time corrected)") : "",
+    spent: moneyText(params.spent, params.currency, l),
+    earned: moneyText(params.earned, params.currency, l),
     eta: fmt(toMs(params.etaAt), l, tz, false),
     kids: kids ? WITH_KIDS[l](kids) : "",
     when: fmt(ms, l, tz, true),
@@ -386,6 +442,20 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
         .trim()
     );
   const tag =
-    kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : `${kind}:${id ?? ""}`;
+    kind === "chat_message"
+      ? `chat:${params.room ?? id ?? ""}`
+      : kind === "session_update"
+        ? `update:${id ?? ""}`
+        : kind === "client_coming"
+          ? `coming:${id ?? ""}`
+          : kind === "appt_summary"
+            ? `summary:${id ?? ""}`
+            : kind === "weekly_report"
+              ? `report:${params.week ?? ""}`
+              : kind.startsWith("family_")
+                ? "family"
+                : kind.startsWith("contract_")
+                  ? "contract"
+                  : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }

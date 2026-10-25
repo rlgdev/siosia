@@ -3,7 +3,8 @@
 // there from her place (on a series: a ride template for every date). 2.1: she also takes an open
 // request for those services ("I can do it"), but only after 15 s, so a human in another tab sees
 // it first and can take it. 2.3: she answers a chat once per room, a few seconds after the first
-// message, and attaches no kids. She uses the very same Backend interface as a human provider, so
+// message, and attaches no kids. 2.6: she accepts a contract proposed to her after THINK_MS and
+// proposes none herself. She uses the very same Backend interface as a human provider, so
 // one tab can play the whole loop; a second tab can still play the provider (the client then picks
 // who to ask, or asks anyone).
 
@@ -93,6 +94,17 @@ export class RobotSiosia {
       for (const a of planned.open) {
         if (!a.open || !OFFERS.includes(a.serviceId) || this.passed.has(a.id)) continue;
         if (due(a, TAKE_MS)) await this.take(a);
+      }
+      // 2.6 (FR-261): a contract proposed to her is accepted after a moment.
+      for (const c of await this.api.contracts()) {
+        if (!c.canAnswer) continue;
+        listed.add(c.id);
+        const first = this.seen.get(c.id) ?? now;
+        this.seen.set(c.id, first);
+        if (now - first >= THINK_MS) {
+          this.seen.delete(c.id);
+          await this.api.answerContract(c.id, "accept").catch(() => {});
+        }
       }
       // Requests that left her lists (taken by someone else, withdrawn) are forgotten.
       for (const id of this.seen.keys()) if (!listed.has(id)) this.seen.delete(id);

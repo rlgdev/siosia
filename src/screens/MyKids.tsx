@@ -94,7 +94,7 @@ export function MyKids() {
               }}
               onCancel={() => setEditing(null)}
             />
-          ) : kids.length < MAX_KIDS ? (
+          ) : kids.filter((k) => k.mine !== false).length < MAX_KIDS ? (
             <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setEditing("new")} data-testid="kid-add">
               {t("kids.add")}
             </button>
@@ -137,6 +137,12 @@ function KidCard({ kid, onEdit, onRemove, reload }: { kid: Kid; onEdit: () => vo
         <div className="grow">
           <strong data-testid="kid-card-name">{kid.name}</strong>
           {age !== null && <span className="muted small"> · {t("kids.age", { n: age })}</span>}
+          {kid.mine === false && (
+            <span className="muted small" data-testid="kid-owner">
+              {" "}
+              · {t("kids.addedBy", { name: kid.ownerNickname })}
+            </span>
+          )}
           <KidRating kid={kid} />
           {kid.note && <p className="note small">„{kid.note}”</p>}
         </div>

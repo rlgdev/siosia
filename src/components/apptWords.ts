@@ -20,6 +20,8 @@ export function statusChip(a: AppointmentView, lang: string, t: T): { text: stri
   if (a.status === "requested") {
     if (a.role === "candidate") return { text: t("appt.status.open"), kind: "info" };
     if (isOpen(a)) return { text: apptStatusText("open", null, lang) || t("appt.waitingAnyone"), kind: "info" };
+    // 2.6 (FR-254): the family waits with the member — nobody of them answers here.
+    if (a.role === "family") return { text: apptStatusText("waiting", a.provider?.nickname ?? "", lang), kind: "info" };
     return a.role === "client"
       ? { text: apptStatusText("waiting", a.provider?.nickname ?? "", lang), kind: "info" }
       : { text: apptStatusText("answer", a.provider?.nickname ?? "", lang), kind: "warn" };
@@ -52,12 +54,17 @@ export function seriesMarker(a: AppointmentView, t: T): string | null {
   return t("appt.seriesMarker", { rule: t(a.series.rule === "weekly" ? "appt.weekly" : "appt.biweekly"), seq: a.series.seq, count: a.series.count });
 }
 
-/** The other party of an appointment for the viewer; null while the client's request is open. */
-export const otherOf = (a: AppointmentView): PublicProvider | null => (a.role === "client" ? a.provider : a.client);
+/** The other party of an appointment for the viewer (2.6: for the family, the member's other party); null while the client's request is open. */
+export const otherOf = (a: AppointmentView): PublicProvider | null => ((a.family?.side ?? a.role) === "client" ? a.provider : a.client);
 
 /** "With Siosia" / "For Ewa" / "Open to anyone" (the client's open request) / "Ewa asks" (a candidate). */
 export function partyText(a: AppointmentView, t: T): string {
   if (a.role === "candidate") return t("open.askedBy", { name: a.client.nickname });
+  // 2.6 (FR-254): "Roman with Toria" / "Anna for Ewa" — whose appointment it is in the family.
+  if (a.role === "family" && a.family) {
+    if (a.family.side === "provider") return t("family.apptFor", { member: a.family.member, name: a.client.nickname });
+    return a.provider ? t("family.apptWith", { member: a.family.member, name: a.provider.nickname }) : t("family.apptOpen", { member: a.family.member });
+  }
   if (a.role === "provider") return t("appt.client", { name: a.client.nickname });
   return a.provider ? t("appt.provider", { name: a.provider.nickname }) : t("appt.openToAnyone");
 }
@@ -90,4 +97,4 @@ export function kidsLine(a: AppointmentView, lang: string, t: T): string | null 
 
 /** A room exists once the appointment was accepted (FR-220); it stays readable after the end. */
 export const apptRoom = (a: AppointmentView): `appt:${string}` | null =>
-  a.status === "accepted" || a.status === "done" || (a.status === "cancelled" && a.answeredAt !== null) ? `appt:${a.id}` : null;
+  a.role === "family" ? null : a.status === "accepted" || a.status === "done" || (a.status === "cancelled" && a.answeredAt !== null) ? `appt:${a.id}` : null;

@@ -766,3 +766,39 @@ describe("2.5 session update and heading-home texts (FR-232, FR-241, V55, V56)",
     expect(pushText("client_coming", { minutes: 0, etaAt: eta }, "en", TZ, "a1").title).toBe("Someone is heading home");
   });
 });
+
+describe("2.6 family, contract, summary and weekly report texts (FR-250–282)", () => {
+  const TZ = "Europe/Warsaw";
+  it("tells the family and contract news by name, opening the Family panel", () => {
+    expect(pushText("family_invite", { sender: "Roman" }, "en", TZ)).toEqual({
+      title: "Roman invites you to their family",
+      body: "Share kids and appointments. Open Siosia to join.",
+      tag: "family"
+    });
+    expect(pushText("family_joined", { sender: "Anna" }, "pl", TZ).title).toBe("Anna dołącza do Twojej rodziny");
+    expect(pushText("contract_proposed", { sender: "Toria" }, "en", TZ)).toMatchObject({ title: "Toria proposes a contract", tag: "contract" });
+    expect(pushText("contract_accepted", { sender: "Toria" }, "pl", TZ).title).toBe("Toria akceptuje umowę");
+    expect(pushText("contract_declined", { sender: "Toria" }, "en", TZ).body).toBe("Nothing changes; you can propose other rates.");
+    expect(pushText("contract_ended", {}, "en", TZ).title).toBe("Someone ended the contract");
+    for (const k of ["family_invite", "family_joined", "contract_proposed", "contract_accepted", "contract_declined", "contract_ended"] as const) expect(openUrl(k)).toBe("./?open=family");
+  });
+
+  it("sums up a done appointment — time and total in the locale's money — tagged per appointment, opening C3", () => {
+    const p = { serviceId: "childcare", service: "Childcare", at: AT, minutes: 210, total: 140, currency: "PLN", provider: "Toria", client: "Roman" };
+    expect(pushText("appt_summary", p, "en", TZ, "a1")).toEqual({ title: "Summary: Childcare Mon 12 Oct, 14:30", body: "3 h 30 min · 140.00 PLN", tag: "summary:a1" });
+    expect(pushText("appt_summary", { ...p, corrected: true, minutes: 240, total: 160, service: "Opieka nad dziećmi" }, "pl", TZ, "a1").body).toBe("4 godz. · 160,00 PLN (czas poprawiony)");
+    expect(openUrl("appt_summary", {}, "a1")).toBe("./?appointment=a1");
+  });
+
+  it("sends the week's spent and earned, tagged and opened by its Monday", () => {
+    const p = { spent: 240, earned: 90.5, currency: "PLN", week: "2026-10-19" };
+    expect(pushText("weekly_report", p, "en", TZ)).toEqual({ title: "Your week in Siosia", body: "Last week: spent 240.00 PLN · earned 90.50 PLN.", tag: "report:2026-10-19" });
+    expect(pushText("weekly_report", p, "pl", TZ).body).toBe("Ostatni tydzień: wydane 240,00 PLN · zarobione 90,50 PLN.");
+    expect(openUrl("weekly_report", p)).toBe("./?open=report&week=2026-10-19");
+  });
+
+  it("ships the 2.6 kinds and their URLs in the push-dispatch bundle (B8)", () => {
+    const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
+    for (const s of ["family_invite", "contract_proposed", "appt_summary", "weekly_report", "./?open=family", "./?open=report"]) expect(bundle).toContain(s);
+  });
+});

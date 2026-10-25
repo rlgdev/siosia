@@ -62,6 +62,10 @@ export const openUrl = (kind: PushKind, params?: PushParams, appointmentId?: str
   if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
   // 2.5 (FR-232, FR-241): the feed and the notice live on C3 of that appointment.
   if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
+  // 2.6: the summary opens C3; the family and contract news the Family panel; the report its week.
+  if (kind === "appt_summary") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=history";
+  if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
+  if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 };
 

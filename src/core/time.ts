@@ -33,7 +33,30 @@ export function localDate(ms: number, tz: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(ms);
 }
 
-const floor5 = (ms: number) => Math.floor(ms / 300_000) * 300_000;
+/** "YYYY-MM-DD" plus `days` (calendar arithmetic, no time zone involved). */
+export function addDays(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/** The instant of local midnight starting `date` in `tz` (twin of `date::timestamp at time zone tz`). */
+export function localMidnight(date: string, tz: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  const target = Date.UTC(y, m - 1, d);
+  let guess = target - tzOffsetMs(target, tz);
+  for (let i = 0; i < 2; i++) guess = target - tzOffsetMs(guess, tz);
+  return guess;
+}
+
+/** 2.6 (V64): the Monday of the local week `ms` falls in, "YYYY-MM-DD" (twin of date_trunc('week', …)). */
+export function weekOf(ms: number, tz: string): string {
+  const date = localDate(ms, tz);
+  const [y, m, d] = date.split("-").map(Number);
+  const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; // Monday = 0
+  return addDays(date, -dow);
+}
+
+const floor5 =(ms: number) => Math.floor(ms / 300_000) * 300_000;
 
 /** Pickup of a ride to an appointment (§7 rule 3): there = start − route − 10 min, floored to 5 min; back = end + 5 min. */
 export function derivedPickup(a: { startsAt: number; endsAt: number }, leg: "there" | "back", routeMin: number): number {

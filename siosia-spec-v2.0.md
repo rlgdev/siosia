@@ -809,3 +809,107 @@ to the two parties of the appointment.
 **Demo**: the robot Siosia (as provider) answers the parent's first note in a feed once ("All good
 here 🙂 — playing outside" / Polish) a few seconds later, and a heading-home notice once ("Great,
 see you soon 🙂" / Polish); she posts no photos.
+
+## Amendment 2.6 (2026-10-25): family, contracts, cost summaries, weekly reports
+
+Operator request of 2026-10-25. Two people who look after the same kids (a couple) use Siosia as one
+*family*: they share their kids and see each other's appointments. A family and a provider may
+agree on *contract rates* per service (e.g. childcare 40 PLN an hour); every finished appointment
+then shows what it cost, and every Monday each person gets a *weekly report* of what they spent and
+earned. Prices stay informational — Siosia never charges anything (§4).
+
+**Family (FR-250–256)**
+
+- **FR-250**: A member MAY invite another member who already uses Siosia to their family (S2 →
+  *Family & contracts* → *Invite*), picking the person from the list of members (nickname, photo
+  per FR-211). Inviting without a family creates one with the inviter. A family has at most 6
+  members; a member belongs to at most one family. An invitation waits 7 days, then lapses; the
+  inviter MAY withdraw it. The invitee is notified (`family_invite`, tap → the Family panel) and
+  answers *Join* / *Decline*; S1 shows "Family invitation" while one waits.
+- **FR-251**: Joining is refused (`in_family`) while the invitee is in a family with someone else;
+  a family of one person only (made for a contract, FR-260) is merged into the new family: its
+  contracts move along unless the new family already has a contract with that provider (then the
+  moving one ends, FR-263). The other members are notified (`family_joined`).
+- **FR-252**: Any member MAY *leave* their family at any time; the family and its contracts stay
+  with whoever is left; a family nobody is left in is deleted and its contracts end. Nobody removes
+  anyone else (a member leaves themself).
+- **FR-253**: *Shared kids*: every member of a family sees, edits (name, year, note, photo),
+  removes and attaches to their own requests (C2, C3) every kid of the family — the kids of all its
+  members — and reads every rating they got (FR-203). Each kid keeps its owner (the member who added
+  it); leaving the family takes one's own kids along. At most 8 kids per owner (FR-200).
+- **FR-254**: *Shared appointments*: every member of a family sees the appointments of the other
+  members — as client and as provider — in P1 Planned and H1 History, marked with the member's
+  name ("Anna's"), and opens them on C3 with role `family`: what that member sees (kids, the ride
+  lines as a non-passenger (FR-114), the session feed, the heading-home notice, the cost summary)
+  but none of the actions — answering, cancelling, attaching kids or rides, rating and the chat stay
+  with the two parties. An open request a family member made shows as theirs (no candidate role).
+- **FR-255**: On an appointment whose *client* is in the family, the other family members MAY
+  post to the session feed (FR-230 rules, the parent's side); a provider's update reaches the
+  client and every family member (`session_update`, FR-232, each recipient's own presence and
+  driving check), a family member's reaches the provider and the client.
+- **FR-256**: Every change of an appointment, a kid, the family or a contract refreshes every
+  family member's screens live (`user:<uid>` changed). S1 counters (to answer, planned, next)
+  stay personal.
+
+**Contracts (FR-260–264)**
+
+- **FR-260**: A *contract* binds a family (the client side) and a provider (one member) on
+  per-hour *rates* per service: 1–12 lines {catalog entry of kind time the provider offers, rate
+  per hour 0–10 000 in the deployment currency, two decimals} and an optional note (≤ 200).
+  Either side MAY propose: a family member to a provider (one of the catalog's providers), or a
+  provider to a member (who stands for their family; a member without a family gets a family of
+  one). Nobody contracts with their own family (`forbidden`).
+- **FR-261**: A proposal binds only once the other side *accepts* it — the provider, or any member
+  of the family; the proposing side MAY withdraw it while it waits; the other side MAY decline.
+  At most one active and one waiting contract per family and provider; a newer proposal replaces a
+  waiting one (withdrawn). Accepting while a contract is active *replaces* it (version + 1); the
+  replaced one stays readable. Notifications: `contract_proposed` to the other side (every family
+  member, or the provider), `contract_accepted` / `contract_declined` to the proposing side,
+  `contract_ended` to the other side; tap → the Family panel.
+- **FR-262**: While a contract is active, every new request from a member of that family to that
+  provider for a service on the contract takes the contract's rate: price = rate × duration (to
+  the cent), frozen on the appointment with the rate and the contract (V3); a series takes it once
+  for all its dates. An open request takes the catalog price; when a provider with a contract takes
+  it (FR-163) it is repriced at the contract rate. C2 shows "Contract rate: 40.00 PLN/h" in place
+  of the catalog price.
+- **FR-263**: Either side MAY *end* an active contract at any time; appointments already requested
+  keep their frozen price. A provider who deletes their profile, or a family left by everyone
+  (FR-252), ends its contracts.
+- **FR-264**: S2 → *Family & contracts* lists the contracts of my family and the ones I hold as a
+  provider: waiting (Accept / Decline, or Withdraw), active (rates, since, End), ended (last 10).
+
+**Cost summary (FR-270–273)**
+
+- **FR-270**: Every appointment carries its rate (per hour — the contract's, or the catalog's
+  perHour; null for a fixed price) and its contract (if any). Once `done`, C3 shows a *Summary*:
+  the time (the booked duration, or the provider's correction), the rate, the total and where the
+  price came from ("contract" / "price list"); without a price: the time and "no price agreed".
+- **FR-271**: When an appointment becomes `done` with a price, the client, the client's family
+  members and the provider are notified once (`appt_summary`: "{service}: {time} · {total}"; tag
+  `summary:<appt>`, tap → C3).
+- **FR-272**: Within 24 h after the end the provider MAY *correct the time* (15–1440 minutes, on
+  the quarter hour) — e.g. the parents came back an hour late. With a rate the total becomes rate ×
+  time; a fixed price stays. The client side is notified again (`appt_summary`, "corrected"); C3
+  and H1 say "time corrected".
+- **FR-273**: H1 shows the total on every done appointment that has one.
+
+**Weekly reports (FR-280–284)**
+
+- **FR-280**: A *weekly report* (H1 → *Weekly report*; `?open=report`) shows one week, Monday to
+  Sunday in the deployment's timezone, any of the last 52: **Spent** — services as a client (per
+  provider and service: count, time, total) and rides as a passenger (count, total); **Earned** —
+  services as a provider (per client and service) and rides as a driver; the **net**. Done
+  appointments count in the week they started, completed rides in the week they ended; an
+  appointment without a price counts its time with 0.
+- **FR-281**: A member of a family MAY switch the report to *Family*: the same sums over all its
+  current members, with one line per member (spent, earned).
+- **FR-282**: Every Monday from 08:00 (deployment timezone) each member who had anything in the
+  previous week gets one `weekly_report` notification ("Last week: spent 240.00 PLN · earned 90.00
+  PLN"; tag `report:<week>`; tap → the report of that week). Sent once per member per week.
+- **FR-283**: The report reads only rows the member may see (their own, their family's); the
+  other side appears by nickname only.
+- **FR-284**: Retention unchanged: reports are computed from appointments and rides, which go
+  after 12 months.
+
+**Demo**: the robot Siosia accepts a contract proposal a few seconds after it is sent and proposes
+nothing herself; families form only between the demo's people the user adds.

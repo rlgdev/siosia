@@ -106,7 +106,13 @@ export interface PublicProvider extends PublicParty {
 
 export interface CatalogItem extends CatalogEntry {
   /** Who offers it (not the viewer); empty for the ride entry. */
-  providers: PublicProvider[];
+  providers: CatalogProvider[];
+}
+
+/** 2.6 (FR-262): a provider in the catalog, with the viewer's family's contract rate for this entry. */
+export interface CatalogProvider extends PublicProvider {
+  /** Per hour, from an active contract between the viewer's family and this provider; null = none. */
+  contractRate?: number | null;
 }
 
 export interface AppointmentSettings {
@@ -119,8 +125,9 @@ export interface AppointmentSettings {
 export type AppointmentStatus = "requested" | "accepted" | "declined" | "cancelled" | "expired" | "done";
 export type Leg = "there" | "back";
 export type PartyRole = "client" | "provider";
-/** 2.1: the viewer's side of an appointment; "candidate" = a member who could take an open request. */
-export type ViewerRole = PartyRole | "candidate";
+/** 2.1: the viewer's side of an appointment; "candidate" = a member who could take an open request.
+ *  2.6 (FR-254): "family" = a member of the family of one of the parties (read-only). */
+export type ViewerRole = PartyRole | "candidate" | "family";
 /** An attached ride as the appointment sees it (§7 rule 7). */
 export type AttachedStatus = "pending" | "confirmed" | "done" | "failed";
 
@@ -229,6 +236,123 @@ export interface AppointmentView {
   feedOpen: boolean;
   /** 2.5 (FR-240–241): the client said they are heading home — when, and when they expect to be there. */
   coming: { at: number; etaAt: number } | null;
+  /** 2.6 (FR-270): the rate per hour the price came from (contract or price list); null = fixed or none. */
+  rate: number | null;
+  /** 2.6 (FR-262): the contract that set the price, if any. */
+  contractId: string | null;
+  /** 2.6 (FR-272): the provider's correction of the time, in minutes; null = as booked. */
+  actualMin: number | null;
+  /** 2.6 (FR-270): what it cost — done appointments only (parties and family). */
+  cost: CostSummary | null;
+  /** 2.6 (FR-254): role "family" — whose appointment this is (that member's side and nickname). */
+  family: { side: PartyRole; member: string } | null;
+}
+
+/** 2.6 (FR-270): the summary of a done appointment. */
+export interface CostSummary {
+  /** The time counted: the provider's correction, else the booked duration. */
+  minutes: number;
+  rate: number | null;
+  /** null = no price agreed. */
+  total: number | null;
+  currency: string;
+  source: "contract" | "catalog" | "fixed" | "none";
+  corrected: boolean;
+}
+
+// ---------- 2.6: family, contracts, weekly reports ----------
+
+export interface FamilyMember extends PublicProvider {
+  me: boolean;
+  joinedAt: number;
+}
+
+export interface FamilyInvite {
+  id: string;
+  from: PublicProvider;
+  to: PublicProvider;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/** My family (FR-250–252): id null = none yet; invites I (or my family) sent and those waiting for me. */
+export interface FamilyView {
+  id: string | null;
+  members: FamilyMember[];
+  invites: FamilyInvite[];
+  incoming: FamilyInvite[];
+}
+
+export interface ContractRate {
+  serviceId: string;
+  perHour: number;
+}
+
+export type ContractStatus = "proposed" | "active" | "declined" | "withdrawn" | "ended" | "replaced";
+
+/** A contract as one of its sides sees it (FR-260–264). */
+export interface ContractView {
+  id: string;
+  version: number;
+  status: ContractStatus;
+  /** The viewer's side. */
+  side: "family" | "provider";
+  provider: PublicProvider;
+  /** The family's members by nickname. */
+  family: string[];
+  /** Whom new rates would be proposed to: the provider, or (for the provider) the family's first member; null = nobody left. */
+  to: string | null;
+  rates: ContractRate[];
+  note: string;
+  currency: string;
+  /** Proposed by the viewer's side. */
+  proposedByMe: boolean;
+  /** Waiting for the viewer's side to accept or decline. */
+  canAnswer: boolean;
+  createdAt: number;
+  answeredAt: number | null;
+  endedAt: number | null;
+}
+
+export interface ContractInput {
+  /** The other side: a provider (as "family") or a member I serve (as "provider"), by public id. */
+  to: string;
+  as: "family" | "provider";
+  rates: ContractRate[];
+  note?: string;
+}
+
+/** One line of a weekly report: the other side, a service, how many, how long, how much. */
+export interface ReportLine {
+  who: string;
+  serviceId: string;
+  count: number;
+  minutes: number;
+  total: number;
+}
+
+export interface ReportSide {
+  total: number;
+  services: ReportLine[];
+  servicesTotal: number;
+  rides: { count: number; total: number };
+}
+
+/** 2.6 (FR-280–281): one week, Monday to Sunday in the deployment's timezone. */
+export interface WeeklyReport {
+  /** The Monday, "YYYY-MM-DD". */
+  week: string;
+  weekStart: number;
+  weekEnd: number;
+  scope: "me" | "family";
+  /** The viewer is in a family with someone else (the Family switch shows). */
+  hasFamily: boolean;
+  currency: string;
+  spent: ReportSide;
+  earned: ReportSide;
+  net: number;
+  /** Family scope: one line per current member. */
+  members: { nickname: string; spent: number; earned: number }[] | null;
 }
 
 export interface RepeatInput {
@@ -381,6 +505,9 @@ export interface Kid {
   rating: RatingSummary;
   /** Every rating this kid got, newest first (owner only). */
   ratings: KidRatingView[];
+  /** 2.6 (FR-253): who added the kid (a family's kids are shared), and whether that is me. */
+  ownerNickname: string;
+  mine: boolean;
 }
 
 export interface KidInput {
@@ -567,6 +694,8 @@ export interface MyState {
   openRequests: number;
   /** 2.3: unread chat messages across my rooms. */
   unreadChats: number;
+  /** 2.6: family invitations to me and contract proposals waiting for my side's answer. */
+  familyPending: number;
   /** Upcoming items in both roles. */
   planned: number;
   nextPlanned: NextPlanned | null;
@@ -673,7 +802,10 @@ export type ServerErrorCode =
   | "not_accepted"
   | "bad_leg"
   | "ride_exists"
-  | "bad_repeat";
+  | "bad_repeat"
+  // 2.6
+  | "in_family"
+  | "family_full";
 
 export class ServerError extends Error {
   readonly code: ServerErrorCode;

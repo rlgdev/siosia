@@ -7,6 +7,7 @@ import type {
   BookingInput,
   ChatMessage,
   ChatRoom,
+  ContractInput,
   DeploymentConfig,
   KidInput,
   Leg,
@@ -296,6 +297,48 @@ export class MockBackend implements Backend {
   }
   comingHome(appointmentId: string, minutes: number) {
     return this.call((e) => e.comingHome(this.uid, appointmentId, minutes));
+  }
+
+  // ---------- 2.6: family, contracts, cost, weekly reports ----------
+
+  family() {
+    return this.call((e) => e.family(this.uid));
+  }
+  members() {
+    return this.call((e) => e.memberList(this.uid));
+  }
+  inviteToFamily(publicId: string) {
+    return this.call((e) => e.inviteToFamily(this.uid, publicId));
+  }
+  answerInvite(id: string, decision: "join" | "decline") {
+    return this.call((e) => e.answerInvite(this.uid, id, decision));
+  }
+  withdrawInvite(id: string) {
+    return this.call((e) => e.withdrawInvite(this.uid, id));
+  }
+  leaveFamily() {
+    return this.call((e) => e.leaveFamily(this.uid));
+  }
+  contracts() {
+    return this.call((e) => e.contracts(this.uid));
+  }
+  proposeContract(input: ContractInput) {
+    return this.call((e) => e.proposeContract(this.uid, input));
+  }
+  answerContract(id: string, decision: "accept" | "decline") {
+    return this.call((e) => e.answerContract(this.uid, id, decision));
+  }
+  async withdrawContract(id: string) {
+    await this.call((e) => e.withdrawContract(this.uid, id));
+  }
+  async endContract(id: string) {
+    await this.call((e) => e.endContract(this.uid, id));
+  }
+  setActualTime(appointmentId: string, minutes: number) {
+    return this.call((e) => e.setActualTime(this.uid, appointmentId, minutes));
+  }
+  report(week: string | null, scope: "me" | "family") {
+    return this.call((e) => e.report(this.uid, week, scope));
   }
 
   // ---------- realtime ----------

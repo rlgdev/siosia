@@ -18,11 +18,15 @@ import type {
   ChatMessage,
   ChatRoom,
   ChatThread,
+  ContractInput,
+  ContractView,
+  FamilyView,
   Kid,
   KidInput,
   SessionFeed,
   SessionUpdate,
   UpdateInput,
+  WeeklyReport,
   DeploymentConfig,
   HistoryItem,
   Leg,
@@ -38,6 +42,7 @@ import type {
   MyState,
   OpenBooking,
   Profile,
+  PublicProvider,
   RideRequestInput,
   RideView,
   RiderPos,
@@ -203,6 +208,27 @@ export interface Backend {
   deleteUpdate(id: string): Promise<void>;
   /** 2.5 (FR-240): the client is heading home, about this many minutes away (computed on the phone). */
   comingHome(appointmentId: string, minutes: number): Promise<AppointmentView>;
+
+  // ---------- 2.6: family, contracts, cost, weekly reports ----------
+
+  /** My family: its people, the invitations it sent, those waiting for me (FR-250–252). */
+  family(): Promise<FamilyView>;
+  /** Everyone else with a profile (to invite, or to propose a contract to). */
+  members(): Promise<PublicProvider[]>;
+  inviteToFamily(publicId: string): Promise<FamilyView>;
+  answerInvite(id: string, decision: "join" | "decline"): Promise<FamilyView>;
+  withdrawInvite(id: string): Promise<FamilyView>;
+  leaveFamily(): Promise<FamilyView>;
+  /** My family's contracts and mine as a provider (FR-264). */
+  contracts(): Promise<ContractView[]>;
+  proposeContract(input: ContractInput): Promise<ContractView>;
+  answerContract(id: string, decision: "accept" | "decline"): Promise<ContractView>;
+  withdrawContract(id: string): Promise<void>;
+  endContract(id: string): Promise<void>;
+  /** The provider corrects the time of a done appointment within 24 h (FR-272). */
+  setActualTime(appointmentId: string, minutes: number): Promise<AppointmentView>;
+  /** One week's spent and earned (`week` = any day "YYYY-MM-DD", null = this week). */
+  report(week: string | null, scope: "me" | "family"): Promise<WeeklyReport>;
 
   onMyChanges(cb: () => void): Unsub;
   /** Web Push subscription of this device (notifications). */

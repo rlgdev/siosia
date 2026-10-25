@@ -9,6 +9,7 @@ import type { AccountInfo } from "../backend/types";
 import { PlaceInput } from "../components/PlaceInput";
 import { PhotoPicker } from "../components/PhotoPicker";
 import { Avatar, Initial, MasterChip } from "../components/ProfileIcon";
+import { Icon } from "../components/Icon";
 import { Confirm, Notice, Panel, RatingBadge, useBusy } from "../components/ui";
 import { ACTIVE_STATUSES, type Place } from "../core/types";
 import { EntryIcon, localText } from "./Catalog";
@@ -105,6 +106,12 @@ export function ProfilePanel() {
       {p && <MyPlace key={p.home ? `${p.home.lat},${p.home.lng},${p.home.label}` : "none"} />}
       {p && !p.offersPreset && <ServicesIOffer />}
       {p && <MyKids />}
+      {p && (
+        <button type="button" className="card row spread profile-family" onClick={() => store.openPanel("family")} data-testid="profile-family">
+          <strong>{t("family.title")}</strong>
+          <Icon name="chevron" />
+        </button>
+      )}
 
       <AppSection />
 

@@ -13,7 +13,7 @@ import {
   seriesIcs,
   type IcsContext
 } from "../../supabase/functions/_shared/ics";
-import type { AppointmentView, RideView } from "../core/types";
+import type { AppointmentView, RideView, ViewerRole } from "../core/types";
 import { useI18n } from "../i18n";
 import { isIOS } from "../services/device";
 import { useApp } from "../state/store";
@@ -34,7 +34,11 @@ export function AddToCalendar(props: Props) {
     siteUrl: typeof location !== "undefined" ? location.origin + location.pathname : null
   };
   const demo = app.cfg?.backend === "mock";
-  const { appointment: a, ride: r, wholeSeries } = props;
+  const { ride: r, wholeSeries } = props;
+  // 2.6 (FR-254): a family member's appointment reads as that member's (their side, their other party).
+  const a = props.appointment
+    ? { ...props.appointment, role: props.appointment.family?.side ?? (props.appointment.role as Exclude<ViewerRole, "family">) }
+    : undefined;
   const google = a ? appointmentGoogleLink(a, ctx, !!wholeSeries) : rideGoogleLink(r!, ctx);
   const icsUrl = a ? (wholeSeries ? (a.series?.ics ?? null) : a.calendar.ics) : (r!.calendar?.ics ?? null);
   const build = () => (a ? (wholeSeries ? seriesIcs(a, ctx) : appointmentIcs(a, ctx)) : rideIcs(r!, ctx));

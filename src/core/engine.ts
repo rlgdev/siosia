@@ -16,7 +16,7 @@ import { computeFare } from "./fare";
 import { haversineKm, isValidLatLng } from "./geo";
 import { isActive } from "./lifecycle";
 import { summarizeRatings } from "./rating";
-import { addWeeksWallClock, localDate } from "./time";
+import { addDays, addWeeksWallClock, localDate, localMidnight, weekOf } from "./time";
 import {
   ServerError,
   type AppointmentStatus,
@@ -26,7 +26,18 @@ import {
   type AttachedStatus,
   type CatalogEntry,
   type CatalogItem,
+  type CatalogProvider,
   type ChatMessage,
+  type ContractInput,
+  type ContractRate,
+  type ContractStatus,
+  type ContractView,
+  type CostSummary,
+  type FamilyInvite,
+  type FamilyView,
+  type ReportLine,
+  type ReportSide,
+  type WeeklyReport,
   type ChatRoom,
   type ChatThread,
   type SessionFeed,
@@ -200,6 +211,12 @@ export interface ApptRow {
   /** 2.5 (FR-240): the client's heading-home notice — when they said so and when they expect to be there. */
   comingAt?: number | null;
   etaAt?: number | null;
+  /** 2.6 (FR-262, FR-270–272): the rate per hour the price came from, its contract, the provider's
+   *  correction of the time, and whether the summary was announced. */
+  rate?: number | null;
+  contractId?: string | null;
+  actualMin?: number | null;
+  summarySent?: boolean;
 }
 
 export interface StoredTemplate {
@@ -303,6 +320,42 @@ export interface UpdateRow {
   createdAt: number;
 }
 
+/** 2.6 (FR-250): a family (Supabase: families; its people in family_members). */
+export interface FamilyRow {
+  id: string;
+  createdAt: number;
+}
+
+/** 2.6 (FR-250): an invitation into a family. */
+export interface FamilyInviteRow {
+  id: string;
+  familyId: string;
+  fromUser: string;
+  toUser: string;
+  status: "pending" | "joined" | "declined" | "withdrawn" | "expired";
+  createdAt: number;
+  answeredAt: number | null;
+}
+
+/** 2.6 (FR-260): rates per hour agreed between a family and a provider. */
+export interface ContractRow {
+  id: string;
+  familyId: string;
+  providerId: string;
+  version: number;
+  status: ContractStatus;
+  rates: ContractRate[];
+  note: string;
+  currency: string;
+  proposedBy: string;
+  /** Which side proposed (the proposer may leave the family later). */
+  proposedSide: "family" | "provider";
+  createdAt: number;
+  answeredAt: number | null;
+  endedAt: number | null;
+  endedBy: string | null;
+}
+
 export interface DbState {
   version: 1;
   seq: number;
@@ -334,6 +387,14 @@ export interface DbState {
   chatPresence?: Record<string, Record<string, number>>;
   /** 2.5 (optional: demo databases saved before 2.5 lack it) */
   updates?: UpdateRow[];
+  /** 2.6 (optional: demo databases saved before 2.6 lack them) */
+  families?: Record<string, FamilyRow>;
+  /** user id → their family (a member is in at most one). */
+  familyMembers?: Record<string, { familyId: string; joinedAt: number }>;
+  familyInvites?: FamilyInviteRow[];
+  contracts?: Record<string, ContractRow>;
+  /** The Monday ("YYYY-MM-DD") whose weekly_report notifications went out (Supabase: app_config.report_week). */
+  reportWeek?: string | null;
 }
 
 /** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
@@ -360,7 +421,12 @@ export function emptyDb(): DbState {
     messages: [],
     photos: {},
     chatPresence: {},
-    updates: []
+    updates: [],
+    families: {},
+    familyMembers: {},
+    familyInvites: [],
+    contracts: {},
+    reportWeek: null
   };
 }
 
@@ -442,6 +508,19 @@ const COMING_AFTER_MS = 2 * 3600_000;
 const COMING_MAX_MIN = 600;
 /** A heading-home notice repeated within this long rings no second time (the screen still updates). */
 const COMING_PUSH_GAP_MS = 60_000;
+/** 2.6 (FR-250–282) limits, twins of the SQL checks: family size, invitation life, contract lines and
+ *  rates, the time correction window and range, how far back a report goes, when the weekly push goes. */
+const FAMILY_MAX = 6;
+const INVITE_MS = 7 * 86_400_000;
+const CONTRACT_LINES_MAX = 12;
+const RATE_MAX = 10_000;
+const NOTE_MAX = 200;
+const ACTUAL_MIN = 15;
+const ACTUAL_MAX = 1440;
+const REPORT_WEEKS = 52;
+const REPORT_HOUR = 8;
+/** Money to the cent (twin of round(x::numeric, 2)). */
+const round2 = (x: number) => Math.round(x * 100) / 100;
 /** Trims the whitespace a keyboard produces, the same set as the SQL btrim(…, E' \t\n\r\f' || chr(11)) (V19). */
 const trimWs = (s: string): string => s.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
 
@@ -591,6 +670,23 @@ export class Engine {
     for (const g of this.db.kidRatings ?? []) if (g.fromUser === old) g.fromUser = uid;
     for (const m of this.db.messages ?? []) if (m.sender === old) m.sender = uid;
     for (const u of this.db.updates ?? []) if (u.author === old) u.author = uid; // 2.5 (FR-235)
+    // 2.6: a replaced profile leaves its family first (as a deleted one would); then the family,
+    // the invitations and the contracts follow the account.
+    if (mine && !mine.deleted) this.dropFromFamilies(uid);
+    const fm = this.db.familyMembers;
+    if (fm?.[old]) {
+      fm[uid] = fm[old];
+      delete fm[old];
+    }
+    for (const i of this.db.familyInvites ?? []) {
+      if (i.fromUser === old) i.fromUser = uid;
+      if (i.toUser === old) i.toUser = uid;
+    }
+    for (const c of Object.values(this.db.contracts ?? {})) {
+      if (c.providerId === old) c.providerId = uid;
+      if (c.proposedBy === old) c.proposedBy = uid;
+      if (c.endedBy === old) c.endedBy = uid;
+    }
     const pres = this.db.chatPresence;
     if (pres?.[old]) {
       pres[uid] = { ...pres[old], ...(pres[uid] ?? {}) };
@@ -785,6 +881,8 @@ export class Engine {
         this.pushTo(r.riderId, "booking_released", r, {});
       }
     }
+    // 2.6 (FR-252, FR-263): I leave my family; my contracts as a provider end; my invitations go.
+    this.dropFromFamilies(uid);
     this.goOffline(uid);
     delete this.db.vehicles[uid];
     delete this.db.members[uid];
@@ -826,6 +924,7 @@ export class Engine {
       openBookings:
         this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length,
       unreadChats: this.unreadChats(uid),
+      familyPending: this.familyPending(uid),
       ...this.plannedSummary(uid)
     };
   }
@@ -1338,6 +1437,7 @@ export class Engine {
   sweep(): void {
     const { offerS } = this.cfg.timers;
     this.sweepAppointments();
+    this.sweepFamily();
     this.sweepBookings();
     for (const o of Object.values(this.db.offers)) {
       if (o.status === "offered" && o.offeredAt !== null && this.now >= o.offeredAt + offerS * 1000) this.closeOffer(o, "timed_out");
@@ -1475,7 +1575,7 @@ export class Engine {
                 .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.offersOf(u.id).includes(e.id))
                 .sort((a, b) => a.nickname.localeCompare(b.nickname))
                 // Whoever browses the catalog may see the providers' photos (FR-211).
-                .map((u) => this.publicParty(u.id, true))
+                .map((u): CatalogProvider => ({ ...this.publicParty(u.id, true), contractRate: this.contractRate(uid, u.id, e.id)?.perHour ?? null }))
       }));
   }
 
@@ -1529,7 +1629,8 @@ export class Engine {
       throw new ServerError("bad_input");
     // 2.3 (FR-201): the client's own kids come along, on every occurrence of a series.
     const kidIds = input.kidIds == null ? [] : this.ownKidIds(uid, input.kidIds);
-    const price = e.price && "perHour" in e.price ? Math.round(((e.price.perHour * d) / 60) * 100) / 100 : e.price && "fixed" in e.price ? e.price.fixed : null;
+    // 2.6 (FR-262, V62): an active contract between my family and the provider sets the rate.
+    const { rate, price, contractId } = this.priceFor(e, uid, provider?.id ?? null, d);
     // The occurrences: one, or a series at the same wall-clock time every 1 or 2 weeks.
     const tz = this.cfg.timezone;
     const { seriesMaxCount, seriesMaxDays } = this.cfg.appointment;
@@ -1584,6 +1685,7 @@ export class Engine {
       currency: this.cfg.tariff.currency
     };
     let series: SeriesRow | null = null;
+    const priced = { rate, contractId, actualMin: null, summarySent: false };
     if (starts.length > 1) {
       series = {
         ...base,
@@ -1614,7 +1716,8 @@ export class Engine {
         cancelReason: null,
         reminded: [],
         seriesId: series?.id ?? null,
-        seq: series ? i + 1 : null
+        seq: series ? i + 1 : null,
+        ...priced
       };
       (this.db.appointments ??= {})[a.id] = a;
       if (kidIds.length) (this.db.appointmentKids ??= {})[a.id] = [...kidIds];
@@ -1654,7 +1757,8 @@ export class Engine {
     this.sweep();
     const a = this.db.appointments?.[id];
     if (!a) throw new ServerError("not_found");
-    if (a.clientId === uid) throw new ServerError("forbidden");
+    // 2.6 (FR-254): my family's open request is ours, not one to take.
+    if (a.clientId === uid || this.sameFamily(uid, a.clientId)) throw new ServerError("forbidden");
     if (a.providerId !== null) throw new ServerError("taken");
     if (a.status !== "requested" || a.startsAt <= this.now) throw new ServerError("illegal_transition");
     // Before the claim (twin of siosia_take_request): nothing is changed or told when it clashes —
@@ -1669,6 +1773,14 @@ export class Engine {
       for (const o of this.occurrences(a.seriesId)) if (o.providerId === null && o.status === "requested") o.providerId = uid;
     } else a.providerId = uid;
     this.settle(uid, a, "accept");
+    // 2.6 (FR-262): the taker's contract with the client's family reprices what was accepted.
+    const e = this.service(a.serviceId);
+    const p = e ? this.priceFor(e, a.clientId, uid, a.durationMin) : null;
+    if (p?.contractId) {
+      for (const o of a.seriesId ? this.occurrences(a.seriesId) : [a])
+        if (o.providerId === uid && o.status === "accepted") Object.assign(o, { rate: p.rate, contractId: p.contractId, price: round2((p.rate! * o.durationMin) / 60) });
+      if (a.seriesId) this.db.series![a.seriesId].price = p.price;
+    }
     this.notifyMembers();
     return this.apptView(a, uid);
   }
@@ -1750,8 +1862,8 @@ export class Engine {
     this.requireMember(uid);
     this.sweep();
     const a = this.db.appointments?.[id];
-    // 2.1: an open request also opens for a member who could take it (candidate view, V34).
-    if (!a || (a.clientId !== uid && a.providerId !== uid && !this.takeable(a, uid))) throw new ServerError("not_found");
+    // 2.1: an open request also opens for a member who could take it (candidate view, V34); 2.6: my family's too.
+    if (!a || (!this.sees(uid, a) && !this.takeable(a, uid))) throw new ServerError("not_found");
     return this.apptView(a, uid);
   }
 
@@ -1830,7 +1942,7 @@ export class Engine {
     this.sweep();
     return {
       appointments: Object.values(this.db.appointments ?? {})
-        .filter((a) => (a.clientId === uid || a.providerId === uid) && (a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now)
+        .filter((a) => this.sees(uid, a) && (a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now)
         .sort((x, y) => x.startsAt - y.startsAt)
         .map((a) => this.apptView(a, uid)),
       rides: Object.values(this.db.rides)
@@ -1845,7 +1957,7 @@ export class Engine {
   timeline(uid: string): HistoryItem[] {
     this.requireMember(uid);
     const appts: HistoryItem[] = Object.values(this.db.appointments ?? {})
-      .filter((a) => (a.clientId === uid || a.providerId === uid) && ["done", "declined", "cancelled", "expired"].includes(a.status))
+      .filter((a) => this.sees(uid, a) && ["done", "declined", "cancelled", "expired"].includes(a.status))
       .sort((x, y) => y.startsAt - x.startsAt)
       .slice(0, SERVER.historyLimit)
       .map((a) => ({ kind: "appointment", at: a.startsAt, appointment: this.apptView(a, uid) }));
@@ -1877,10 +1989,10 @@ export class Engine {
 
   // ---------- 2.3: kids (FR-200–204, V44, V45) ----------
 
-  /** My kids with every rating they got (S2 → My kids), oldest first. */
+  /** My family's kids (2.6, FR-253: every member's) with every rating they got (S2 → My kids), oldest first. */
   kids(uid: string): Kid[] {
     this.requireUser(uid);
-    return this.kidsOf(uid).map((k) => this.kidView(k));
+    return this.familyKids(uid).map((k) => this.kidView(k, uid));
   }
 
   addKid(uid: string, input: KidInput): Kid {
@@ -1889,21 +2001,21 @@ export class Engine {
     if (this.kidsOf(uid).length >= KIDS_MAX) throw new ServerError("too_many");
     const k: KidRow = { id: this.nextId("k"), ownerId: uid, photoPath: null, createdAt: this.now, ...clean };
     (this.db.kids ??= {})[k.id] = k;
-    this.effects.notify.add(uid);
-    return this.kidView(k);
+    this.notifyHousehold(uid);
+    return this.kidView(k, uid);
   }
 
   updateKid(uid: string, id: string, input: KidInput): Kid {
     const k = this.ownKid(uid, id);
     Object.assign(k, this.cleanKid(input));
     this.kidChanged(k);
-    return this.kidView(k);
+    return this.kidView(k, uid);
   }
 
-  /** Removes one of my kids: its photo, ratings and attachments go with it (FR-204). */
+  /** Removes one of my family's kids: its photo, ratings and attachments go with it (FR-204, FR-253). */
   removeKid(uid: string, id: string): void {
     this.deleteKid(this.ownKid(uid, id));
-    this.effects.notify.add(uid);
+    this.notifyHousehold(uid);
   }
 
   /** The client attaches (replaces) their own kids on an appointment, until it ends (FR-201). */
@@ -1947,11 +2059,19 @@ export class Engine {
       .sort((x, y) => x.createdAt - y.createdAt);
   }
 
-  /** One of the caller's kids (not_found for anyone else's). */
+  /** 2.6 (FR-253): the kids of everyone in my family (mine alone without one), oldest first. */
+  private familyKids(uid: string): KidRow[] {
+    const people = new Set(this.household(uid));
+    return Object.values(this.db.kids ?? {})
+      .filter((k) => people.has(k.ownerId))
+      .sort((x, y) => x.createdAt - y.createdAt || (x.id < y.id ? -1 : 1));
+  }
+
+  /** One of the caller's family's kids (not_found for anyone else's). */
   private ownKid(uid: string, id: string): KidRow {
     this.requireUser(uid);
     const k = this.db.kids?.[id];
-    if (!k || k.ownerId !== uid) throw new ServerError("not_found");
+    if (!k || !this.household(uid).includes(k.ownerId)) throw new ServerError("not_found");
     return k;
   }
 
@@ -1965,11 +2085,12 @@ export class Engine {
     return { name, bornYear: born, note };
   }
 
-  /** The caller's own kids, each once (bad_input for anyone else's, an unknown one, or not a list). */
+  /** The caller's family's kids, each once (bad_input for anyone else's, an unknown one, or not a list). */
   private ownKidIds(uid: string, kidIds: unknown): string[] {
     if (!Array.isArray(kidIds)) throw new ServerError("bad_input");
     const ids = [...new Set(kidIds)];
-    for (const id of ids) if (typeof id !== "string" || this.db.kids?.[id]?.ownerId !== uid) throw new ServerError("bad_input");
+    const people = this.household(uid);
+    for (const id of ids) if (typeof id !== "string" || !people.includes(this.db.kids?.[id]?.ownerId ?? "")) throw new ServerError("bad_input");
     return ids as string[];
   }
 
@@ -1989,9 +2110,9 @@ export class Engine {
     delete this.db.kids![k.id];
   }
 
-  /** The owner's tabs and the providers of upcoming appointments the kid is attached to refetch. */
+  /** The owner's family's tabs and the providers of upcoming appointments the kid is attached to refetch. */
   private kidChanged(k: KidRow): void {
-    this.effects.notify.add(k.ownerId);
+    this.notifyHousehold(k.ownerId);
     for (const a of Object.values(this.db.appointments ?? {}))
       if (a.providerId && (a.status === "requested" || a.status === "accepted") && (this.db.appointmentKids?.[a.id] ?? []).includes(k.id)) this.effects.notify.add(a.providerId);
   }
@@ -2007,10 +2128,12 @@ export class Engine {
     return { mean: count ? round1(ratings.reduce((s, g) => s + g.stars, 0) / count) : null, count };
   }
 
-  /** A kid as its owner sees it: every rating with who gave it. */
-  private kidView(k: KidRow): Kid {
+  /** A kid as its owner's family sees it: every rating with who gave it, who added it. */
+  private kidView(k: KidRow, viewer: string): Kid {
     const got = this.kidRatingsOf(k.id);
     return {
+      ownerNickname: this.nick(k.ownerId) || "Deleted user",
+      mine: k.ownerId === viewer,
       id: k.id,
       name: k.name,
       photo: this.signedUrl(k.photoPath),
@@ -2149,10 +2272,10 @@ export class Engine {
     return (a.status === "accepted" || a.status === "done") && this.now >= a.startsAt - FEED_BEFORE_MS && this.now <= (a.endedAt ?? this.endOf(a)) + FEED_AFTER_MS;
   }
 
-  /** The appointment behind a feed, for one of its two parties — not_found for anyone else (an open request has no feed yet). */
+  /** The appointment behind a feed, for one of its two parties or (2.6) their family — not_found for anyone else (an open request has no feed yet). */
   private feedAppt(uid: string, id: string): ApptRow {
     const a = this.db.appointments?.[id];
-    if (!a || !a.providerId || (a.clientId !== uid && a.providerId !== uid)) throw new ServerError("not_found");
+    if (!a || !a.providerId || !this.sees(uid, a)) throw new ServerError("not_found");
     return a;
   }
 
@@ -2197,6 +2320,8 @@ export class Engine {
     this.requireUser(uid);
     this.sweep();
     const a = this.feedAppt(uid, appointmentId);
+    // 2.6 (FR-255): of a party's family only the client's posts (the parent's side).
+    if (a.clientId !== uid && a.providerId !== uid && !this.sameFamily(uid, a.clientId)) throw new ServerError("forbidden");
     if (!this.feedOpen(a)) throw new ServerError("illegal_transition");
     const text = trimWs(String(input?.text ?? ""));
     if (text.length > CHAT_TEXT_MAX || (text === "" && photo === null)) throw new ServerError("bad_input");
@@ -2218,9 +2343,10 @@ export class Engine {
     const u: UpdateRow = { id: this.nextId("u"), appointmentId: a.id, author: uid, kidId, kidName, text, photoPath, createdAt: this.now };
     all.push(u);
     this.notifyAppt(a);
-    const other = a.clientId === uid ? a.providerId! : a.clientId;
-    if (this.isMember(other) && !this.driving(other) && !this.inRoom(other, `feed:${a.id}`))
-      this.pushAppt(other, "session_update", a, { sender: this.nick(uid), text, kid: kidName, photo: photoPath !== null, updateId: u.id });
+    // 2.6 (V60): everyone on the parent's side and the provider, but the author.
+    for (const other of new Set([a.clientId, ...this.kin(a.clientId), a.providerId!]))
+      if (other !== uid && this.isMember(other) && !this.driving(other) && !this.inRoom(other, `feed:${a.id}`))
+        this.pushAppt(other, "session_update", a, { sender: this.nick(uid), text, kid: kidName, photo: photoPath !== null, updateId: u.id });
     return this.updateView(u, uid);
   }
 
@@ -2376,10 +2502,10 @@ export class Engine {
     for (const m of this.members(null)) this.effects.notify.add(m);
   }
 
-  /** 2.1: an open request of someone else, still waiting, and the viewer has a profile. */
+  /** 2.1: an open request of someone else, still waiting, and the viewer has a profile. 2.6: not my family's. */
   private takeable(a: ApptRow, uid: string): boolean {
     const u = this.db.users[uid];
-    return a.providerId === null && a.status === "requested" && a.startsAt > this.now && a.clientId !== uid && !!u && !u.deleted;
+    return a.providerId === null && a.status === "requested" && a.startsAt > this.now && a.clientId !== uid && !this.sameFamily(uid, a.clientId) && !!u && !u.deleted;
   }
 
   /** 2.1 (V34, FR-161): the open requests this user could take, soonest first, a series once (its first open date). */
@@ -2489,6 +2615,7 @@ export class Engine {
         a.status = "done";
         a.endedAt = this.endOf(a);
         this.notifyAppt(a);
+        this.announceCost(a, false);
       }
     }
     // Reminders: once per slot for both parties; none for a moment that had passed at the request.
@@ -2560,8 +2687,9 @@ export class Engine {
   }
 
   private notifyAppt(a: { clientId: string; providerId: string | null }): void {
-    this.effects.notify.add(a.clientId);
-    if (a.providerId) this.effects.notify.add(a.providerId);
+    // 2.6 (FR-256): the families of both parties see it too.
+    this.notifyHousehold(a.clientId);
+    if (a.providerId) this.notifyHousehold(a.providerId);
   }
 
   /** A ride that is part of an appointment changed: both parties refetch; news reaches the other party (V12). */
@@ -2610,8 +2738,11 @@ export class Engine {
   private apptView(a: ApptRow, viewer: string): AppointmentView {
     const e = this.service(a.serviceId);
     const s = a.seriesId ? this.db.series?.[a.seriesId] ?? null : null;
-    const role: ViewerRole = a.clientId === viewer ? "client" : a.providerId === viewer ? "provider" : "candidate";
+    const role: ViewerRole =
+      a.clientId === viewer ? "client" : a.providerId === viewer ? "provider" : this.sees(viewer, a) ? "family" : "candidate";
     const candidate = role === "candidate";
+    const family = role === "family";
+    const kinSide: PartyRole = this.sameFamily(viewer, a.clientId) ? "client" : "provider";
     const occ = s ? this.occurrences(s.id) : [];
     return {
       id: a.id,
@@ -2637,11 +2768,11 @@ export class Engine {
       cancelReason: a.cancelReason,
       rides: candidate ? [] : this.attached(a, viewer),
       reminders: candidate ? [] : [...a.reminded],
-      myRating: candidate ? null : this.db.ratings.find((x) => x.appointmentId === a.id && x.fromUser === viewer)?.stars ?? null,
+      myRating: candidate || family ? null : this.db.ratings.find((x) => x.appointmentId === a.id && x.fromUser === viewer)?.stars ?? null,
       // 2.3 (FR-202): the kids' cards for the two parties; a candidate sees how many ("2 kids").
       kids: candidate ? [] : this.attachedKids(a, viewer),
       kidCount: this.kidsIn(a.id).length,
-      unread: candidate || !this.roomOf(`appt:${a.id}`) ? 0 : this.unreadIn(`appt:${a.id}`, viewer),
+      unread: candidate || family || !this.roomOf(`appt:${a.id}`) ? 0 : this.unreadIn(`appt:${a.id}`, viewer),
       // 2.5 (FR-230–234, FR-241): the feed's size and state and the heading-home notice — parties only (V54).
       updateCount: candidate ? 0 : (this.db.updates ?? []).filter((u) => u.appointmentId === a.id).length,
       feedOpen: !candidate && this.feedOpen(a),
@@ -2649,6 +2780,12 @@ export class Engine {
         !candidate && a.comingAt != null && (a.status === "accepted" || a.status === "done") && this.now <= this.endOf(a) + COMING_AFTER_MS
           ? { at: a.comingAt, etaAt: a.etaAt ?? a.comingAt }
           : null,
+      // 2.6 (FR-262, FR-270–272): where the price came from and, once done, what it cost.
+      rate: a.rate ?? null,
+      contractId: candidate ? null : a.contractId ?? null,
+      actualMin: a.actualMin ?? null,
+      cost: candidate ? null : this.costOf(a),
+      family: family ? { side: kinSide, member: this.nick(kinSide === "client" ? a.clientId : a.providerId) } : null,
       series: s
         ? {
             id: s.id,
@@ -2661,7 +2798,8 @@ export class Engine {
             declined: occ.filter((x) => x.status === "declined").map((x) => x.startsAt).sort((x, y) => x - y),
             gaps: occ.filter((x) => x.status === "declined" || x.status === "cancelled").map((x) => x.startsAt).sort((x, y) => x - y),
             starts: occ.map((x) => x.startsAt),
-            rideTemplates: candidate
+            // 2.6: the family sees no templates (siosia_series_json: parties only).
+            rideTemplates: candidate || family
               ? []
               : s.rideTemplates.map((t) =>
                   t.passenger === role ? { ...t, pickup: { ...t.pickup }, dropoff: { ...t.dropoff }, mine: true } : { passenger: t.passenger, leg: t.leg, offsetMin: t.offsetMin, mine: false }
@@ -2671,6 +2809,543 @@ export class Engine {
         : null,
       calendar: { google: null, ics: null }
     };
+  }
+
+  // ---------- 2.6: family (FR-250–256, V58–V60) ----------
+
+  /** My family: its people, the invitations it sent that still wait, and those waiting for me. */
+  family(uid: string): FamilyView {
+    this.requireUser(uid);
+    this.sweep();
+    const fid = this.familyOf(uid);
+    const invite = (i: FamilyInviteRow): FamilyInvite => ({
+      id: i.id,
+      from: this.publicParty(i.fromUser, true),
+      to: this.publicParty(i.toUser, true),
+      createdAt: i.createdAt,
+      expiresAt: i.createdAt + INVITE_MS
+    });
+    const pending = (this.db.familyInvites ?? []).filter((i) => i.status === "pending").sort((x, y) => x.createdAt - y.createdAt);
+    return {
+      id: fid,
+      members: fid
+        ? this.familyPeople(fid).map((m) => ({ ...this.publicParty(m, true), me: m === uid, joinedAt: this.db.familyMembers![m].joinedAt }))
+        : [],
+      invites: fid ? pending.filter((i) => i.familyId === fid).map(invite) : [],
+      incoming: pending.filter((i) => i.toUser === uid).map(invite)
+    };
+  }
+
+  /** The members I could invite or contract with: everyone else with a profile, by nickname. */
+  memberList(uid: string): PublicProvider[] {
+    this.requireUser(uid);
+    return this.members(uid)
+      .sort((a, b) => this.nick(a).localeCompare(this.nick(b)))
+      .map((m) => this.publicParty(m, true));
+  }
+
+  /** Invites a member into my family (FR-250); without a family, one is made with me. */
+  inviteToFamily(uid: string, publicId: string): FamilyView {
+    this.requireUser(uid);
+    this.sweep();
+    const to = this.userByPublicId(publicId);
+    if (!to || to === uid) throw new ServerError("not_found");
+    if (this.sameFamily(uid, to)) throw new ServerError("in_family");
+    let fid = this.familyOf(uid);
+    if (fid && this.familyPeople(fid).length >= FAMILY_MAX) throw new ServerError("family_full");
+    const invites = (this.db.familyInvites ??= []);
+    if (fid && invites.some((i) => i.familyId === fid && i.toUser === to && i.status === "pending")) return this.family(uid);
+    fid ??= this.newFamily(uid);
+    invites.push({ id: this.nextId("fi"), familyId: fid, fromUser: uid, toUser: to, status: "pending", createdAt: this.now, answeredAt: null });
+    this.pushPlain(to, "family_invite", { sender: this.nick(uid) });
+    this.notifyHousehold(uid);
+    this.effects.notify.add(to);
+    return this.family(uid);
+  }
+
+  /** Join or decline an invitation (FR-250, FR-251): a family of me alone merges into the new one. */
+  answerInvite(uid: string, id: string, decision: "join" | "decline"): FamilyView {
+    this.requireUser(uid);
+    if (decision !== "join" && decision !== "decline") throw new ServerError("bad_input");
+    this.sweep();
+    const inv = (this.db.familyInvites ?? []).find((i) => i.id === id && i.toUser === uid);
+    if (!inv) throw new ServerError("not_found");
+    if (inv.status !== "pending" || !this.db.families?.[inv.familyId]) throw new ServerError("illegal_transition");
+    if (decision === "decline") {
+      inv.status = "declined";
+      inv.answeredAt = this.now;
+      for (const m of this.familyPeople(inv.familyId)) this.effects.notify.add(m);
+      this.effects.notify.add(uid);
+      return this.family(uid);
+    }
+    const mine = this.familyOf(uid);
+    if (mine === inv.familyId) throw new ServerError("in_family");
+    if (mine && this.familyPeople(mine).length > 1) throw new ServerError("in_family");
+    const people = this.familyPeople(inv.familyId);
+    if (people.length >= FAMILY_MAX) throw new ServerError("family_full");
+    if (mine) {
+      // My family of one merges in (FR-251): its contracts come along unless the new family already
+      // has one with that provider; a contract with someone of the new family ends (no contract within a family).
+      for (const c of Object.values(this.db.contracts ?? {})) {
+        if (c.familyId !== mine) continue;
+        const clash =
+          people.includes(c.providerId) ||
+          Object.values(this.db.contracts ?? {}).some((x) => x.familyId === inv.familyId && x.providerId === c.providerId && (x.status === "active" || x.status === "proposed"));
+        if (clash && (c.status === "active" || c.status === "proposed")) this.closeContract(c, c.status === "active" ? "ended" : "withdrawn", null);
+        c.familyId = inv.familyId;
+      }
+      for (const i of this.db.familyInvites ?? []) if (i.familyId === mine && i.status === "pending") i.status = "withdrawn";
+      delete this.db.families![mine];
+    }
+    // I join: a contract the new family has with me as its provider ends.
+    for (const c of Object.values(this.db.contracts ?? {}))
+      if (c.familyId === inv.familyId && c.providerId === uid && (c.status === "active" || c.status === "proposed")) this.closeContract(c, c.status === "active" ? "ended" : "withdrawn", null);
+    (this.db.familyMembers ??= {})[uid] = { familyId: inv.familyId, joinedAt: this.now };
+    inv.status = "joined";
+    inv.answeredAt = this.now;
+    // Other invitations to me lapse: I am in a family now.
+    for (const i of this.db.familyInvites ?? []) if (i.toUser === uid && i.status === "pending") i.status = "declined";
+    for (const m of people) this.pushPlain(m, "family_joined", { sender: this.nick(uid) });
+    this.notifyHousehold(uid);
+    return this.family(uid);
+  }
+
+  /** The family takes back an invitation that still waits. */
+  withdrawInvite(uid: string, id: string): FamilyView {
+    this.requireUser(uid);
+    const fid = this.familyOf(uid);
+    const inv = (this.db.familyInvites ?? []).find((i) => i.id === id && i.familyId === fid && fid !== null);
+    if (!inv) throw new ServerError("not_found");
+    if (inv.status !== "pending") throw new ServerError("illegal_transition");
+    inv.status = "withdrawn";
+    inv.answeredAt = this.now;
+    this.notifyHousehold(uid);
+    this.effects.notify.add(inv.toUser);
+    return this.family(uid);
+  }
+
+  /** I leave my family (FR-252); my kids leave with me; a family nobody is left in goes, its contracts end. */
+  leaveFamily(uid: string): FamilyView {
+    this.requireUser(uid);
+    if (!this.familyOf(uid)) throw new ServerError("not_found");
+    this.leave(uid);
+    return this.family(uid);
+  }
+
+  /** 2.6: invitations to me and contract proposals my side should answer (S1 notice). */
+  private familyPending(uid: string): number {
+    const invites = (this.db.familyInvites ?? []).filter((i) => i.toUser === uid && i.status === "pending" && this.now < i.createdAt + INVITE_MS).length;
+    const contracts = Object.values(this.db.contracts ?? {}).filter((c) => c.status === "proposed" && this.answers(uid, c)).length;
+    return invites + contracts;
+  }
+
+  /** Lapsed invitations (7 days) expire; one row's trouble never stops the sweep (V30). */
+  private sweepFamily(): void {
+    for (const i of this.db.familyInvites ?? [])
+      if (i.status === "pending" && this.now >= i.createdAt + INVITE_MS) {
+        i.status = "expired";
+        i.answeredAt = this.now;
+        this.effects.notify.add(i.toUser);
+      }
+    try {
+      this.sweepReports();
+    } catch {
+      // V65: the weekly notifications never break the sweep.
+    }
+  }
+
+  private familyOf(uid: string | null): string | null {
+    return (uid && this.db.familyMembers?.[uid]?.familyId) || null;
+  }
+
+  /** A family's people, first joined first. */
+  private familyPeople(fid: string): string[] {
+    return Object.entries(this.db.familyMembers ?? {})
+      .filter(([, m]) => m.familyId === fid)
+      .sort(([a, x], [b, y]) => x.joinedAt - y.joinedAt || (a < b ? -1 : 1))
+      .map(([u]) => u);
+  }
+
+  /** Me and everyone in my family. */
+  private household(uid: string): string[] {
+    const fid = this.familyOf(uid);
+    return fid ? this.familyPeople(fid) : [uid];
+  }
+
+  /** Everyone in my family but me. */
+  private kin(uid: string): string[] {
+    return this.household(uid).filter((m) => m !== uid);
+  }
+
+  private sameFamily(a: string | null, b: string | null): boolean {
+    return !!a && !!b && a !== b && this.familyOf(a) !== null && this.familyOf(a) === this.familyOf(b);
+  }
+
+  private notifyHousehold(uid: string): void {
+    for (const m of this.household(uid)) this.effects.notify.add(m);
+  }
+
+  /** A party of the appointment, or (FR-254) in the family of one; an open request's candidates are not. */
+  private sees(uid: string, a: ApptRow): boolean {
+    return a.clientId === uid || a.providerId === uid || this.sameFamily(uid, a.clientId) || this.sameFamily(uid, a.providerId);
+  }
+
+  private userByPublicId(publicId: string): string | null {
+    const u = Object.values(this.db.users).find((x) => !x.deleted && typeof publicId === "string" && x.publicId === publicId);
+    return u && this.isMember(u.id) ? u.id : null;
+  }
+
+  private newFamily(uid: string): string {
+    const id = this.nextId("f");
+    (this.db.families ??= {})[id] = { id, createdAt: this.now };
+    (this.db.familyMembers ??= {})[uid] = { familyId: id, joinedAt: this.now };
+    return id;
+  }
+
+  /** Takes me out of my family; an empty family goes, its open invitations and contracts with it. */
+  private leave(uid: string): void {
+    const fid = this.familyOf(uid);
+    if (!fid) return;
+    const before = this.familyPeople(fid);
+    delete this.db.familyMembers![uid];
+    for (const m of before) this.effects.notify.add(m);
+    if (before.length > 1) return;
+    for (const i of this.db.familyInvites ?? [])
+      if (i.familyId === fid && i.status === "pending") {
+        i.status = "withdrawn";
+        this.effects.notify.add(i.toUser);
+      }
+    for (const c of Object.values(this.db.contracts ?? {}))
+      if (c.familyId === fid && (c.status === "active" || c.status === "proposed")) {
+        const was = c.status;
+        this.closeContract(c, was === "active" ? "ended" : "withdrawn", uid);
+        if (was === "active") this.pushPlain(c.providerId, "contract_ended", { sender: this.nick(uid) });
+      }
+    delete this.db.families?.[fid];
+  }
+
+  /** A deleted (or replaced) profile: out of its family, its contracts as a provider end, its invitations go. */
+  private dropFromFamilies(uid: string): void {
+    for (const i of this.db.familyInvites ?? [])
+      if (i.status === "pending" && (i.toUser === uid || i.fromUser === uid)) {
+        i.status = i.toUser === uid ? "declined" : "withdrawn";
+        i.answeredAt = this.now;
+        this.effects.notify.add(i.toUser);
+      }
+    for (const c of Object.values(this.db.contracts ?? {}))
+      if (c.providerId === uid && (c.status === "active" || c.status === "proposed")) {
+        const was = c.status;
+        this.closeContract(c, was === "active" ? "ended" : "withdrawn", uid);
+        if (was === "active") for (const m of this.familyPeople(c.familyId)) this.pushPlain(m, "contract_ended", { sender: this.nick(uid) });
+      }
+    this.leave(uid);
+  }
+
+  /** A notification about the family or a contract (no ride, no appointment; opens the Family panel). */
+  private pushPlain(userId: string | null, kind: PushKind, params: Partial<PushParams>): void {
+    if (!userId || !this.isMember(userId)) return;
+    this.effects.push.push({ userId, kind, rideId: null, appointmentId: null, params: params as PushParams });
+  }
+
+  // ---------- 2.6: contracts (FR-260–264, V61, V62) ----------
+
+  /** My family's contracts and mine as a provider: waiting, active, then the last 10 others. */
+  contracts(uid: string): ContractView[] {
+    this.requireUser(uid);
+    const fid = this.familyOf(uid);
+    const mine = Object.values(this.db.contracts ?? {}).filter((c) => c.providerId === uid || (fid !== null && c.familyId === fid));
+    const live = mine.filter((c) => c.status === "proposed" || c.status === "active").sort((x, y) => (x.status === y.status ? y.createdAt - x.createdAt : x.status === "proposed" ? -1 : 1));
+    const past = mine
+      .filter((c) => c.status !== "proposed" && c.status !== "active")
+      .sort((x, y) => (y.endedAt ?? y.answeredAt ?? y.createdAt) - (x.endedAt ?? x.answeredAt ?? x.createdAt) || y.version - x.version)
+      .slice(0, 10);
+    return [...live, ...past].map((c) => this.contractView(c, uid));
+  }
+
+  /** Proposes rates to the other side (FR-260, FR-261); a newer proposal replaces a waiting one. */
+  proposeContract(uid: string, input: ContractInput): ContractView {
+    this.requireUser(uid);
+    this.sweep();
+    if (!input || (input.as !== "family" && input.as !== "provider")) throw new ServerError("bad_input");
+    const other = this.userByPublicId(input.to);
+    if (!other || other === uid) throw new ServerError("not_found");
+    if (this.sameFamily(uid, other)) throw new ServerError("forbidden");
+    const providerId = input.as === "family" ? other : uid;
+    const client = input.as === "family" ? uid : other;
+    const note = trimWs(String(input.note ?? ""));
+    if (note.length > NOTE_MAX) throw new ServerError("bad_input");
+    const rates = this.cleanRates(input.rates, providerId);
+    const fid = this.familyOf(client) ?? this.newFamily(client);
+    const all = (this.db.contracts ??= {});
+    for (const c of Object.values(all)) if (c.familyId === fid && c.providerId === providerId && c.status === "proposed") this.closeContract(c, "withdrawn", uid);
+    const version = Math.max(0, ...Object.values(all).filter((c) => c.familyId === fid && c.providerId === providerId).map((c) => c.version)) + 1;
+    const c: ContractRow = {
+      id: this.nextId("c"),
+      familyId: fid,
+      providerId,
+      version,
+      status: "proposed",
+      rates,
+      note,
+      currency: this.cfg.tariff.currency,
+      proposedBy: uid,
+      proposedSide: input.as,
+      createdAt: this.now,
+      answeredAt: null,
+      endedAt: null,
+      endedBy: null
+    };
+    all[c.id] = c;
+    for (const m of this.otherSide(c)) this.pushPlain(m, "contract_proposed", { sender: this.nick(uid) });
+    this.notifyContract(c);
+    return this.contractView(c, uid);
+  }
+
+  /** The other side accepts (binding; an active one is replaced) or declines (FR-261). */
+  answerContract(uid: string, id: string, decision: "accept" | "decline"): ContractView {
+    this.requireUser(uid);
+    if (decision !== "accept" && decision !== "decline") throw new ServerError("bad_input");
+    const c = this.contractFor(uid, id);
+    if (c.status !== "proposed") throw new ServerError("illegal_transition");
+    if (!this.answers(uid, c)) throw new ServerError("forbidden");
+    if (decision === "accept") {
+      for (const x of Object.values(this.db.contracts ?? {}))
+        if (x !== c && x.familyId === c.familyId && x.providerId === c.providerId && x.status === "active") this.closeContract(x, "replaced", uid);
+      c.status = "active";
+    } else c.status = "declined";
+    c.answeredAt = this.now;
+    for (const m of this.proposingSide(c)) this.pushPlain(m, decision === "accept" ? "contract_accepted" : "contract_declined", { sender: this.nick(uid) });
+    this.notifyContract(c);
+    return this.contractView(c, uid);
+  }
+
+  /** The proposing side takes back a proposal that still waits. */
+  withdrawContract(uid: string, id: string): void {
+    this.requireUser(uid);
+    const c = this.contractFor(uid, id);
+    if (c.status !== "proposed") throw new ServerError("illegal_transition");
+    if (this.answers(uid, c)) throw new ServerError("forbidden");
+    this.closeContract(c, "withdrawn", uid);
+    this.notifyContract(c);
+  }
+
+  /** Either side ends an active contract (FR-263); appointments keep their frozen prices. */
+  endContract(uid: string, id: string): void {
+    this.requireUser(uid);
+    const c = this.contractFor(uid, id);
+    if (c.status !== "active") throw new ServerError("illegal_transition");
+    this.closeContract(c, "ended", uid);
+    const others = c.providerId === uid ? this.familyPeople(c.familyId) : [c.providerId];
+    for (const m of others) this.pushPlain(m, "contract_ended", { sender: this.nick(uid) });
+    this.notifyContract(c);
+  }
+
+  /** A contract one of whose sides I am on (not_found otherwise). */
+  private contractFor(uid: string, id: string): ContractRow {
+    const c = this.db.contracts?.[id];
+    if (!c || (c.providerId !== uid && c.familyId !== this.familyOf(uid))) throw new ServerError("not_found");
+    return c;
+  }
+
+  /** I am on the side that answers this proposal. */
+  private answers(uid: string, c: ContractRow): boolean {
+    return c.proposedSide === "family" ? c.providerId === uid : c.familyId === this.familyOf(uid) && c.providerId !== uid;
+  }
+
+  private proposingSide(c: ContractRow): string[] {
+    return c.proposedSide === "family" ? this.familyPeople(c.familyId) : [c.providerId];
+  }
+
+  private otherSide(c: ContractRow): string[] {
+    return c.proposedSide === "family" ? [c.providerId] : this.familyPeople(c.familyId);
+  }
+
+  private closeContract(c: ContractRow, status: ContractStatus, by: string | null): void {
+    c.status = status;
+    c.endedAt = this.now;
+    c.endedBy = by;
+  }
+
+  private notifyContract(c: ContractRow): void {
+    this.effects.notify.add(c.providerId);
+    for (const m of this.familyPeople(c.familyId)) this.effects.notify.add(m);
+  }
+
+  /** 1–12 lines, each a different time entry the provider offers, 0–10 000 per hour to the cent (V61). */
+  private cleanRates(rates: unknown, providerId: string): ContractRate[] {
+    if (!Array.isArray(rates) || rates.length < 1 || rates.length > CONTRACT_LINES_MAX) throw new ServerError("bad_input");
+    const seen = new Set<string>();
+    return rates.map((r) => {
+      const id = (r as ContractRate)?.serviceId;
+      const perHour = (r as ContractRate)?.perHour;
+      if (typeof id !== "string" || seen.has(id) || typeof perHour !== "number" || !Number.isFinite(perHour) || perHour < 0 || perHour > RATE_MAX || round2(perHour) !== perHour)
+        throw new ServerError("bad_input");
+      seen.add(id);
+      const e = this.service(id);
+      if (!e || e.kind !== "time" || !e.enabled || !this.offersOf(providerId).includes(id)) throw new ServerError("not_offered");
+      return { serviceId: id, perHour };
+    });
+  }
+
+  private contractView(c: ContractRow, viewer: string): ContractView {
+    const side = c.providerId === viewer ? "provider" : "family";
+    return {
+      id: c.id,
+      version: c.version,
+      status: c.status,
+      side,
+      provider: this.publicParty(c.providerId, true),
+      family: this.familyPeople(c.familyId).map((m) => this.nick(m)),
+      to: side === "family" ? this.publicIdOf(c.providerId) : this.publicIdOf(this.familyPeople(c.familyId)[0] ?? ""),
+      rates: c.rates.map((r) => ({ ...r })),
+      note: c.note,
+      currency: c.currency,
+      proposedByMe: c.proposedSide === side,
+      canAnswer: c.status === "proposed" && this.answers(viewer, c),
+      createdAt: c.createdAt,
+      answeredAt: c.answeredAt,
+      endedAt: c.endedAt
+    };
+  }
+
+  /** The active contract line between the client's family and the provider for a service, if any. */
+  private contractRate(client: string, provider: string | null, serviceId: string): { contractId: string; perHour: number } | null {
+    const fid = this.familyOf(client);
+    if (!fid || !provider) return null;
+    const c = Object.values(this.db.contracts ?? {}).find((x) => x.familyId === fid && x.providerId === provider && x.status === "active");
+    const line = c?.rates.find((r) => r.serviceId === serviceId);
+    return c && line ? { contractId: c.id, perHour: line.perHour } : null;
+  }
+
+  /** The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed price. */
+  private priceFor(e: CatalogEntry, client: string, provider: string | null, minutes: number): { rate: number | null; price: number | null; contractId: string | null } {
+    const c = this.contractRate(client, provider, e.id);
+    if (c) return { rate: c.perHour, price: round2((c.perHour * minutes) / 60), contractId: c.contractId };
+    if (e.price && "perHour" in e.price) return { rate: e.price.perHour, price: round2((e.price.perHour * minutes) / 60), contractId: null };
+    return { rate: null, price: e.price && "fixed" in e.price ? e.price.fixed : null, contractId: null };
+  }
+
+  // ---------- 2.6: cost summary (FR-270–273, V63) ----------
+
+  /** What a done appointment cost: rate × the time counted, or its fixed price; null before it is done. */
+  private costOf(a: ApptRow): CostSummary | null {
+    if (a.status !== "done") return null;
+    const minutes = a.actualMin ?? a.durationMin;
+    const rate = a.rate ?? null;
+    const total = rate !== null ? round2((rate * minutes) / 60) : a.price;
+    return {
+      minutes,
+      rate,
+      total,
+      currency: a.currency,
+      source: a.contractId ? "contract" : rate !== null ? "catalog" : a.price !== null ? "fixed" : "none",
+      corrected: a.actualMin != null
+    };
+  }
+
+  /** The summary notification (FR-271): once when done, again on a correction (client side only). */
+  private announceCost(a: ApptRow, corrected: boolean): void {
+    const cost = this.costOf(a);
+    if (!cost || cost.total === null || (!corrected && a.summarySent)) return;
+    a.summarySent = true;
+    const to = corrected ? [a.clientId, ...this.kin(a.clientId)] : [a.clientId, ...this.kin(a.clientId), a.providerId];
+    for (const m of new Set(to)) this.pushAppt(m, "appt_summary", a, { minutes: cost.minutes, total: cost.total, currency: cost.currency, corrected });
+  }
+
+  /** The provider corrects the time within 24 h after the end (FR-272); the booked time clears it. */
+  setActualTime(uid: string, id: string, minutes: number): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || !this.sees(uid, a)) throw new ServerError("not_found");
+    if (a.providerId !== uid) throw new ServerError("forbidden");
+    if (a.status !== "done") throw new ServerError("illegal_transition");
+    if (this.now > (a.endedAt ?? this.endOf(a)) + SERVER.apptRatingWindowS * 1000) throw new ServerError("window_closed");
+    if (!Number.isInteger(minutes) || minutes < ACTUAL_MIN || minutes > ACTUAL_MAX || minutes % 15 !== 0) throw new ServerError("bad_input");
+    a.actualMin = minutes === a.durationMin ? null : minutes;
+    this.notifyAppt(a);
+    this.announceCost(a, true);
+    return this.apptView(a, uid);
+  }
+
+  // ---------- 2.6: weekly reports (FR-280–284, V64, V65) ----------
+
+  /** One week's spent and earned (`week` = any day of it, null = this week); "family" sums my family. */
+  report(uid: string, week: string | null, scope: "me" | "family"): WeeklyReport {
+    this.requireUser(uid);
+    this.sweep();
+    const tz = this.cfg.timezone;
+    const current = weekOf(this.now, tz);
+    if (week !== null && (typeof week !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(week) || Number.isNaN(Date.parse(week)))) throw new ServerError("bad_input");
+    const monday = week === null ? current : weekOf(localMidnight(week, tz) + 12 * 3600_000, tz);
+    if (monday > current || monday < addDays(current, -7 * REPORT_WEEKS)) throw new ServerError("bad_input");
+    if (scope !== "me" && scope !== "family") throw new ServerError("bad_input");
+    const hasFamily = this.kin(uid).length > 0;
+    const people = scope === "family" && hasFamily ? this.household(uid) : [uid];
+    const r = this.weekReport(people, monday);
+    return {
+      ...r,
+      scope: scope === "family" && hasFamily ? "family" : "me",
+      hasFamily,
+      members: scope === "family" && hasFamily ? people.map((m) => {
+        const one = this.weekReport([m], monday);
+        return { nickname: this.nick(m), spent: one.spent.total, earned: one.earned.total };
+      }) : null
+    };
+  }
+
+  private weekReport(people: string[], monday: string): Omit<WeeklyReport, "scope" | "hasFamily" | "members"> {
+    const tz = this.cfg.timezone;
+    const start = localMidnight(monday, tz);
+    const end = localMidnight(addDays(monday, 7), tz);
+    const inWeek = (t: number | null) => t !== null && t >= start && t < end;
+    const who = new Set(people);
+    const appts = Object.values(this.db.appointments ?? {}).filter((a) => a.status === "done" && inWeek(a.startsAt));
+    const rides = Object.values(this.db.rides).filter((r) => r.status === "completed" && inWeek(r.endedAt));
+    const side = (mine: (a: ApptRow) => boolean, other: (a: ApptRow) => string | null, rideMine: (r: RideRow) => boolean): ReportSide => {
+      const lines = new Map<string, ReportLine>();
+      for (const a of appts.filter(mine)) {
+        const name = this.nick(other(a)) || "Deleted user";
+        const key = `${name}\u0000${a.serviceId}`;
+        const l = lines.get(key) ?? { who: name, serviceId: a.serviceId, count: 0, minutes: 0, total: 0 };
+        const cost = this.costOf(a)!;
+        l.count++;
+        l.minutes += cost.minutes;
+        l.total = round2(l.total + (cost.total ?? 0));
+        lines.set(key, l);
+      }
+      const services = [...lines.values()].sort((x, y) => y.total - x.total || x.who.localeCompare(y.who) || (x.serviceId < y.serviceId ? -1 : 1));
+      const servicesTotal = round2(services.reduce((s, l) => s + l.total, 0));
+      const rs = rides.filter(rideMine);
+      const ridesTotal = round2(rs.reduce((s, r) => s + r.fare, 0));
+      return { total: round2(servicesTotal + ridesTotal), services, servicesTotal, rides: { count: rs.length, total: ridesTotal } };
+    };
+    const spent = side((a) => who.has(a.clientId), (a) => a.providerId, (r) => who.has(r.riderId));
+    const earned = side((a) => !!a.providerId && who.has(a.providerId), (a) => a.clientId, (r) => !!r.driverId && who.has(r.driverId));
+    return { week: monday, weekStart: start, weekEnd: end, currency: this.cfg.tariff.currency, spent, earned, net: round2(earned.total - spent.total) };
+  }
+
+  /** Monday from 08:00: last week's report to everyone who had anything in it, once (V65). */
+  private sweepReports(): void {
+    const tz = this.cfg.timezone;
+    const monday = weekOf(this.now, tz);
+    // A new database starts its reports next Monday, none for the weeks before (as the migration does).
+    if (this.db.reportWeek == null) {
+      this.db.reportWeek = monday;
+      return;
+    }
+    if (this.db.reportWeek === monday || this.now < localMidnight(monday, tz) + REPORT_HOUR * 3600_000) return;
+    this.db.reportWeek = monday;
+    const last = addDays(monday, -7);
+    for (const m of this.members(null)) {
+      try {
+        const r = this.weekReport([m], last);
+        if (!r.spent.services.length && !r.spent.rides.count && !r.earned.services.length && !r.earned.rides.count) continue;
+        this.pushPlain(m, "weekly_report", { spent: r.spent.total, earned: r.earned.total, currency: r.currency, week: last });
+      } catch {
+        // one person's report never stops the others' (V30)
+      }
+    }
   }
 
   // ---------- internals ----------

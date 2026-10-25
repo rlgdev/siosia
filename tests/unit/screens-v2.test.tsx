@@ -256,6 +256,11 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     updateCount: 0,
     feedOpen: false,
     coming: null,
+    rate: null,
+    contractId: null,
+    actualMin: null,
+    cost: null,
+    family: null,
     ...over
   };
 }
@@ -595,6 +600,7 @@ const MY: MyState = {
   toAnswer: 0,
   openRequests: 0,
   unreadChats: 0,
+  familyPending: 0,
   planned: 1,
   nextPlanned: null
 };
@@ -1058,9 +1064,11 @@ const KID_ZOSIA: Kid = {
   ratings: [
     { appointmentId: "a0", by: "Siosia", stars: 5, comment: "Lovely afternoon", at: Date.now() - 86_400_000 },
     { appointmentId: "a00", by: "Ewa", stars: 4, comment: "", at: Date.now() - 3 * 86_400_000 }
-  ]
+  ],
+  ownerNickname: "Ola",
+  mine: true
 };
-const KID_KUBA: Kid = { id: "k2", name: "Kuba", photo: "data:image/jpeg;base64,/9j/KUBA", bornYear: null, note: "", rating: { mean: null, count: 0 }, ratings: [] };
+const KID_KUBA: Kid = { id: "k2", name: "Kuba", photo: "data:image/jpeg;base64,/9j/KUBA", bornYear: null, note: "", rating: { mean: null, count: 0 }, ratings: [], ownerNickname: "Ola", mine: true };
 /** A kid as the appointment's views carry it (the server computes the age). */
 const attached = (k: Kid, over: Partial<AttachedKid> = {}): AttachedKid => ({ id: k.id, name: k.name, photo: k.photo, age: k.bornYear === null ? null : THIS_YEAR - k.bornYear, note: k.note, rating: k.rating, myRating: null, ...over });
 const H = 3600_000;
@@ -1070,7 +1078,7 @@ describe("2.3 S2 My kids and photos (FR-200, FR-203, FR-210)", () => {
     let kids: Kid[] = [KID_ZOSIA, KID_KUBA];
     const kidsApi = vi.fn(async () => kids);
     const addKid = vi.fn<Backend["addKid"]>(async (input: KidInput) => {
-      const k: Kid = { id: "k3", ...input, photo: null, rating: { mean: null, count: 0 }, ratings: [] };
+      const k: Kid = { id: "k3", ...input, photo: null, rating: { mean: null, count: 0 }, ratings: [], ownerNickname: "Ola", mine: true };
       kids = [...kids, k];
       return k;
     });

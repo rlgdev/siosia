@@ -56,6 +56,13 @@ export function Home() {
       </header>
       {app.cfg?.backend === "mock" && <p className="notice notice-info">{t("demo.banner")}</p>}
       <AppHint />
+      {/* 2.6: a family invitation or a contract proposal waits for my answer */}
+      {!!app.my?.familyPending && (
+        <button type="button" className="notice notice-info row spread" onClick={() => store.openPanel("family")} data-testid="home-family">
+          <span>{app.my.familyPending === 1 ? t("family.noticeOne") : t("family.notice", { n: app.my.familyPending })}</span>
+          <Icon name="chevron" />
+        </button>
+      )}
       {receipt && (
         <button type="button" className="notice notice-info row spread" onClick={() => store.go(receipt)} data-testid="home-receipt">
           <span>{t(receipt === "drive" ? "home.receiptDriver" : "home.receiptRider")}</span>

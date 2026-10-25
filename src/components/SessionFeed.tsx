@@ -55,7 +55,8 @@ export function comingText(a: AppointmentView, now: number, locale: string, t: T
   if (!a.coming) return null;
   const left = Math.max(0, Math.round((a.coming.etaAt - now) / 60_000));
   const told = Math.max(0, Math.round((a.coming.etaAt - a.coming.at) / 60_000));
-  return a.role === "provider"
+  // 2.6: the family reads the notice as the provider does (who is coming, how soon).
+  return a.role === "provider" || a.role === "family"
     ? t("coming.line", { name: a.client.nickname, n: left, time: timeText(a.coming.etaAt, locale) })
     : t("coming.sent", { name: otherName(a, t), time: timeText(a.coming.at, locale), n: told });
 }
@@ -133,7 +134,7 @@ export function SessionFeedSection({ a }: { a: AppointmentView }) {
       ) : (
         <>
           <UpdateList items={feed.items} onDelete={feed.open ? remove : undefined} />
-          {feed.open ? (
+          {feed.open && (a.role !== "family" || a.family?.side === "client") ? (
             <Composer
               a={a}
               onPosted={(u) => {

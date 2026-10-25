@@ -37,11 +37,14 @@ export type LinkNotice =
   | "active_ride"
   | "link_failed";
 /** 2.3: "chat" shows one room's thread (panelArg = the room). */
-export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | null;
+/** 2.6: "family" = Family & contracts; "report" = the weekly report (panelArg = its Monday, or null). */
+export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | "family" | "report" | null;
 /** A chat room as a link or a notification names it: ride:<id> | appt:<id>, nothing else (FR-220). */
 export const chatRoomOf = (s: string | null | undefined): ChatRoom | null => (s && /^(ride|appt):[\w-]+$/.test(s) ? (s as ChatRoom) : null);
 /** 2.5: an appointment id as a link or a notification names it (./?appointment=<id>), nothing else. */
 export const appointmentIdOf = (s: string | null | undefined): string | null => (s && /^[\w-]+$/.test(s) ? s : null);
+/** 2.6: a report's week from a link ("YYYY-MM-DD"), else null (this week). */
+export const reportWeekOf = (s: string | null | undefined): string | null => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null);
 /** S1 Home, C1 Catalog ("Siosia"), P1 Planned, H1 History, the v1 rider (R) and driver (D) screens. */
 export type Screen = "home" | "catalog" | "planned" | "history" | "ride" | "drive";
 const modeOf = (s: Screen): Mode | null => (s === "ride" ? "ride" : s === "drive" ? "drive" : null);
@@ -164,6 +167,8 @@ export class AppStore {
   private launchChat: ChatRoom | null = null;
   /** 2.5: ./?appointment=<id> at launch (a session update or heading-home notice tapped while the app was closed). */
   private launchAppointment: string | null = null;
+  /** 2.6: ./?open=family or ./?open=report[&week=] opened the app: that panel, once the screen is up. */
+  private launchPanel: { panel: "family" | "report"; arg: string | null } | null = null;
   /** When the profile in the snapshot was fetched: its photo URL expires (C16). */
   private profileAt = Date.now();
 
@@ -378,6 +383,9 @@ export class AppStore {
     const appointment = this.launchAppointment;
     this.launchAppointment = null;
     if (appointment && !room) this.openPanel("appointment", appointment);
+    const panel = this.launchPanel;
+    this.launchPanel = null;
+    if (panel && !room && !appointment) this.openPanel(panel.panel, panel.arg);
   }
 
   /**
@@ -437,12 +445,17 @@ export class AppStore {
         if ((mode === "ride" || mode === "drive") && this.allowed(mode)) screen = mode;
         else if (open === "siosia") screen = "catalog";
         else if (open === "planned" || open === "history") screen = open;
+        // 2.6: the weekly report sits over H1, Family & contracts over S1.
+        else if (open === "report") screen = "history";
       }
+      this.launchPanel =
+        open === "family" ? { panel: "family", arg: null } : open === "report" ? { panel: "report", arg: reportWeekOf(url.searchParams.get("week")) } : null;
       // ./?chat=<room> (2.3): the thread opens as a panel over whatever screen applies;
       // ./?appointment=<id> (2.5): C3 of that appointment, the same way.
       this.launchChat = chatRoomOf(url.searchParams.get("chat"));
       this.launchAppointment = appointmentIdOf(url.searchParams.get("appointment"));
       if (url.searchParams.has("mode") || url.searchParams.has("open") || url.searchParams.has("chat") || url.searchParams.has("appointment")) {
+        url.searchParams.delete("week");
         url.searchParams.delete("mode");
         url.searchParams.delete("open");
         url.searchParams.delete("chat");
@@ -535,6 +548,12 @@ export class AppStore {
       const open = params.get("open");
       if (open === "siosia") this.go("catalog");
       else if (open === "planned" || open === "history") this.go(open);
+      // 2.6: Family & contracts over the current screen; the weekly report over H1.
+      else if (open === "family") this.openPanel("family");
+      else if (open === "report") {
+        if (this.snap.screen !== "history" && !this.pinned()) this.go("history");
+        this.openPanel("report", reportWeekOf(params.get("week")));
+      }
     } catch {
       /* not a link of ours */
     }
@@ -661,9 +680,14 @@ export class AppStore {
     const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.appointmentId ?? m.rideId);
     const url = room
       ? `./?chat=${encodeURIComponent(room)}`
-      : (m.kind === "session_update" || m.kind === "client_coming") && m.appointmentId
+      : (m.kind === "session_update" || m.kind === "client_coming" || m.kind === "appt_summary") && m.appointmentId
         ? `./?appointment=${encodeURIComponent(m.appointmentId)}`
-        : null;
+        : // 2.6: as push-dispatch opens them (openUrl)
+          m.kind.startsWith("family_") || m.kind.startsWith("contract_")
+          ? "./?open=family"
+          : m.kind === "weekly_report"
+            ? `./?open=report${m.params.week ? `&week=${encodeURIComponent(m.params.week)}` : ""}`
+            : null;
     if (inFront) this.patch({ pushToast: { title: text.title, body: text.body, url } });
     else await showLocal(text.title, text.body, text.tag);
   }
@@ -775,7 +799,7 @@ export function useApp(): AppSnapshot {
 export function useListsKey(): string {
   const app = useApp();
   const my = app.my;
-  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.openRequests, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings, my?.unreadChats].join(
+  return [app.changes, my?.ride?.id, my?.ride?.status, my?.pendingReceipt?.id, my?.toAnswer, my?.openRequests, my?.planned, my?.bookings, my?.driverBookings, my?.openBookings, my?.unreadChats, my?.familyPending].join(
     "|"
   );
 }

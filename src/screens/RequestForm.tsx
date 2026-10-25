@@ -113,7 +113,17 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   );
   const durations: number[] = [];
   for (let m = d.min; m <= d.max; m += d.step) durations.push(m);
-  const price = entry.price ? ("perHour" in entry.price ? Math.round(((entry.price.perHour * duration) / 60) * 100) / 100 : entry.price.fixed) : null;
+  // 2.6 (FR-262): my family's contract with the chosen provider sets the rate (the server freezes the same).
+  const chosen = open ? null : (entry.providers.find((p) => p.publicId === provider) ?? null);
+  const contractRate = chosen?.contractRate ?? null;
+  const price =
+    contractRate !== null
+      ? Math.round(((contractRate * duration) / 60) * 100) / 100
+      : entry.price
+        ? "perHour" in entry.price
+          ? Math.round(((entry.price.perHour * duration) / 60) * 100) / 100
+          : entry.price.fixed
+        : null;
 
   // Every rule the server checks, so Send request is only enabled when it will pass (V3, V23).
   const problem = (() => {
@@ -274,6 +284,11 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
             <Money amount={price} currency={dep.tariff.currency} />
           </strong>
           {repeat !== "none" && <span className="muted small">{t("request.perOccurrence")}</span>}
+          {contractRate !== null && chosen && (
+            <span className="muted small" data-testid="request-contract">
+              {t("request.contractRate", { name: chosen.nickname, rate: new Intl.NumberFormat(locale, { style: "currency", currency: dep.tariff.currency }).format(contractRate) })}
+            </span>
+          )}
         </p>
       )}
       {problem && <p className="hint" data-testid="request-problem">{problem}</p>}
