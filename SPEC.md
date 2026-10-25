@@ -168,7 +168,7 @@ T33|x|2.6 backend contracts + price + cost: contracts table, propose/answer/with
 T34|x|2.6 backend report + weekly push: siosia_report, app_config.report_week, sweep step, weekly_report push; engine twin; tests (week edges, DST, family scope)|V64,V65,V30
 T35|x|2.6 adapters + push-text: Backend iface, supabase + mock adapters, push-text EN/PL 8 kinds + urls, push:bundle, robot Siosia accepts contracts|I.api,V18,V43
 T36|x|2.6 UI: Family & contracts panel (members, invite picker, incoming invites, leave, contracts list + propose sheet + answer/withdraw/end), S1 family notice, MyKids family-wide (owner name), C2 contract rate, C3 cost summary + correct time + family role (read-only, feed), P1/H1 family marker + totals, Weekly report panel (week nav, me|family), `?open=family|report`, i18n EN/PL, tests components + e2e; docs|V58–V65,V42,V53
-T37|.|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
+T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
 
