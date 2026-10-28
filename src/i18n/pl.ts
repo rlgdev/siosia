@@ -743,7 +743,6 @@ export const pl: Record<MessageKey, string> = {
   "inviteNew.valid": "Działa raz, do {date}. Po dołączeniu ta osoba dostanie zaproszenie do Twojej rodziny.",
   "contract.yoloNote": "Wydarzenia YOLO (Halloween, urodziny…) mają stawkę opieki nad dziećmi, chyba że ustawisz dla nich własną.",
   "request.baseRate": "stawka z umowy za: {service}",
-  "yolo.intro": "Wyjątkowe dni w roku — przebrania, imprezy, święta i wakacje. Rezerwujesz jak opiekę nad dziećmi, w stawce opieki z umowy.",
   "yolo.today": "Dziś!",
   "yolo.inDays": "za {n} dni"
 };

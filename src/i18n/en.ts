@@ -741,7 +741,6 @@ export const en = {
   "inviteNew.valid": "Works once, until {date}. When they have joined, they get an invitation to your family.",
   "contract.yoloNote": "YOLO events (Halloween, birthdays…) take the Childcare rate unless you set one for them.",
   "request.baseRate": "the {service} rate of your contract",
-  "yolo.intro": "Special days around the year — costumes, parties, holidays. Booked like Childcare, priced at your contract's Childcare rate.",
   "yolo.today": "Today!",
   "yolo.inDays": "in {n} days"
 } as const;

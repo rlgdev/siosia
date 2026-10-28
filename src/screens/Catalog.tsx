@@ -239,7 +239,6 @@ function YoloSection({ items }: { items: CatalogItem[] }) {
       <h2 className="section-title yolo-title">
         <Icon name="sparkles" size={22} /> YOLO
       </h2>
-      <p className="muted small">{t("yolo.intro")}</p>
       <div className="yolo-grid">
         {yoloOrder(items, store.serverNow(), tz).map(({ e, days }) => (
           <button key={e.id} type="button" className="yolo-card" onClick={() => store.openPanel("request", e.id)} data-testid={`catalog-${e.id}`}>
