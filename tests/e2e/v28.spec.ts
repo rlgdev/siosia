@@ -38,6 +38,9 @@ test("a contract with someone who offers nothing; an invite link into Siosia and
     });
   });
   await onboard(roman, "Roman");
+  // The start screen's bottom bar: a clear My profile button with a gear.
+  await expect(roman.getByTestId("home-profile")).toHaveText("My profile");
+  await expect(roman.getByTestId("home-profile").locator("svg")).toHaveAttribute("data-icon", "gear");
 
   // Ewa is on the list although she offers nothing; Childcare at 30 an hour.
   await familyPanel(roman);
@@ -91,6 +94,12 @@ test("a contract with someone who offers nothing; an invite link into Siosia and
   await expect(yolo.locator(".yolo-card")).toHaveCount(15);
   await expect(yolo.getByTestId("catalog-yolo_summer").locator("svg")).toHaveAttribute("data-icon", "parrot");
   await expect(yolo.getByTestId("catalog-yolo_halloween")).toContainText("Ewa");
+  // The bloopers can be switched off (remembered on this phone) and on again.
+  await expect(roman.getByTestId("yolo-sound")).toHaveAttribute("aria-pressed", "true");
+  await roman.getByTestId("yolo-sound").click();
+  await expect(roman.getByTestId("yolo-sound")).toHaveText("Sounds off");
+  await roman.getByTestId("yolo-sound").click();
+  await expect(roman.getByTestId("yolo-sound")).toHaveText("Sounds on");
   await yolo.getByTestId("catalog-yolo_halloween").click();
   await expect(roman.getByTestId("request-form")).toBeVisible();
   await expect(roman.getByTestId("request-contract")).toContainText("Contract rate with Ewa");

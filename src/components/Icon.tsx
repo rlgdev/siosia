@@ -44,6 +44,9 @@ export type IconName =
   | "rings"
   | "sparkles"
   | "share"
+  | "gear"
+  | "volume"
+  | "volumeOff"
   | "link";
 
 const GLYPHS: Record<IconName, ReactNode> = {
@@ -74,12 +77,15 @@ const GLYPHS: Record<IconName, ReactNode> = {
       <path d="M12 8v4l3 2" />
     </>
   ),
+  // A Porsche 911 from the side (2.8 follow-up): low raked nose, the roof well forward, the long
+  // sloping fastback and the side window that tapers towards the tail.
   car: (
     <>
-      <path d="M5 11l1.5-4.5A2 2 0 0 1 8.4 5h7.2a2 2 0 0 1 1.9 1.5L19 11" />
-      <path d="M3 13.5A1.5 1.5 0 0 1 4.5 12h15a1.5 1.5 0 0 1 1.5 1.5V17H3z" />
-      <circle cx="7" cy="17.5" r="1.5" />
-      <circle cx="17" cy="17.5" r="1.5" />
+      <path d="M2.4 15.6v-1.3c0-.7.3-1.1.9-1.5C5.2 11.4 7.6 9.4 10.3 9c.9-.1 1.7 0 2.3.2l3.4 2.2c1.8.2 3.4.6 4.4 1.2.7.4 1.1 1 1.1 1.8v1.2" />
+      <path d="M2.4 15.6h1.9M8.5 15.6h7.2M19.9 15.6h1.6" />
+      <path d="M7.4 12.1c1.8-1.6 3.6-2.3 5.5-2.2l2.4 2.2z" />
+      <circle cx="6.4" cy="15.6" r="2.1" />
+      <circle cx="17.8" cy="15.6" r="2.1" />
     </>
   ),
   book: (
@@ -246,6 +252,24 @@ const GLYPHS: Record<IconName, ReactNode> = {
     <>
       <path d="M11 3l1.8 4.7 4.7 1.8-4.7 1.8L11 16l-1.8-4.7L4.5 9.5l4.7-1.8z" />
       <path d="M18.5 14.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
+    </>
+  ),
+  volume: (
+    <>
+      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+      <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+    </>
+  ),
+  volumeOff: (
+    <>
+      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+      <path d="M16 9.5l5 5M21 9.5l-5 5" />
+    </>
+  ),
+  gear: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2.8l1.6 2.4 2.8-.8.7 2.8 2.8.7-.8 2.8 2.4 1.6-2.4 1.6.8 2.8-2.8.7-.7 2.8-2.8-.8L12 21.2l-1.6-2.4-2.8.8-.7-2.8-2.8-.7.8-2.8L2.8 12l2.4-1.6-.8-2.8 2.8-.7.7-2.8 2.8.8z" />
     </>
   ),
   share: (

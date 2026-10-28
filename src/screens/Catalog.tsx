@@ -12,6 +12,7 @@ import { Avatar, ProfileIcon } from "../components/ProfileIcon";
 import { profileIcon } from "../components/profileIcons";
 import { Money, Page, Panel, RatingBadge } from "../components/ui";
 import { addDays, localDate } from "../core/time";
+import { playYoloSound, setYoloSound, yoloSoundOn } from "../services/yoloSounds";
 import type { CatalogItem, LocalText } from "../core/types";
 import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
@@ -262,6 +263,8 @@ export function YoloPanel() {
   const store = useStore();
   const [items, setItems] = useState<CatalogItem[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // Each event has its blooper on the tap (parrot, ghost, ho ho ho…); a phone may turn them off.
+  const [sound, setSound] = useState(yoloSoundOn);
   const load = useCallback(
     () =>
       store.api.catalog().then(
@@ -276,6 +279,20 @@ export function YoloPanel() {
   const tz = app.deployment?.timezone ?? "Europe/Warsaw";
   return (
     <Panel title="YOLO" onClose={() => store.closePanel()}>
+      <div className="row yolo-sound">
+        <button
+          type="button"
+          className="btn btn-link btn-small"
+          aria-pressed={sound}
+          onClick={() => {
+            setYoloSound(!sound);
+            setSound(!sound);
+          }}
+          data-testid="yolo-sound"
+        >
+          <Icon name={sound ? "volume" : "volumeOff"} className="ico-inline" /> {t(sound ? "yolo.soundOn" : "yolo.soundOff")}
+        </button>
+      </div>
       {failed && !items ? (
         <div className="row spread">
           <p className="form-error">{t("catalog.error")}</p>
@@ -288,7 +305,16 @@ export function YoloPanel() {
       ) : (
         <div className="yolo-grid" data-testid="yolo-catalog">
           {yoloOrder(items, store.serverNow(), tz).map(({ e, days }) => (
-            <button key={e.id} type="button" className="yolo-card" onClick={() => store.openPanel("request", e.id)} data-testid={`catalog-${e.id}`}>
+            <button
+              key={e.id}
+              type="button"
+              className="yolo-card"
+              onClick={() => {
+                playYoloSound(e.id);
+                store.openPanel("request", e.id);
+              }}
+              data-testid={`catalog-${e.id}`}
+            >
               <span className="yolo-tile" data-tone={YOLO_TONES[e.id] ?? "accent"}>
                 <EntryIcon icon={e.icon} />
               </span>

@@ -2374,6 +2374,11 @@ html[data-launch] .mode-card:nth-child(3) {
   width: 28px;
   height: 28px;
 }
+/* The parrot (Wakacje) is a slender glyph: it gets more of its tile. */
+.yolo-tile .ico[data-icon="parrot"] {
+  width: 40px;
+  height: 40px;
+}
 .yolo-tile[data-tone="orange"] { --tone: #f08a24; }
 .yolo-tile[data-tone="red"] { --tone: #e5484d; }
 .yolo-tile[data-tone="green"] { --tone: #2f9e5b; }
@@ -2388,3 +2393,23 @@ html[data-launch] .mode-card:nth-child(3) {
   margin-top: 2px;
 }
 
+/* ---------- S1: the My profile button in the bottom bar ---------- */
+.home-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.yolo-sound {
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+
+/* The car is a Porsche 911 from the side — wide and low: it gets more of the entry tile. */
+.entry-icon .ico[data-icon="car"] {
+  width: 32px;
+  height: 32px;
+}

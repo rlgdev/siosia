@@ -48,8 +48,7 @@ export const pl: Record<MessageKey, string> = {
   "home.drive": "Wożę",
   "home.driveBody": "Bądź online i przyjmuj zlecenia",
   "home.language": "Język",
-  "home.signIn": "Zachowaj konto na innych urządzeniach",
-  "home.profile": "Profil",
+  "home.profile": "Mój profil",
   "home.guide": "Jak to działa",
   "home.receiptRider": "Przejazd zakończony — zapłać i oceń",
   "home.receiptDriver": "Kurs zakończony — pobierz opłatę i oceń",
@@ -745,5 +744,7 @@ export const pl: Record<MessageKey, string> = {
   "request.baseRate": "stawka z umowy za: {service}",
   "yolo.today": "Dziś!",
   "yolo.inDays": "za {n} dni",
-  "yolo.next": "Najbliżej: {name} — {when}"
+  "yolo.next": "Najbliżej: {name} — {when}",
+  "yolo.soundOn": "Dźwięki włączone",
+  "yolo.soundOff": "Dźwięki wyłączone"
 };

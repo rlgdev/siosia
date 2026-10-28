@@ -46,8 +46,7 @@ export const en = {
   "home.drive": "Drive",
   "home.driveBody": "Go online and accept ride requests",
   "home.language": "Language",
-  "home.signIn": "Keep my account across devices",
-  "home.profile": "Profile",
+  "home.profile": "My profile",
   "home.guide": "How it works",
   "home.receiptRider": "Your ride is over — pay and rate",
   "home.receiptDriver": "Your ride is over — collect the fare and rate",
@@ -743,7 +742,9 @@ export const en = {
   "request.baseRate": "the {service} rate of your contract",
   "yolo.today": "Today!",
   "yolo.inDays": "in {n} days",
-  "yolo.next": "Next: {name} — {when}"
+  "yolo.next": "Next: {name} — {when}",
+  "yolo.soundOn": "Sounds on",
+  "yolo.soundOff": "Sounds off"
 } as const;
 
 export type MessageKey = keyof typeof en;

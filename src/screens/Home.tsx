@@ -138,8 +138,8 @@ export function Home() {
         <a className="btn btn-link" href="./guide.html">
           {t("home.guide")}
         </a>
-        <button type="button" className="btn btn-link" onClick={() => store.openPanel("profile")}>
-          {app.cfg?.backend === "supabase" ? t("home.signIn") : t("home.profile")}
+        <button type="button" className="btn btn-secondary btn-small home-profile" onClick={() => store.openPanel("profile")} data-testid="home-profile">
+          <Icon name="gear" className="ico-inline" /> {t("home.profile")}
         </button>
       </div>
     </main>
