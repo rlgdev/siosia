@@ -171,7 +171,7 @@ T34|x|2.6 backend report + weekly push: siosia_report, app_config.report_week, s
 T35|x|2.6 adapters + push-text: Backend iface, supabase + mock adapters, push-text EN/PL 8 kinds + urls, push:bundle, robot Siosia accepts contracts|I.api,V18,V43
 T36|x|2.6 UI: Family & contracts panel (members, invite picker, incoming invites, leave, contracts list + propose sheet + answer/withdraw/end), S1 family notice, MyKids family-wide (owner name), C2 contract rate, C3 cost summary + correct time + family role (read-only, feed), P1/H1 family marker + totals, Weekly report panel (week nav, me|family), `?open=family|report`, i18n EN/PL, tests components + e2e; docs|V58–V65,V42,V53
 T38|x|2.7 test accounts: sandbox membership + test invite code + realm filters (SQL + engine twin), operator fns, smoke/live tests on the test code + cleanup, SETUP docs, tests engine + sql|V66,V19
-T39|.|release 2.7: live DB migration, set test invite code, move existing Smoke/Live accounts into the sandbox, main|§15,V66
+T39|x|release 2.7: live DB migration, set test invite code, move existing Smoke/Live accounts into the sandbox, main|§15,V66
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
