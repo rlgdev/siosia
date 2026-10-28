@@ -194,7 +194,7 @@ T45|x|2.9 one person / many phones: same_person + person_accounts + seen_at repr
 T46|x|2.9 notifications feed: table + writes in every push path, fns, MyState count, engine twin, adapters, pushUrl twin, bell + dropdown on S1, every Page / Panel / map top bar, tap → target, i18n, tests|V73
 T47|x|2.9 tips: appointments + rides columns, fns, push kinds + texts EN/PL, views, report tips, C3 + receipt UI, engine twin, tests|V74
 T48|x|2.9 S1 My profile card, event icon tiles for both parties, SW update checks; e2e|V75
-T49|.|release 2.9: live migration, push-dispatch bundle, main, live checks|§15,V72–V75
+T49|x|release 2.9: live migration, push-dispatch bundle, main, live checks|§15,V72–V75
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
