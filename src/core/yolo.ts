@@ -285,7 +285,7 @@ export const YOLO_SERVICES: CatalogEntry[] = [
       "en": "Lake, park and ice cream days while school is out",
       "pl": "Jezioro, park i lody, gdy szkoła ma przerwę"
     },
-    "icon": "🏖️",
+    "icon": "🦜",
     "duration": {
       "default": 480,
       "min": 120,

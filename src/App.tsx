@@ -11,7 +11,7 @@ import { ChatPanel } from "./components/ChatSheet";
 import { AppointmentPanel } from "./screens/Appointment";
 import { DriverBookingsPanel } from "./screens/Bookings";
 import { Home } from "./screens/Home";
-import { Catalog } from "./screens/Catalog";
+import { Catalog, YoloPanel } from "./screens/Catalog";
 import { HistoryPanel, HistoryScreen } from "./screens/HistoryScreen";
 import { Planned } from "./screens/Planned";
 import { RequestPanel } from "./screens/RequestForm";
@@ -179,6 +179,7 @@ function Screens() {
       {app.phase === "ready" && app.panel === "request" && <RequestPanel />}
       {app.phase === "ready" && app.panel === "chat" && <ChatPanel />}
       {app.phase === "ready" && app.panel === "family" && <FamilyPanel />}
+      {app.phase === "ready" && app.panel === "yolo" && <YoloPanel />}
       {app.phase === "ready" && app.panel === "report" && <ReportPanel key={app.panelArg ?? "now"} />}
     </>
   );

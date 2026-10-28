@@ -97,7 +97,7 @@
         "duration": { "default": 180, "min": 60, "max": 720, "step": 30 }, "price": null, "needsPlace": true, "enabled": true
       },
       {
-        "id": "yolo_summer", "kind": "time", "section": "yolo", "base": "childcare", "icon": "🏖️", "date": "07-01", "when": { "en": "Jul–Aug", "pl": "lip–sie" },
+        "id": "yolo_summer", "kind": "time", "section": "yolo", "base": "childcare", "icon": "🦜", "date": "07-01", "when": { "en": "Jul–Aug", "pl": "lip–sie" },
         "name": { "en": "Summer holidays", "pl": "Wakacje" },
         "description": { "en": "Lake, park and ice cream days while school is out", "pl": "Jezioro, park i lody, gdy szkoła ma przerwę" },
         "duration": { "default": 480, "min": 120, "max": 720, "step": 30 }, "price": null, "needsPlace": true, "enabled": true

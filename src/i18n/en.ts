@@ -742,7 +742,8 @@ export const en = {
   "contract.yoloNote": "YOLO events (Halloween, birthdays…) take the Childcare rate unless you set one for them.",
   "request.baseRate": "the {service} rate of your contract",
   "yolo.today": "Today!",
-  "yolo.inDays": "in {n} days"
+  "yolo.inDays": "in {n} days",
+  "yolo.next": "Next: {name} — {when}"
 } as const;
 
 export type MessageKey = keyof typeof en;

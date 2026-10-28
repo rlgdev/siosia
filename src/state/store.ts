@@ -40,7 +40,7 @@ export type LinkNotice =
   | "link_failed";
 /** 2.3: "chat" shows one room's thread (panelArg = the room). */
 /** 2.6: "family" = Family & contracts; "report" = the weekly report (panelArg = its Monday, or null). */
-export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | "family" | "report" | null;
+export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | "family" | "report" | "yolo" | null;
 /** A chat room as a link or a notification names it: ride:<id> | appt:<id>, nothing else (FR-220). */
 export const chatRoomOf = (s: string | null | undefined): ChatRoom | null => (s && /^(ride|appt):[\w-]+$/.test(s) ? (s as ChatRoom) : null);
 /** 2.5: an appointment id as a link or a notification names it (./?appointment=<id>), nothing else. */

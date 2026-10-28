@@ -36,7 +36,7 @@ export type IconName =
   | "mask"
   | "egg"
   | "balloon"
-  | "beach"
+  | "parrot"
   | "backpack"
   | "cake"
   | "popper"
@@ -196,11 +196,16 @@ const GLYPHS: Record<IconName, ReactNode> = {
       <path d="M12 16.5c-1 1.5 1 2.5 0 4.5" />
     </>
   ),
-  beach: (
+  parrot: (
     <>
-      <path d="M3 11a9 9 0 0 1 18 0z" />
-      <path d="M12 11v8a2 2 0 0 1-2 2" />
-      <path d="M14.5 21H21" />
+      <path d="M10.5 8.2a4 4 0 0 1 7.6-2" />
+      <path d="M18.1 6.2c1.7.3 2.5 1.7 2.1 3.4-.8-.6-1.7-.9-2.6-.7" />
+      <path d="M17.6 8.9c.3 3.9-1.7 7.3-5.1 9" />
+      <path d="M10.5 8.2C8.9 10.7 8 13.4 8.5 16.2" />
+      <path d="M11.4 11.6c1.7.4 2.9 1.7 3.2 3.5" />
+      <path d="M8.5 16.2L6 21M10.6 17.4L9.2 21" />
+      <path d="M9.5 20.5H19" />
+      <circle cx="14.6" cy="6.9" r="0.6" />
     </>
   ),
   backpack: (
@@ -309,7 +314,9 @@ export const EMOJI_ICONS: Readonly<Record<string, IconName>> = {
   "🎭": "mask",
   "🥚": "egg",
   "🎈": "balloon",
-  "🏖️": "beach",
+  // Wakacje: a parrot (2.8 follow-up); the 🏖️ the first seed stored stays a parrot too.
+  "🦜": "parrot",
+  "🏖️": "parrot",
   "🎒": "backpack",
   "🎂": "cake",
   "🎉": "popper",

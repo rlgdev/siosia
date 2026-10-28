@@ -2,14 +2,15 @@
 // rides to take), then every enabled entry with who offers it. Ride opens the v1 rider flow (R1);
 // a time entry opens the request form (C2) — 2.1: also one nobody offers yet, as an open request
 // everyone in the group sees (FR-160); open requests of others lead to P1 (FR-161).
-// 2.8 (FR-304–306): the YOLO section — special days around the year, the dated ones in the order of
-// their next date ("in 12 days" within two months), then the any-time ones.
+// 2.8 (FR-304–306): YOLO — the 4th card of the services; it opens the YOLO catalog (a panel) of
+// special days around the year, the dated ones in the order of their next date ("in 12 days" within
+// two months), then the any-time ones.
 
 import { useCallback, useEffect, useState } from "react";
 import { EMOJI_ICONS, Icon } from "../components/Icon";
 import { Avatar, ProfileIcon } from "../components/ProfileIcon";
 import { profileIcon } from "../components/profileIcons";
-import { Money, Page, RatingBadge } from "../components/ui";
+import { Money, Page, Panel, RatingBadge } from "../components/ui";
 import { addDays, localDate } from "../core/time";
 import type { CatalogItem, LocalText } from "../core/types";
 import { useI18n } from "../i18n";
@@ -221,43 +222,90 @@ export function Catalog() {
               </button>
             );
           })}
+        <YoloCard items={services.filter((e) => e.kind === "time" && e.section === "yolo")} />
       </section>
-      <YoloSection items={services.filter((e) => e.kind === "time" && e.section === "yolo")} />
     </Page>
   );
 }
 
-/** 2.8 (FR-304–306, V71): the YOLO section — a card per special day with its icon, date and who can do it. */
-function YoloSection({ items }: { items: CatalogItem[] }) {
+/** 2.8 (V71): YOLO as the 4th card of the services — the next special day under it; it opens the YOLO catalog. */
+function YoloCard({ items }: { items: CatalogItem[] }) {
   const { t, lang } = useI18n();
   const app = useApp();
   const store = useStore();
   if (!items.length) return null;
+  const next = yoloOrder(items, store.serverNow(), app.deployment?.timezone ?? "Europe/Warsaw")[0];
+  return (
+    <button type="button" className="entry-card" onClick={() => store.openPanel("yolo")} data-testid="catalog-yolo">
+      <span className="entry-icon yolo-tile" data-tone="violet">
+        <Icon name="sparkles" size={24} />
+      </span>
+      <span className="entry-main">
+        <strong>YOLO</strong>
+        {next && (
+          <span className="muted small" data-testid="yolo-next">
+            {next.days === null
+              ? localText(next.e.name, lang)
+              : t("yolo.next", { name: localText(next.e.name, lang), when: next.days === 0 ? t("yolo.today") : t("yolo.inDays", { n: next.days }) })}
+          </span>
+        )}
+      </span>
+      <Icon name="chevron" className="ico-end" />
+    </button>
+  );
+}
+
+/** 2.8 (FR-304–306, V71): the YOLO catalog — a card per special day with its icon, date and who can do it. */
+export function YoloPanel() {
+  const { t, lang } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  const [items, setItems] = useState<CatalogItem[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const load = useCallback(
+    () =>
+      store.api.catalog().then(
+        (list) => (setItems(list.filter((e) => e.kind === "time" && e.section === "yolo")), setFailed(false)),
+        () => setFailed(true)
+      ),
+    [store]
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
   const tz = app.deployment?.timezone ?? "Europe/Warsaw";
   return (
-    <section className="stack yolo" aria-label="YOLO" data-testid="catalog-yolo">
-      <h2 className="section-title yolo-title">
-        <Icon name="sparkles" size={22} /> YOLO
-      </h2>
-      <div className="yolo-grid">
-        {yoloOrder(items, store.serverNow(), tz).map(({ e, days }) => (
-          <button key={e.id} type="button" className="yolo-card" onClick={() => store.openPanel("request", e.id)} data-testid={`catalog-${e.id}`}>
-            <span className="yolo-tile" data-tone={YOLO_TONES[e.id] ?? "accent"}>
-              <EntryIcon icon={e.icon} />
-            </span>
-            <strong>{localText(e.name, lang)}</strong>
-            <span className="muted small">{localText(e.when, lang)}</span>
-            {days !== null && days <= 60 && (
-              <span className="chip chip-info yolo-soon" data-testid={`yolo-soon-${e.id}`}>
-                {days === 0 ? t("yolo.today") : t("yolo.inDays", { n: days })}
-              </span>
-            )}
-            <span className="muted small yolo-who">
-              {e.providers.length === 0 ? t("catalog.nobody") : e.providers.map((p) => p.nickname).join(", ")}
-            </span>
+    <Panel title="YOLO" onClose={() => store.closePanel()}>
+      {failed && !items ? (
+        <div className="row spread">
+          <p className="form-error">{t("catalog.error")}</p>
+          <button type="button" className="btn btn-secondary btn-small" onClick={() => void load()}>
+            {t("common.retry")}
           </button>
-        ))}
-      </div>
-    </section>
+        </div>
+      ) : !items ? (
+        <p className="muted">{t("common.loading")}</p>
+      ) : (
+        <div className="yolo-grid" data-testid="yolo-catalog">
+          {yoloOrder(items, store.serverNow(), tz).map(({ e, days }) => (
+            <button key={e.id} type="button" className="yolo-card" onClick={() => store.openPanel("request", e.id)} data-testid={`catalog-${e.id}`}>
+              <span className="yolo-tile" data-tone={YOLO_TONES[e.id] ?? "accent"}>
+                <EntryIcon icon={e.icon} />
+              </span>
+              <strong>{localText(e.name, lang)}</strong>
+              <span className="muted small">{localText(e.when, lang)}</span>
+              {days !== null && days <= 60 && (
+                <span className="chip chip-info yolo-soon" data-testid={`yolo-soon-${e.id}`}>
+                  {days === 0 ? t("yolo.today") : t("yolo.inDays", { n: days })}
+                </span>
+              )}
+              <span className="muted small yolo-who">
+                {e.providers.length === 0 ? t("catalog.nobody") : e.providers.map((p) => p.nickname).join(", ")}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </Panel>
   );
 }

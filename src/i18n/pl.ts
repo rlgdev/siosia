@@ -744,5 +744,6 @@ export const pl: Record<MessageKey, string> = {
   "contract.yoloNote": "Wydarzenia YOLO (Halloween, urodziny…) mają stawkę opieki nad dziećmi, chyba że ustawisz dla nich własną.",
   "request.baseRate": "stawka z umowy za: {service}",
   "yolo.today": "Dziś!",
-  "yolo.inDays": "za {n} dni"
+  "yolo.inDays": "za {n} dni",
+  "yolo.next": "Najbliżej: {name} — {when}"
 };

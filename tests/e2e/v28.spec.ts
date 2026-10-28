@@ -83,8 +83,13 @@ test("a contract with someone who offers nothing; an invite link into Siosia and
   await back(roman);
   await back(roman);
   await roman.getByTestId("start-siosia").click();
-  const yolo = roman.getByTestId("catalog-yolo");
+  // YOLO is the 4th card of the services; it opens the YOLO catalog.
+  await expect(roman.locator('section:has([data-testid="catalog-ride"]) .entry-card strong')).toHaveText(["Ride", "Learning", "Childcare", "YOLO"]);
+  await expect(roman.getByTestId("yolo-next")).toContainText("Next:");
+  await roman.getByTestId("catalog-yolo").click();
+  const yolo = roman.getByTestId("yolo-catalog");
   await expect(yolo.locator(".yolo-card")).toHaveCount(15);
+  await expect(yolo.getByTestId("catalog-yolo_summer").locator("svg")).toHaveAttribute("data-icon", "parrot");
   await expect(yolo.getByTestId("catalog-yolo_halloween")).toContainText("Ewa");
   await yolo.getByTestId("catalog-yolo_halloween").click();
   await expect(roman.getByTestId("request-form")).toBeVisible();
