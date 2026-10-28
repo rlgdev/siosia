@@ -97,6 +97,14 @@ export interface CatalogEntry {
   price: null | { perHour: number } | { fixed: number };
   needsPlace: boolean;
   enabled: boolean;
+  /** 2.8 (FR-304): "yolo" = a special event of the YOLO section; absent/null = a regular entry. */
+  section?: "yolo" | null;
+  /** 2.8 (FR-305): the entry it takes after — who offers that one offers this, its contract rate prices it. */
+  base?: string | null;
+  /** 2.8 (FR-306): the yearly day ("MM-DD") a YOLO event sorts by; null = any time. */
+  date?: string | null;
+  /** 2.8: when it is, in words ("31 Oct", "Any time"). */
+  when?: LocalText | null;
 }
 
 /** A person as other users see them in 2.0 lists: never the auth user id (FR-143). */

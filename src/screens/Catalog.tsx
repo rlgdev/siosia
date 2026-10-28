@@ -2,12 +2,15 @@
 // rides to take), then every enabled entry with who offers it. Ride opens the v1 rider flow (R1);
 // a time entry opens the request form (C2) — 2.1: also one nobody offers yet, as an open request
 // everyone in the group sees (FR-160); open requests of others lead to P1 (FR-161).
+// 2.8 (FR-304–306): the YOLO section — special days around the year, the dated ones in the order of
+// their next date ("in 12 days" within two months), then the any-time ones.
 
 import { useCallback, useEffect, useState } from "react";
 import { EMOJI_ICONS, Icon } from "../components/Icon";
 import { Avatar, ProfileIcon } from "../components/ProfileIcon";
 import { profileIcon } from "../components/profileIcons";
 import { Money, Page, RatingBadge } from "../components/ui";
+import { addDays, localDate } from "../core/time";
 import type { CatalogItem, LocalText } from "../core/types";
 import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
@@ -28,6 +31,44 @@ export function EntryIcon({ icon }: { icon: string }) {
   if (profileIcon(icon)) return <ProfileIcon icon={icon} size="sm" />;
   const name = EMOJI_ICONS[icon];
   return name ? <Icon name={name} size={24} /> : <span aria-hidden="true">{icon}</span>;
+}
+
+/** 2.8 (V71): each YOLO event's colour (the tile behind its icon); others take the accent. */
+const YOLO_TONES: Record<string, string> = {
+  yolo_halloween: "orange",
+  yolo_nicholas: "red",
+  yolo_christmas: "green",
+  yolo_new_year: "violet",
+  yolo_winter: "sky",
+  yolo_date_night: "pink",
+  yolo_carnival: "violet",
+  yolo_easter: "yellow",
+  yolo_childrens_day: "sky",
+  yolo_summer: "teal",
+  yolo_back_to_school: "blue",
+  yolo_birthday: "pink",
+  yolo_party: "orange",
+  yolo_sleepover: "indigo",
+  yolo_wedding: "yellow"
+};
+
+/** Days from today to the event's next "MM-DD" in the deployment's timezone (0 = today); null = any time. */
+export function daysUntil(date: string | null | undefined, now: number, tz: string): number | null {
+  if (!date || !/^\d\d-\d\d$/.test(date)) return null;
+  const today = localDate(now, tz);
+  let next = `${today.slice(0, 4)}-${date}`;
+  if (next < today) next = `${Number(today.slice(0, 4)) + 1}-${date}`;
+  let n = 0;
+  for (let d = today; d < next && n < 400; d = addDays(d, 1)) n++;
+  return n;
+}
+
+/** The YOLO events in the order of their next date, the any-time ones after (as configured). */
+export function yoloOrder(items: CatalogItem[], now: number, tz: string): { e: CatalogItem; days: number | null }[] {
+  return items
+    .map((e, i) => ({ e, i, days: daysUntil(e.date, now, tz) }))
+    .sort((a, b) => (a.days ?? 1e6) - (b.days ?? 1e6) || a.i - b.i)
+    .map(({ e, days }) => ({ e, days }));
 }
 
 export function Catalog() {
@@ -132,7 +173,7 @@ export function Catalog() {
           </button>
         )}
         {services
-          .filter((e) => e.kind === "time")
+          .filter((e) => e.kind === "time" && !e.section)
           .map((e) => {
             const nobody = e.providers.length === 0;
             return (
@@ -181,6 +222,43 @@ export function Catalog() {
             );
           })}
       </section>
+      <YoloSection items={services.filter((e) => e.kind === "time" && e.section === "yolo")} />
     </Page>
+  );
+}
+
+/** 2.8 (FR-304–306, V71): the YOLO section — a card per special day with its icon, date and who can do it. */
+function YoloSection({ items }: { items: CatalogItem[] }) {
+  const { t, lang } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  if (!items.length) return null;
+  const tz = app.deployment?.timezone ?? "Europe/Warsaw";
+  return (
+    <section className="stack yolo" aria-label="YOLO" data-testid="catalog-yolo">
+      <h2 className="section-title yolo-title">
+        <Icon name="sparkles" size={22} /> YOLO
+      </h2>
+      <p className="muted small">{t("yolo.intro")}</p>
+      <div className="yolo-grid">
+        {yoloOrder(items, store.serverNow(), tz).map(({ e, days }) => (
+          <button key={e.id} type="button" className="yolo-card" onClick={() => store.openPanel("request", e.id)} data-testid={`catalog-${e.id}`}>
+            <span className="yolo-tile" data-tone={YOLO_TONES[e.id] ?? "accent"}>
+              <EntryIcon icon={e.icon} />
+            </span>
+            <strong>{localText(e.name, lang)}</strong>
+            <span className="muted small">{localText(e.when, lang)}</span>
+            {days !== null && days <= 60 && (
+              <span className="chip chip-info yolo-soon" data-testid={`yolo-soon-${e.id}`}>
+                {days === 0 ? t("yolo.today") : t("yolo.inDays", { n: days })}
+              </span>
+            )}
+            <span className="muted small yolo-who">
+              {e.providers.length === 0 ? t("catalog.nobody") : e.providers.map((p) => p.nickname).join(", ")}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }

@@ -14,7 +14,9 @@ const U = {
   x: "00000000-0000-4000-8000-000000000405",
   t1b: "00000000-0000-4000-8000-000000000406",
   m1: "00000000-0000-4000-8000-000000000407",
-  m2: "00000000-0000-4000-8000-000000000408"
+  m2: "00000000-0000-4000-8000-000000000408",
+  n1: "00000000-0000-4000-8000-000000000409",
+  n2: "00000000-0000-4000-8000-000000000410"
 };
 type Who = keyof typeof U;
 const HOME = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
@@ -114,6 +116,14 @@ describe("test accounts (2.7, V66)", () => {
     expect((cat.find((x) => x.id === "childcare")!.providers as Json[]).filter((p) => p.nickname === "Niania").map((p) => p.publicId)).toEqual([pub.m2]);
     expect(await listed("m1")).toEqual([]);
     expect(await listed("t1")).toEqual([]);
+  });
+
+  it("a test account's invite link admits a test account (2.8, FR-303)", async () => {
+    await call("n1", "siosia_join_link", [(await call<Json>("t1", "siosia_create_member_invite")).token, "dev-n1"]);
+    await call("n2", "siosia_join_link", [(await call<Json>("anna", "siosia_create_member_invite")).token, "dev-n2"]);
+    const sb = async (who: Who) => (await h.admin("select public.siosia_sandbox($1) as s", [U[who]])).rows[0].s;
+    expect(await sb("n1")).toBe(true);
+    expect(await sb("n2")).toBe(false);
   });
 
   it("a test account stays one after the account move; the operator can move one out", async () => {

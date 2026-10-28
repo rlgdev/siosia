@@ -322,6 +322,12 @@ export class SupabaseBackend implements Backend {
   async join(code: string, deviceId: string) {
     await this.rpc("siosia_join", { p_code: code, p_device: deviceId });
   }
+  createMemberInvite() {
+    return this.rpc<{ token: string; expiresAt: number }>("siosia_create_member_invite");
+  }
+  async joinWithLink(token: string, deviceId: string) {
+    await this.rpc("siosia_join_link", { p_token: token, p_device: deviceId });
+  }
   bookRide(input: BookingInput) {
     const args: Record<string, unknown> = {
       p_pickup: input.pickup,

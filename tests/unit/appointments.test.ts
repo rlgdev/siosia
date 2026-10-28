@@ -93,7 +93,8 @@ beforeEach(() => {
 describe("catalog, offers, My place (FR-090–094, FR-140, FR-143)", () => {
   it("lists who offers each enabled entry by public id, never a user id, without the viewer", () => {
     const cat = at((e) => e.catalog("client"));
-    expect(cat.map((x) => x.id)).toEqual(["ride", "learning", "childcare"]);
+    expect(cat.filter((x) => !x.section).map((x) => x.id)).toEqual(["ride", "learning", "childcare"]);
+    expect(cat.filter((x) => x.section === "yolo")).toHaveLength(15); // 2.8
     expect(cat.find((x) => x.id === "childcare")!.providers).toEqual([expect.objectContaining({ nickname: "Siosia", publicId: pub("siosia") })]);
     expect(cat.find((x) => x.id === "ride")!.providers).toEqual([]);
     const text = JSON.stringify(cat);

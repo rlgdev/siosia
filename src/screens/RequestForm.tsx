@@ -287,6 +287,8 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
           {contractRate !== null && chosen && (
             <span className="muted small" data-testid="request-contract">
               {t("request.contractRate", { name: chosen.nickname, rate: new Intl.NumberFormat(locale, { style: "currency", currency: dep.tariff.currency }).format(contractRate) })}
+              {/* 2.8 (FR-305): a YOLO event takes the contract's rate of its base service */}
+              {entry.base && ` · ${t("request.baseRate", { service: localText(dep.services.find((x) => x.id === entry.base)?.name, locale.startsWith("pl") ? "pl" : "en") || entry.base })}`}
             </span>
           )}
         </p>

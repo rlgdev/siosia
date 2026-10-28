@@ -932,3 +932,32 @@ member list. Tests keep running against the live project, but in a sandbox real 
   list and among the catalog's providers — as its newest phone's account — and not at all to its
   own other phones (2026-10-28: "Toria" showed ten times).
 
+## Amendment 2.8 (2026-10-28): contracts with anyone, invite links, YOLO
+
+Operator request of 2026-10-28: "In the contracts section there is no Toria on the list" (she
+offers no service, so the form left her out); invite someone new to Siosia from the Family section
+with a link shared through the phone's share sheet; a **YOLO** section of special events around the
+year, approved like any service and priced from the contract's hourly rate.
+
+- **FR-300**: A contract MAY be proposed to any member (not only to someone who offers a service),
+  for any enabled service. An active contract line lets that family ask that person for the service
+  even if they do not offer it to everyone; the catalog shows them to that family under the service
+  with the contract rate.
+- **FR-301**: Family & contracts → *Invite someone new*: the app makes a personal link (valid 14
+  days, works once) and opens the phone's share sheet (Messages, WhatsApp, e-mail…); where there is
+  none it copies the link and shows it.
+- **FR-302**: Opening the link on a new phone admits it like the invite code (no code to type; a
+  pasted link works on the invite screen too) and, once the newcomer has chosen a nickname, they get
+  a family invitation from the person who invited them (the FR-250 rules). A used, expired or wrong
+  link says so; ten wrong tries an hour are the limit (as for codes).
+- **FR-303**: A test account's link admits a test account (V66).
+- **FR-304**: The catalog has a **YOLO** section: special days around the year, each like Childcare
+  (place, duration, kids, series, approval, session updates, cost summary) — Halloween, St
+  Nicholas' Day, Christmas, New Year's Eve, winter holidays, date night (Valentine's), carnival,
+  Easter, Children's Day, summer holidays, back to school, birthday party, kids' party, sleepover,
+  wedding and family celebrations.
+- **FR-305**: Whoever offers Childcare offers the YOLO events; the price comes from the contract's
+  rate for that event if it has one, else from its Childcare rate, else from the price list.
+- **FR-306**: C1 shows YOLO as its own section with an icon per event; dated events come in the
+  order of their next date ("in 12 days" within two months), the rest after them.
+

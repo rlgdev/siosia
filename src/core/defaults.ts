@@ -1,4 +1,5 @@
 import type { CatalogEntry, DeploymentConfig } from "./types";
+import { YOLO_SERVICES } from "./yolo";
 
 /** The catalog seeded on first run (spec §4); the SQL twin seeds the same in app_config.services. */
 export const DEFAULT_SERVICES: CatalogEntry[] = [
@@ -34,7 +35,9 @@ export const DEFAULT_SERVICES: CatalogEntry[] = [
     price: null,
     needsPlace: true,
     enabled: true
-  }
+  },
+  // 2.8: the YOLO events (src/core/yolo.ts)
+  ...YOLO_SERVICES
 ];
 
 /**

@@ -20,10 +20,11 @@ const U = {
   p3: "00000000-0000-4000-8000-000000000213",
   p4: "00000000-0000-4000-8000-000000000214",
   p5: "00000000-0000-4000-8000-000000000215",
-  p6: "00000000-0000-4000-8000-000000000216"
+  p6: "00000000-0000-4000-8000-000000000216",
+  nu: "00000000-0000-4000-8000-000000000217"
 };
 type Who = keyof typeof U;
-const NAMES: Record<Who, string> = { dad: "Roman", mum: "Anna", nanny: "Toria", other: "Ewa", x: "Xenia", y: "Yan", p1: "P1", p2: "P2", p3: "P3", p4: "P4", p5: "P5", p6: "P6" };
+const NAMES: Record<Who, string> = { dad: "Roman", mum: "Anna", nanny: "Toria", other: "Ewa", x: "Xenia", y: "Yan", p1: "P1", p2: "P2", p3: "P3", p4: "P4", p5: "P5", p6: "P6", nu: "Kasia" };
 const HOME = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
 const MIN = 60_000;
 const TZ = "Europe/Warsaw";
@@ -71,6 +72,7 @@ const endAgo = (id: unknown, agoMin: number) =>
 beforeAll(async () => {
   h = await createHarness(Object.values(U));
   for (const k of Object.keys(U) as Who[]) {
+    if (k === "nu") continue; // 2.8: comes in by an invite link
     await h.onboard(U[k], NAMES[k]);
     pub[k] = String((await call<Json>(k, "siosia_get_profile")).publicId);
     await call(k, "siosia_save_push", [`https://web.push.apple.com/${k}`, "p".repeat(40), "a".repeat(16)]);
@@ -82,7 +84,8 @@ beforeAll(async () => {
 beforeEach(async () => {
   await h.db.exec(
     "delete from public.ratings; delete from public.rides; delete from public.appointments; delete from public.appointment_series; delete from public.push_outbox;" +
-      "delete from public.kids; delete from public.family_invites; delete from public.contracts; delete from public.family_members; delete from public.families;"
+      "delete from public.kids; delete from public.family_invites; delete from public.contracts; delete from public.family_members; delete from public.families;" +
+      "delete from public.member_invites;"
   );
 });
 
@@ -258,7 +261,6 @@ describe("contracts (FR-260–264, V61)", () => {
     for (const bad of [[], [{ serviceId: "childcare", perHour: -1 }], [{ serviceId: "childcare", perHour: 10001 }], [{ serviceId: "childcare", perHour: 1.005 }], [{ serviceId: "childcare", perHour: 4 }, { serviceId: "childcare", perHour: 5 }]])
       expect(await code(propose("dad", "nanny", "family", bad)), JSON.stringify(bad)).toBe("bad_input");
     expect(await code(propose("dad", "nanny", "family", [{ serviceId: "ride", perHour: 4 }]))).toBe("not_offered");
-    expect(await code(propose("dad", "other", "family", [{ serviceId: "learning", perHour: 4 }]))).toBe("not_offered");
     expect(await code(propose("dad", "mum", "family", [{ serviceId: "learning", perHour: 4 }]))).toBe("forbidden");
     expect(await code(propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 4 }], "x".repeat(201)))).toBe("bad_input");
     const c1 = await propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }], " evenings ");
@@ -289,6 +291,71 @@ describe("contracts (FR-260–264, V61)", () => {
     const c5 = await propose("nanny", "other", "provider", [{ serviceId: "learning", perHour: 30 }]);
     await call("nanny", "siosia_withdraw_contract", [c5.id]);
     expect((await contracts("other")).map((c) => c.status)).toEqual(["withdrawn", "declined"]);
+  });
+});
+
+describe("2.8: a contract with anyone; YOLO priced from the base rate (V68, V70)", () => {
+  const providers = async (who: Who, id: string) =>
+    ((await call<Json[]>(who, "siosia_catalog")).find((x) => x.id === id)!.providers as Json[]).map((p) => [p.nickname, p.contractRate]);
+  it("contracts with someone who offers nothing, who then shows to that family only and can be asked", async () => {
+    await couple();
+    expect(await providers("dad", "childcare")).toEqual([["Toria", null]]);
+    expect(await code(request("dad", "other", 26 * 60))).toBe("not_offered");
+    const c = await propose("dad", "other", "family", [{ serviceId: "childcare", perHour: 30 }]);
+    await answerContract("other", c.id, "accept");
+    expect(await providers("dad", "childcare")).toEqual([["Ewa", 30], ["Toria", null]]);
+    expect(await providers("mum", "childcare")).toEqual([["Ewa", 30], ["Toria", null]]);
+    expect(await providers("x", "childcare")).toEqual([["Toria", null]]);
+    expect(await request("dad", "other", 26 * 60, { duration: 120 })).toMatchObject({ price: 60, rate: 30, contractId: c.id });
+    expect(await code(request("dad", "other", 30 * 60, { service: "learning", duration: 60 }))).toBe("not_offered");
+  });
+
+  it("a YOLO event is offered by whoever offers its base and takes the contract's base rate", async () => {
+    expect((await call<Json[]>("dad", "siosia_catalog")).filter((x) => x.section === "yolo")).toHaveLength(15);
+    expect(await providers("dad", "yolo_halloween")).toEqual([["Toria", null]]);
+    expect(await request("dad", "nanny", 26 * 60, { service: "yolo_halloween" })).toMatchObject({ price: null, rate: null });
+    const c = await propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }]);
+    await answerContract("nanny", c.id, "accept");
+    expect(await providers("dad", "yolo_halloween")).toEqual([["Toria", 40]]);
+    expect(await request("dad", "nanny", 50 * 60, { service: "yolo_halloween" })).toMatchObject({ price: 120, rate: 40, contractId: c.id });
+    const c2 = await propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }, { serviceId: "yolo_new_year", perHour: 60 }]);
+    await answerContract("nanny", c2.id, "accept");
+    expect(await request("dad", "nanny", 74 * 60, { service: "yolo_new_year", duration: 360 })).toMatchObject({ price: 360, rate: 60 });
+  });
+});
+
+describe("2.8: invite links (FR-301–303, V69)", () => {
+  it("a link admits a new phone once; after the nickname comes the family invitation", async () => {
+    const { token, expiresAt } = await call<{ token: string; expiresAt: number }>("dad", "siosia_create_member_invite");
+    expect(token).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(Math.round((expiresAt - Date.now()) / 86_400_000)).toBe(14);
+    expect((await h.admin("select count(*)::int as n from public.member_invites where token_hash = $1", [token])).rows[0].n).toBe(0); // only the hash
+    expect(await h.as(U.nu, "select public.siosia_is_member('dev-nu')")).toBe(false);
+    expect(await code(call("nu", "siosia_join_link", ["wrong", "dev-nu"]))).toBe("bad_link");
+    await call("nu", "siosia_join_link", [token, "dev-nu"]);
+    expect(await h.as(U.nu, "select public.siosia_is_member('dev-nu')")).toBe(true);
+    expect(await code(call("p6", "siosia_join_link", [token, "dev-p6"]))).toBe("bad_link");
+    await clearOutbox();
+    await call("nu", "siosia_save_profile", ["Kasia", "pl"]);
+    await call("nu", "siosia_save_push", ["https://web.push.apple.com/nu", "p".repeat(40), "a".repeat(16)]);
+    expect(((await family("nu")).incoming as Json[]).map((i) => (i.from as Json).nickname)).toEqual(["Roman"]);
+    await call("nu", "siosia_save_profile", ["Kasia K", "pl"]);
+    expect((await family("nu")).incoming).toHaveLength(1); // once
+  });
+
+  it("a member who opens a link gets the invitation at once; links lapse after 14 days; 10 open at most", async () => {
+    const { token } = await call<{ token: string }>("dad", "siosia_create_member_invite");
+    await call("other", "siosia_join_link", [token, "dev-other"]);
+    expect(((await family("other")).incoming as Json[]).map((i) => (i.from as Json).nickname)).toEqual(["Roman"]);
+    const late = (await call<{ token: string }>("dad", "siosia_create_member_invite")).token;
+    await h.admin("update public.member_invites set expires_at = now() - interval '1 second' where used_by is null and from_user = $1", [U.dad]);
+    expect(await code(call("p6", "siosia_join_link", [late, "dev-p6"]))).toBe("bad_link");
+    await h.db.exec("delete from public.member_invites; delete from public.invite_failures;");
+    for (let i = 0; i < 10; i++) await call("mum", "siosia_create_member_invite");
+    expect(await code(call("mum", "siosia_create_member_invite"))).toBe("too_many");
+    for (let i = 0; i < 10; i++) await code(call("p6", "siosia_join_link", [`x${i}`, "dev-p6"]));
+    expect(await code(call("p6", "siosia_join_link", ["y", "dev-p6"]))).toBe("rate_limited");
+    await h.admin("delete from public.invite_failures");
   });
 });
 

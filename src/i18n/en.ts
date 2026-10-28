@@ -730,7 +730,20 @@ export const en = {
   "report.memberLine": "spent {spent} · earned {earned}",
   "report.error": "Couldn't load the report.",
   "err.in_family": "Already in a family with someone else — leave that family first.",
-  "err.family_full": "A family has at most 6 people."
+  "err.family_full": "A family has at most 6 people.",
+  "invite.welcome": "Welcome to Siosia — you came in by invitation. Choose a nickname to start.",
+  "inviteNew.button": "Invite someone new to Siosia",
+  "inviteNew.shareText": "{name} invites you to Siosia — rides, help with the kids and family plans in one app. Open the link to join:",
+  "inviteNew.link": "Invite link",
+  "inviteNew.share": "Share the link",
+  "inviteNew.copy": "Copy the link",
+  "inviteNew.copied": "Link copied",
+  "inviteNew.valid": "Works once, until {date}. When they have joined, they get an invitation to your family.",
+  "contract.yoloNote": "YOLO events (Halloween, birthdays…) take the Childcare rate unless you set one for them.",
+  "request.baseRate": "the {service} rate of your contract",
+  "yolo.intro": "Special days around the year — costumes, parties, holidays. Booked like Childcare, priced at your contract's Childcare rate.",
+  "yolo.today": "Today!",
+  "yolo.inDays": "in {n} days"
 } as const;
 
 export type MessageKey = keyof typeof en;

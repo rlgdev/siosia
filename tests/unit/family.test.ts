@@ -249,7 +249,6 @@ describe("contracts (FR-260–264, V61)", () => {
     for (const bad of [[], [{ serviceId: "childcare", perHour: -1 }], [{ serviceId: "childcare", perHour: 10001 }], [{ serviceId: "childcare", perHour: 1.005 }], [{ serviceId: "childcare", perHour: 4 }, { serviceId: "childcare", perHour: 5 }]])
       expect(code(() => propose("dad", "nanny", "family", bad as ContractRate[])), JSON.stringify(bad)).toBe("bad_input");
     expect(code(() => propose("dad", "nanny", "family", [{ serviceId: "ride", perHour: 4 }]))).toBe("not_offered");
-    expect(code(() => propose("dad", "other", "family", [{ serviceId: "learning", perHour: 4 }]))).toBe("not_offered");
     expect(code(() => propose("dad", "mum", "family", [{ serviceId: "learning", perHour: 4 }]))).toBe("forbidden");
     expect(code(() => propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 4 }], "x".repeat(201)))).toBe("bad_input");
     const c1 = propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }], " evenings ");
@@ -282,6 +281,66 @@ describe("contracts (FR-260–264, V61)", () => {
     const c5 = propose("nanny", "other", "provider", [{ serviceId: "learning", perHour: 30 }]);
     at((e) => e.withdrawContract("nanny", c5.id));
     expect(contracts("other").map((c) => c.status)).toEqual(["withdrawn", "declined"]);
+  });
+});
+
+describe("2.8: a contract with anyone; YOLO priced from the base rate (V68, V70)", () => {
+  it("contracts with someone who offers nothing, who then shows to that family only and can be asked", () => {
+    expect(at((e) => e.catalog("dad")).find((x) => x.id === "childcare")!.providers.map((p) => p.nickname)).toEqual(["Toria"]);
+    expect(code(() => request("dad", "other", 26 * 60))).toBe("not_offered");
+    const c = propose("dad", "other", "family", [{ serviceId: "childcare", perHour: 30 }]);
+    at((e) => e.answerContract("other", c.id, "accept"));
+    expect(at((e) => e.catalog("dad")).find((x) => x.id === "childcare")!.providers.map((p) => [p.nickname, p.contractRate])).toEqual([
+      ["Ewa", 30],
+      ["Toria", null]
+    ]);
+    expect(at((e) => e.catalog("mum")).find((x) => x.id === "childcare")!.providers.map((p) => p.nickname)).toEqual(["Toria"]);
+    expect(request("dad", "other", 26 * 60, { duration: 120 })).toMatchObject({ price: 60, rate: 30, contractId: c.id });
+    expect(code(() => request("dad", "other", 30 * 60, { service: "learning", duration: 60 }))).toBe("not_offered");
+  });
+
+  it("a YOLO event is offered by whoever offers its base and takes the contract's base rate", () => {
+    expect(at((e) => e.catalog("dad")).find((x) => x.id === "yolo_halloween")!.providers.map((p) => p.nickname)).toEqual(["Toria"]);
+    expect(request("dad", "nanny", 26 * 60, { service: "yolo_halloween" })).toMatchObject({ price: null, rate: null });
+    const c = propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }]);
+    at((e) => e.answerContract("nanny", c.id, "accept"));
+    expect(at((e) => e.catalog("dad")).find((x) => x.id === "yolo_halloween")!.providers[0].contractRate).toBe(40);
+    expect(request("dad", "nanny", 50 * 60, { service: "yolo_halloween" })).toMatchObject({ price: 120, rate: 40, contractId: c.id });
+    const c2 = propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }, { serviceId: "yolo_new_year", perHour: 60 }]);
+    at((e) => e.answerContract("nanny", c2.id, "accept"));
+    expect(request("dad", "nanny", 74 * 60, { service: "yolo_new_year", duration: 360 })).toMatchObject({ price: 360, rate: 60 });
+  });
+});
+
+describe("2.8: invite links (FR-301–303, V69)", () => {
+  it("a link admits a new phone once; after the nickname comes the family invitation", () => {
+    const { token, expiresAt } = at((e) => e.createMemberInvite("dad"));
+    expect(token).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(expiresAt - now).toBe(14 * 86_400_000);
+    expect(at((e) => e.isMember("nu"))).toBe(false);
+    expect(code(() => at((e) => e.joinWithLink("nu", "wrong", "dev-nu")))).toBe("bad_link");
+    at((e) => e.joinWithLink("nu", token, "dev-nu"));
+    expect(at((e) => e.isMember("nu"))).toBe(true);
+    expect(code(() => at((e) => e.joinWithLink("nu2", token, "dev-nu2")))).toBe("bad_link");
+    pushes = [];
+    at((e) => e.saveProfile("nu", "Kasia", "pl"));
+    expect(family("nu").incoming.map((i) => i.from.nickname)).toEqual(["Roman"]);
+    expect(sent()).toEqual(["family_invite>nu"]);
+    at((e) => e.saveProfile("nu", "Kasia K", "pl"));
+    expect(family("nu").incoming).toHaveLength(1); // once
+  });
+
+  it("a member who opens a link gets the invitation at once; links lapse after 14 days; 10 open at most", () => {
+    const { token } = at((e) => e.createMemberInvite("dad"));
+    at((e) => e.joinWithLink("other", token, "dev-other"));
+    expect(family("other").incoming.map((i) => i.from.nickname)).toEqual(["Roman"]);
+    const late = at((e) => e.createMemberInvite("dad")).token;
+    now += 14 * 86_400_000;
+    expect(code(() => at((e) => e.joinWithLink("nu", late, "dev-nu")))).toBe("bad_link");
+    for (let i = 0; i < 10; i++) at((e) => e.createMemberInvite("mum"));
+    expect(code(() => at((e) => e.createMemberInvite("mum")))).toBe("too_many");
+    for (let i = 0; i < 9; i++) code(() => at((e) => e.joinWithLink("nu", `x${i}`, "dev-nu"))); // + the late one = 10
+    expect(code(() => at((e) => e.joinWithLink("nu", "y", "dev-nu")))).toBe("rate_limited");
   });
 });
 

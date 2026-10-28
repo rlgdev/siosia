@@ -104,17 +104,29 @@ describe("catalog and schema (T1)", () => {
   });
 
   it("validates the catalog: one ride entry, well-formed ids and durations, nothing deleted", async () => {
-    const base = ((await h.admin("select services from public.app_config where id = 1")).rows[0].services as Json[]).slice(0, 3);
+    const all = (await h.admin("select services from public.app_config where id = 1")).rows[0].services as Json[];
+    const base = all.slice(0, 3);
+    const yolo = all.slice(3); // 2.8: the YOLO events, kept in every save
+    expect(yolo).toHaveLength(15);
     const set = (v: unknown) => h.admin("select public.siosia_set_services($1::jsonb)", [JSON.stringify(v)]);
-    expect(await errorOf(set([...base, { ...base[1], id: "Bad-Id" }]))).toMatch(/bad id/);
-    expect(await errorOf(set([...base, { ...base[0], id: "ride2" }]))).toMatch(/ride entry has the id "ride"|exactly one/);
-    expect(await errorOf(set([base[0], base[1]]))).toMatch(/keep every entry.*childcare/);
-    expect(await errorOf(set([base[0], base[1], { ...base[2], duration: { default: 30, min: 60, max: 720, step: 30 } }]))).toMatch(/duration/);
-    expect(await errorOf(set([base[0], base[1], { ...base[2], duration: { default: 180, min: 60, max: 720, step: 20 } }]))).toMatch(/duration/);
+    expect(await errorOf(set([...base, ...yolo, { ...base[1], id: "Bad-Id" }]))).toMatch(/bad id/);
+    expect(await errorOf(set([...base, ...yolo, { ...base[0], id: "ride2" }]))).toMatch(/ride entry has the id "ride"|exactly one/);
+    expect(await errorOf(set([base[0], base[2], ...yolo]))).toMatch(/keep every entry.*learning/);
+    expect(await errorOf(set([base[0], base[1], ...yolo]))).toMatch(/base is the id of another time entry/); // the YOLO events need childcare
+    expect(await errorOf(set([base[0], base[1], { ...base[2], duration: { default: 30, min: 60, max: 720, step: 30 } }, ...yolo]))).toMatch(/duration/);
+    expect(await errorOf(set([base[0], base[1], { ...base[2], duration: { default: 180, min: 60, max: 720, step: 20 } }, ...yolo]))).toMatch(/duration/);
+    // 2.8 (V70): section, base and date checks; at most 32 entries.
+    expect(await errorOf(set([...base, ...yolo.slice(1), { ...yolo[0], base: "ride" }]))).toMatch(/base is the id of another time entry/);
+    expect(await errorOf(set([...base, ...yolo.slice(1), { ...yolo[0], date: "13-01" }]))).toMatch(/date is "MM-DD"/);
+    expect(await errorOf(set([...base, ...yolo.slice(1), { ...yolo[0], section: "party" }]))).toMatch(/section is "yolo"/);
+    const extra = Array.from({ length: 15 }, (_, i) => ({ ...yolo[0], id: `extra_${i}` }));
+    expect(await errorOf(set([...base, ...yolo, ...extra]))).toMatch(/1 to 32 entries/);
     const music = { id: "music", kind: "time", name: { en: "Music", pl: "Muzyka" }, description: { en: "", pl: "" }, icon: "🎹", duration: { default: 45, min: 30, max: 90, step: 15 }, price: { perHour: 80 }, needsPlace: false, enabled: false };
-    await set([...base, music]);
+    await set([...base, ...yolo, music]);
     const saved = (await h.admin("select services from public.app_config where id = 1")).rows[0].services as Json[];
-    expect(saved.map((s) => s.id)).toEqual(["ride", "learning", "childcare", "music"]);
+    expect(saved.map((s) => s.id)).toEqual(["ride", "learning", "childcare", ...yolo.map((y) => y.id), "music"]);
+    // A re-run of the migration appends nothing that is already there.
+    expect((await h.admin("select jsonb_array_length(services) as n from public.app_config where id = 1")).rows[0].n).toBe(19);
   });
 
   it("allows a rating of a ride or of an appointment, never both", async () => {
@@ -127,7 +139,7 @@ describe("catalog and schema (T1)", () => {
 describe("catalog, offers, My place (FR-090–094, FR-140, FR-143)", () => {
   it("lists who offers each enabled entry by public id, never a user id, without the viewer", async () => {
     const cat = await h.call<Json[]>(U.client, "siosia_catalog");
-    expect(cat.map((e) => e.id)).toEqual(["ride", "learning", "childcare"]); // music is disabled
+    expect(cat.filter((e) => !e.section).map((e) => e.id)).toEqual(["ride", "learning", "childcare"]); // music is disabled
     const childcare = cat.find((e) => e.id === "childcare")!;
     expect(childcare.providers).toEqual([expect.objectContaining({ nickname: "Siosia", publicId: pub.siosia })]);
     expect(cat.find((e) => e.id === "ride")!.providers).toEqual([]);
@@ -1086,7 +1098,7 @@ describe("profiles, masters, calendar, compatibility", () => {
       expect(sigs).toContain(s);
     const cfg = await h.as<Json>(U.stranger, "select public.siosia_config()");
     expect(cfg).toMatchObject({ booking: { maxOpen: 12 }, appointment: { reminderMin: [1440, 120], seriesMaxDays: 91, seriesMaxCount: 12 }, calendarUrl: null });
-    expect((cfg.services as Json[]).map((e) => e.id)).toEqual(["ride", "learning", "childcare"]);
+    expect((cfg.services as Json[]).filter((e) => !e.section).map((e) => e.id)).toEqual(["ride", "learning", "childcare"]);
   });
 
   it("adds the 2.1 calls next to every 2.0 signature, callable by members only (NFR-18)", async () => {

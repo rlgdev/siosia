@@ -28,6 +28,8 @@ export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nick
 /** Outcome of opening a master-profile link, shown once. */
 export type LinkNotice =
   | "joined"
+  // 2.8: came in by someone's invite link
+  | "invited"
   | "moved"
   | "moved_away"
   | "bad_link"
@@ -143,6 +145,37 @@ function takeMasterToken(): string | null {
   }
 }
 
+const JOIN_KEY = "siosia.joinToken";
+
+/** 2.8 (FR-302): an invite link (…/#join=<token>), read once and kept in this tab until used, like a master link. */
+function takeJoinToken(): string | null {
+  if (typeof location === "undefined") return null;
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const fromUrl = params.get("join")?.trim() ?? null;
+  if (params.has("join")) {
+    params.delete("join");
+    const rest = params.toString();
+    history.replaceState(history.state, "", location.pathname + location.search + (rest ? `#${rest}` : ""));
+  }
+  try {
+    if (fromUrl) sessionStorage.setItem(JOIN_KEY, fromUrl);
+    return sessionStorage.getItem(JOIN_KEY) || null;
+  } catch {
+    return fromUrl || null;
+  }
+}
+
+function clearJoinToken(): void {
+  try {
+    sessionStorage.removeItem(JOIN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** 2.8: the token of an invite link pasted on the invite screen. */
+export const joinTokenOf = (input: string): string | null => /(?:^|[#&?])join=([A-Za-z0-9_-]{16,64})/.exec(input.trim())?.[1] ?? null;
+
 function clearMasterToken(): void {
   try {
     sessionStorage.removeItem(MASTER_KEY);
@@ -219,7 +252,7 @@ export class AppStore {
       });
       // A master link opened in a tab that already runs the app (only the #hash changed).
       window.addEventListener("hashchange", () => {
-        if (/(^#|&)master=/.test(location.hash)) location.reload();
+        if (/(^#|&)(master|join)=/.test(location.hash)) location.reload();
       });
     }
   }
@@ -255,6 +288,7 @@ export class AppStore {
     }
     // Take a master link out of the address bar at once (it waits in this tab until it is used).
     const token = takeMasterToken();
+    const joinToken = takeJoinToken();
     const cfg = cfgOverride ?? this.snap.cfg ?? (await loadConfig());
     setRoutingUrl(cfg.map.routingUrl);
     setGeocodeUrl(cfg.map.geocodeUrl);
@@ -267,6 +301,7 @@ export class AppStore {
       const deployment = await api.getConfig();
       this.patch({ uid, deployment });
       if (token) await this.openMaster(token, false);
+      if (joinToken) await this.openJoinLink(joinToken);
       if (!(await api.isMember(deviceId()))) {
         this.patch({ phase: "invite" });
         return;
@@ -296,6 +331,19 @@ export class AppStore {
       clearMasterToken();
       if (code === "bad_link" || code === "rate_limited" || code === "active_trip" || code === "active_ride") this.patch({ linkNotice: code });
       else this.patch({ linkNotice: "link_failed" });
+    }
+  }
+
+  /** 2.8 (FR-302): joins with someone's invite link — once: on a failure the user asks for a new one. */
+  private async openJoinLink(token: string): Promise<void> {
+    try {
+      await this.api.joinWithLink(token, deviceId());
+      this.patch({ linkNotice: "invited" });
+    } catch (e) {
+      const code = e instanceof ServerError ? e.code : null;
+      this.patch({ linkNotice: code === "bad_link" || code === "rate_limited" ? code : "link_failed" });
+    } finally {
+      clearJoinToken();
     }
   }
 
@@ -573,7 +621,10 @@ export class AppStore {
   }
 
   async join(code: string): Promise<void> {
-    await this.api.join(code, deviceId());
+    // 2.8: an invite link pasted where the code goes works as well.
+    const link = joinTokenOf(code);
+    if (link) await this.api.joinWithLink(link, deviceId());
+    else await this.api.join(code, deviceId());
     await this.afterMember();
   }
 

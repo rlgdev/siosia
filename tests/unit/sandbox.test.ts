@@ -117,6 +117,13 @@ describe("test accounts (2.7, V66)", () => {
     expect(listed("t1")).toEqual([]);
   });
 
+  it("a test account's invite link admits a test account (2.8, FR-303)", () => {
+    at((e) => e.joinWithLink("n1", at((e) => e.createMemberInvite("t1")).token, "dev-n1"));
+    at((e) => e.joinWithLink("n2", at((e) => e.createMemberInvite("anna")).token, "dev-n2"));
+    expect(db.sandbox?.n1).toBe(true);
+    expect(db.sandbox?.n2).toBeUndefined();
+  });
+
   it("a test account stays one after the account move", () => {
     const { code: c } = at((e) => e.createTransfer("t1"));
     at((e) => e.redeemTransfer("t1b", c, "dev-t1b"));

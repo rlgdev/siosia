@@ -397,6 +397,19 @@ export interface DbState {
   reportWeek?: string | null;
   /** 2.7 (V66): users who joined with the test invite code — the sandbox (Supabase: memberships.sandbox). */
   sandbox?: Record<string, boolean>;
+  /** 2.8 (V69): personal invite links by token (Supabase keeps a SHA-256 of the token). */
+  memberInvites?: Record<string, MemberInviteRow>;
+}
+
+/** 2.8 (FR-301): a personal link into Siosia, made by a member; works once within 14 days. */
+export interface MemberInviteRow {
+  fromUser: string;
+  createdAt: number;
+  expiresAt: number;
+  usedBy: string | null;
+  usedAt: number | null;
+  /** The family invitation that follows the newcomer's first profile went out. */
+  familySent: boolean;
 }
 
 /** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
@@ -522,6 +535,9 @@ const NOTE_MAX = 200;
 const ACTUAL_MIN = 15;
 const ACTUAL_MAX = 1440;
 const REPORT_WEEKS = 52;
+/** 2.8 (V69): invite links — 14 days, at most 10 open per member (twins of siosia_create_member_invite). */
+const MEMBER_INVITE_MS = 14 * 86_400_000;
+const MEMBER_INVITES_MAX = 10;
 const REPORT_HOUR = 8;
 /** Money to the cent (twin of round(x::numeric, 2)). */
 const round2 = (x: number) => Math.round(x * 100) / 100;
@@ -749,6 +765,11 @@ export class Engine {
       delete this.db.sandbox[old];
     }
     for (const [k, x] of Object.entries(this.db.transfers ?? {})) if (x.userId === old) delete this.db.transfers![k];
+    // 2.8: the invite links made and used follow the account.
+    for (const i of Object.values(this.db.memberInvites ?? {})) {
+      if (i.fromUser === old) i.fromUser = uid;
+      if (i.usedBy === old) i.usedBy = uid;
+    }
     this.effects.notify.add(old);
     this.effects.notify.add(uid);
     return this.getProfile(uid)!;
@@ -826,7 +847,59 @@ export class Engine {
     this.db.users[uid] = existing
       ? { ...existing, nickname: nick, language: lang, deleted: false }
       : { id: uid, nickname: nick, language: lang, createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: false, publicId: randomPublicId() };
+    this.linkFamilyInvites(uid); // 2.8 (FR-302): who invited me by link asks me into their family
     return this.getProfile(uid)!;
+  }
+
+  /** 2.8 (FR-301, V69): a personal link into Siosia — the app shares `<site>#join=<token>`. */
+  createMemberInvite(uid: string): { token: string; expiresAt: number } {
+    this.requireUser(uid);
+    const all = (this.db.memberInvites ??= {});
+    if (Object.values(all).filter((i) => i.fromUser === uid && !i.usedBy && i.expiresAt > this.now).length >= MEMBER_INVITES_MAX) throw new ServerError("too_many");
+    const token = randomToken();
+    all[token] = { fromUser: uid, createdAt: this.now, expiresAt: this.now + MEMBER_INVITE_MS, usedBy: null, usedAt: null, familySent: false };
+    return { token, expiresAt: all[token].expiresAt };
+  }
+
+  /**
+   * 2.8 (FR-302, V69): opening a link admits this phone like the invite code — into the inviter's
+   * realm (V66) — and spends the link; a member who opens one gets the family invitation at once.
+   * A wrong, used or expired link counts as a failed invite attempt.
+   */
+  joinWithLink(uid: string, token: string, deviceId: string): void {
+    if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
+    const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
+    if (fails.length >= 10) throw new ServerError("rate_limited");
+    const i = typeof token === "string" ? this.db.memberInvites?.[token] : undefined;
+    const from = i ? this.db.users[i.fromUser] : undefined;
+    if (!i || i.usedBy || i.expiresAt <= this.now || !from || from.deleted || !this.isMember(from.id)) {
+      this.db.inviteFails[uid] = [...fails, this.now];
+      throw new ServerError("bad_link");
+    }
+    i.usedBy = uid;
+    i.usedAt = this.now;
+    if (!this.isMember(uid)) {
+      const devices = this.db.members[uid] ?? [];
+      if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+      if (this.sandboxOf(i.fromUser)) (this.db.sandbox ??= {})[uid] = true;
+    }
+    this.linkFamilyInvites(uid);
+  }
+
+  /** The family invitations owed to someone who joined by link, once they have a profile (silently none when not allowed). */
+  private linkFamilyInvites(uid: string): void {
+    const u = this.db.users[uid];
+    const pid = u && !u.deleted ? this.publicIdOf(uid) : null;
+    if (!pid) return;
+    for (const i of Object.values(this.db.memberInvites ?? {})) {
+      if (i.usedBy !== uid || i.familySent) continue;
+      i.familySent = true;
+      try {
+        this.inviteToFamily(i.fromUser, pid);
+      } catch {
+        // in a family already, a full family, a gone inviter: no invitation (V69)
+      }
+    }
   }
 
   getVehicle(uid: string): Vehicle | null {
@@ -1610,7 +1683,16 @@ export class Engine {
           e.kind !== "time"
             ? []
             : Object.values(this.db.users)
-                .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.sameRealm(uid, u.id) && this.listed(u.id, uid) && this.offersOf(u.id).includes(e.id))
+                // 2.8 (V68, V70): who offers it (or its base), or has a contract for it with my family
+                .filter(
+                  (u) =>
+                    !u.deleted &&
+                    u.id !== uid &&
+                    this.isMember(u.id) &&
+                    this.sameRealm(uid, u.id) &&
+                    this.listed(u.id, uid) &&
+                    (this.offersService(u.id, e) || this.contractRate(uid, u.id, e.id) !== null)
+                )
                 .sort((a, b) => a.nickname.localeCompare(b.nickname))
                 // Whoever browses the catalog may see the providers' photos (FR-211).
                 .map((u): CatalogProvider => ({ ...this.publicParty(u.id, true), contractRate: this.contractRate(uid, u.id, e.id)?.perHour ?? null }))
@@ -1653,7 +1735,8 @@ export class Engine {
     const provider = open ? null : Object.values(this.db.users).find((u) => !u.deleted && u.publicId === input.providerId);
     if (!open) {
       if (!provider || provider.id === uid || !this.isMember(provider.id) || !this.sameRealm(uid, provider.id)) throw new ServerError("no_provider");
-      if (!this.offersOf(provider.id).includes(e.id)) throw new ServerError("not_offered");
+      // 2.8 (V68, V70): offered (itself or its base), or on a contract between my family and them.
+      if (!this.offersService(provider.id, e) && !this.contractRate(uid, provider.id, e.id)) throw new ServerError("not_offered");
     }
     const { minLeadMin, maxDays } = this.cfg.booking;
     const t0 = input.startsAt;
@@ -3115,7 +3198,7 @@ export class Engine {
     const client = input.as === "family" ? uid : other;
     const note = trimWs(String(input.note ?? ""));
     if (note.length > NOTE_MAX) throw new ServerError("bad_input");
-    const rates = this.cleanRates(input.rates, providerId);
+    const rates = this.cleanRates(input.rates);
     const fid = this.familyOf(client) ?? this.newFamily(client);
     const all = (this.db.contracts ??= {});
     for (const c of Object.values(all)) if (c.familyId === fid && c.providerId === providerId && c.status === "proposed") this.closeContract(c, "withdrawn", uid);
@@ -3212,8 +3295,8 @@ export class Engine {
     for (const m of this.familyPeople(c.familyId)) this.effects.notify.add(m);
   }
 
-  /** 1–12 lines, each a different time entry the provider offers, 0–10 000 per hour to the cent (V61). */
-  private cleanRates(rates: unknown, providerId: string): ContractRate[] {
+  /** 1–12 lines, each a different enabled time entry (2.8: offered or not), 0–10 000 per hour to the cent (V61, V68). */
+  private cleanRates(rates: unknown): ContractRate[] {
     if (!Array.isArray(rates) || rates.length < 1 || rates.length > CONTRACT_LINES_MAX) throw new ServerError("bad_input");
     const seen = new Set<string>();
     return rates.map((r) => {
@@ -3222,8 +3305,9 @@ export class Engine {
       if (typeof id !== "string" || seen.has(id) || typeof perHour !== "number" || !Number.isFinite(perHour) || perHour < 0 || perHour > RATE_MAX || round2(perHour) !== perHour)
         throw new ServerError("bad_input");
       seen.add(id);
+      // 2.8 (V68): any enabled service — a contract is how a person who lists nothing takes one on.
       const e = this.service(id);
-      if (!e || e.kind !== "time" || !e.enabled || !this.offersOf(providerId).includes(id)) throw new ServerError("not_offered");
+      if (!e || e.kind !== "time" || !e.enabled) throw new ServerError("not_offered");
       return { serviceId: id, perHour };
     });
   }
@@ -3249,13 +3333,23 @@ export class Engine {
     };
   }
 
-  /** The active contract line between the client's family and the provider for a service, if any. */
+  /**
+   * The active contract line between the client's family and the provider for a service — 2.8
+   * (FR-305): else the line of its base (a YOLO event takes the Childcare rate) — if any.
+   */
   private contractRate(client: string, provider: string | null, serviceId: string): { contractId: string; perHour: number } | null {
     const fid = this.familyOf(client);
     if (!fid || !provider) return null;
     const c = Object.values(this.db.contracts ?? {}).find((x) => x.familyId === fid && x.providerId === provider && x.status === "active");
-    const line = c?.rates.find((r) => r.serviceId === serviceId);
+    const base = this.service(serviceId)?.base ?? null;
+    const line = c?.rates.find((r) => r.serviceId === serviceId) ?? (base ? c?.rates.find((r) => r.serviceId === base) : undefined);
     return c && line ? { contractId: c.id, perHour: line.perHour } : null;
+  }
+
+  /** 2.8 (V70): a person offers an entry when they offer it or the entry it takes after (twin of siosia_offers_service). */
+  private offersService(uid: string, e: CatalogEntry): boolean {
+    const offers = this.offersOf(uid);
+    return offers.includes(e.id) || (!!e.base && offers.includes(e.base));
   }
 
   /** The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed price. */
@@ -3686,6 +3780,11 @@ export function rideSummary(r: Pick<RideRow, "status" | "driverId" | "cancelledB
 }
 
 const ratingKey = (g: RatingRow) => (g.rideId ? `r:${g.rideId}` : `a:${g.appointmentId}`);
+
+/** 2.8: an invite link's token — 24 URL-safe random characters (twin of siosia_create_member_invite). */
+function randomToken(): string {
+  return randomPublicId() + randomPublicId();
+}
 
 /** 12 URL-safe random characters (twin of the SQL default for profiles.public_id). */
 function randomPublicId(): string {

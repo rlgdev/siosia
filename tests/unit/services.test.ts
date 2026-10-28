@@ -126,7 +126,7 @@ describe("mock backend (FR-070)", () => {
     await client.saveProfile("Toria", "en");
     await siosia.saveProfile("Siosia", "pl");
     await siosia.setOffers(["childcare"]);
-    expect((await client.getConfig()).services.map((e) => e.id)).toEqual(["ride", "learning", "childcare"]);
+    expect((await client.getConfig()).services.filter((e) => !e.section).map((e) => e.id)).toEqual(["ride", "learning", "childcare"]);
     const entry = (await client.catalog()).find((e) => e.id === "childcare")!;
     expect(entry.providers.map((p) => p.nickname)).toEqual(["Siosia"]);
     const heard = new Promise<{ kind: string; appointmentId?: string | null; params: { service?: string } }>((resolve) => siosia.onPush((m) => resolve(m)));

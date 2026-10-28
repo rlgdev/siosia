@@ -118,7 +118,9 @@ function LinkToast() {
             ? t("move.away")
         : n === "link_failed"
           ? t("master.failed")
-          : t(`err.${n}` as MessageKey)}
+          : n === "invited"
+            ? t("invite.welcome")
+            : t(`err.${n}` as MessageKey)}
     </div>
   );
 }

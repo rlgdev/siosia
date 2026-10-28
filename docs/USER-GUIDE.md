@@ -241,6 +241,15 @@ that person then takes the contract's rate ("Contract rate with Toria: 40.00 PLN
 form); requests already sent keep their price. *Propose new rates* replaces it once accepted; either
 side may *End contract*.
 
+**Invite someone new.** Family & contracts → *Invite someone new to Siosia* makes a personal link and
+opens your phone's share sheet (Messages, WhatsApp, e-mail…; elsewhere it is copied). It works once,
+for 14 days: the person opens it, chooses a nickname — no invite code to type — and finds your family
+invitation waiting on the start screen.
+
+**Contracts with anyone.** The person who looks after your kids does not have to offer anything in the
+catalog first: pick them in *Propose a contract*. Once they accept, they appear under the service for
+your family only, at the contract rate.
+
 **What it cost.** When an appointment is over, its page shows a **Summary** — the time, the rate and
 the total — and everyone in the family and the person who looked after the kids get a notification.
 Came back an hour late? The person who looked after them can *Correct the time* within 24 hours; the
@@ -250,6 +259,15 @@ total follows the rate and you hear about it. Siosia never charges anything — 
 client, rides as a passenger) and earned (services you gave, rides you drove), per person and
 service, with the balance; ‹ › steps through the last 52 weeks; in a family, *Family* sums all of
 you. Every Monday morning a notification brings last week's numbers.
+
+## YOLO — special days
+
+At the bottom of *Siosia* the **YOLO** section lists special days around the year: Halloween, St
+Nicholas' Day, Christmas, New Year's Eve, winter holidays, date night, carnival, Easter, Children's
+Day, summer holidays, back to school, birthday parties, kids' parties, sleepovers, weddings. The next
+ones come first ("in 3 days"). Each is booked like Childcare — place, time, kids, approval — and
+whoever looks after kids can be asked; with a contract it costs your Childcare rate unless the
+contract sets one for that event.
 
 ## The round *i*
 
@@ -529,6 +547,15 @@ tą osobą ma wtedy stawkę z umowy („Stawka z umowy z: Toria — 40,00 zł/go
 już prośby zachowują swoją cenę. *Zaproponuj nowe stawki* zastępuje umowę po akceptacji; każda strona
 może ją *Zakończyć*.
 
+**Zaproś kogoś nowego.** Rodzina i umowy → *Zaproś kogoś nowego do Siosi* tworzy osobisty link i
+otwiera menu udostępniania telefonu (Wiadomości, WhatsApp, e-mail…; gdzie go nie ma, link się kopiuje).
+Działa raz, przez 14 dni: osoba go otwiera, wybiera pseudonim — bez wpisywania kodu — i na ekranie
+startowym czeka na nią zaproszenie do Twojej rodziny.
+
+**Umowa z każdym.** Osoba, która zajmuje się Twoimi dziećmi, nie musi niczego oferować w katalogu:
+wybierz ją w *Zaproponuj umowę*. Po akceptacji pojawia się przy usłudze tylko dla Twojej rodziny, w
+stawce z umowy.
+
 **Ile to kosztowało.** Po zakończeniu termin pokazuje **Podsumowanie** — czas, stawkę i kwotę — a cała
 rodzina i osoba, która zajmowała się dziećmi, dostają powiadomienie. Wróciliście godzinę później?
 Opiekun(ka) może w ciągu 24 godzin *Poprawić czas*; kwota liczy się ze stawki, a Ty dostajesz
@@ -539,6 +566,14 @@ informację. Siosia niczego nie pobiera — rozliczacie się sami.
 przejechałeś), na osobę i usługę, z bilansem; ‹ › przechodzi przez ostatnie 52 tygodnie; w rodzinie
 *Rodzina* sumuje was wszystkich. W każdy poniedziałek rano powiadomienie przynosi liczby z poprzedniego
 tygodnia.
+
+## YOLO — wyjątkowe dni
+
+Na dole *Siosi* sekcja **YOLO** zbiera wyjątkowe dni w roku: Halloween, Mikołajki, Boże Narodzenie,
+Sylwester, ferie, randkę we dwoje, karnawał, Wielkanoc, Dzień Dziecka, wakacje, powrót do szkoły,
+urodziny, imprezy dla dzieci, piżama party, wesela. Najbliższe są pierwsze („za 3 dni”). Każde
+rezerwujesz jak opiekę nad dziećmi — miejsce, czas, dzieci, akceptacja — a poprosić możesz każdego,
+kto opiekuje się dziećmi; z umową kosztuje stawkę opieki, chyba że umowa ma osobną dla tego dnia.
 
 ## Okrągłe *i*
 

@@ -335,6 +335,12 @@ update public.app_config set services = $json$[
    "icon": "🧸", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null,
    "needsPlace": true, "enabled": true}
 ]$json$::jsonb where id = 1 and services is null;
+-- 2.8 (FR-304, V70): the YOLO events, appended once each by id (an operator's edits — enabled: false,
+-- another name — are never overwritten; twin of src/core/yolo.ts).
+update public.app_config c set services = c.services || coalesce((
+  select jsonb_agg(y.e order by y.ord) from jsonb_array_elements($yolo$[{"id": "yolo_halloween", "kind": "time", "section": "yolo", "base": "childcare", "date": "10-31", "when": {"en": "31 Oct", "pl": "31 paź"}, "name": {"en": "Halloween", "pl": "Halloween"}, "description": {"en": "Costumes, pumpkins, trick-or-treat round the block", "pl": "Przebrania, dynie i cukierek albo psikus po sąsiedztwie"}, "icon": "🎃", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_nicholas", "kind": "time", "section": "yolo", "base": "childcare", "date": "12-06", "when": {"en": "6 Dec", "pl": "6 gru"}, "name": {"en": "St Nicholas' Day", "pl": "Mikołajki"}, "description": {"en": "Gifts, a red hat and a visit from the saint", "pl": "Prezenty, czerwona czapka i wizyta Mikołaja"}, "icon": "🎁", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_christmas", "kind": "time", "section": "yolo", "base": "childcare", "date": "12-24", "when": {"en": "24 Dec", "pl": "24 gru"}, "name": {"en": "Christmas", "pl": "Boże Narodzenie"}, "description": {"en": "Baking, decorating the tree, kids busy while you cook", "pl": "Pieczenie, ubieranie choinki, dzieci zajęte, gdy gotujesz"}, "icon": "🎄", "duration": {"default": 240, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_new_year", "kind": "time", "section": "yolo", "base": "childcare", "date": "12-31", "when": {"en": "31 Dec", "pl": "31 gru"}, "name": {"en": "New Year's Eve", "pl": "Sylwester"}, "description": {"en": "You celebrate, the kids watch the fireworks and sleep", "pl": "Ty świętujesz, dzieci oglądają fajerwerki i śpią"}, "icon": "🎆", "duration": {"default": 360, "min": 120, "max": 900, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_winter", "kind": "time", "section": "yolo", "base": "childcare", "date": "01-20", "when": {"en": "Jan–Feb", "pl": "sty–lut"}, "name": {"en": "Winter holidays", "pl": "Ferie zimowe"}, "description": {"en": "Sledging, snowmen and hot cocoa", "pl": "Sanki, bałwany i gorące kakao"}, "icon": "❄️", "duration": {"default": 480, "min": 120, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_date_night", "kind": "time", "section": "yolo", "base": "childcare", "date": "02-14", "when": {"en": "14 Feb", "pl": "14 lut"}, "name": {"en": "Date night", "pl": "Randka we dwoje"}, "description": {"en": "Valentine's or any evening just for the two of you", "pl": "Walentynki albo każdy wieczór tylko dla was"}, "icon": "💝", "duration": {"default": 240, "min": 60, "max": 600, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_carnival", "kind": "time", "section": "yolo", "base": "childcare", "date": "02-10", "when": {"en": "Feb", "pl": "luty"}, "name": {"en": "Carnival party", "pl": "Bal karnawałowy"}, "description": {"en": "Fancy dress, masks and doughnuts", "pl": "Przebrania, maski i pączki"}, "icon": "🎭", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_easter", "kind": "time", "section": "yolo", "base": "childcare", "date": "04-01", "when": {"en": "Spring", "pl": "wiosna"}, "name": {"en": "Easter", "pl": "Wielkanoc"}, "description": {"en": "Painting eggs, the Easter basket, the egg hunt", "pl": "Malowanie pisanek, święconka i szukanie zajączka"}, "icon": "🥚", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_childrens_day", "kind": "time", "section": "yolo", "base": "childcare", "date": "06-01", "when": {"en": "1 Jun", "pl": "1 cze"}, "name": {"en": "Children's Day", "pl": "Dzień Dziecka"}, "description": {"en": "Balloons, games and the kids' own day out", "pl": "Balony, zabawy i dzień tylko dla dzieci"}, "icon": "🎈", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_summer", "kind": "time", "section": "yolo", "base": "childcare", "date": "07-01", "when": {"en": "Jul–Aug", "pl": "lip–sie"}, "name": {"en": "Summer holidays", "pl": "Wakacje"}, "description": {"en": "Lake, park and ice cream days while school is out", "pl": "Jezioro, park i lody, gdy szkoła ma przerwę"}, "icon": "🏖️", "duration": {"default": 480, "min": 120, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_back_to_school", "kind": "time", "section": "yolo", "base": "childcare", "date": "09-01", "when": {"en": "1 Sep", "pl": "1 wrz"}, "name": {"en": "Back to school", "pl": "Powrót do szkoły"}, "description": {"en": "School supplies, the first day and the first homework", "pl": "Wyprawka, pierwszy dzień i pierwsze lekcje"}, "icon": "🎒", "duration": {"default": 120, "min": 60, "max": 480, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_birthday", "kind": "time", "section": "yolo", "base": "childcare", "date": null, "when": {"en": "Any time", "pl": "kiedy chcesz"}, "name": {"en": "Birthday party", "pl": "Urodziny"}, "description": {"en": "Cake, candles and a room full of guests", "pl": "Tort, świeczki i pokój pełen gości"}, "icon": "🎂", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_party", "kind": "time", "section": "yolo", "base": "childcare", "date": null, "when": {"en": "Any time", "pl": "kiedy chcesz"}, "name": {"en": "Kids' party", "pl": "Impreza dla dzieci"}, "description": {"en": "Music, dancing and games for a crowd of kids", "pl": "Muzyka, tańce i zabawy dla gromadki dzieci"}, "icon": "🎉", "duration": {"default": 180, "min": 60, "max": 720, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_sleepover", "kind": "time", "section": "yolo", "base": "childcare", "date": null, "when": {"en": "Any time", "pl": "kiedy chcesz"}, "name": {"en": "Sleepover", "pl": "Piżama party"}, "description": {"en": "Pyjamas, a film, stories and lights out", "pl": "Piżamy, film, bajki i gasimy światło"}, "icon": "🌙", "duration": {"default": 720, "min": 240, "max": 1440, "step": 30}, "price": null, "needsPlace": true, "enabled": true}, {"id": "yolo_wedding", "kind": "time", "section": "yolo", "base": "childcare", "date": null, "when": {"en": "Any time", "pl": "kiedy chcesz"}, "name": {"en": "Wedding & family do", "pl": "Wesele i rodzinna uroczystość"}, "description": {"en": "The grown-ups celebrate, the kids are looked after", "pl": "Dorośli świętują, dzieci są pod opieką"}, "icon": "💍", "duration": {"default": 480, "min": 120, "max": 900, "step": 30}, "price": null, "needsPlace": true, "enabled": true}]$yolo$::jsonb) with ordinality as y(e, ord)
+   where not exists (select 1 from jsonb_array_elements(c.services) o where o ->> 'id' = y.e ->> 'id')), '[]'::jsonb)
+ where c.id = 1 and c.services is not null;
 
 -- Profiles: the services a person offers (catalog ids of kind "time"), their place, and a random
 -- public id — the only reference to a person that reaches other users (catalog, requests).
@@ -597,6 +603,18 @@ alter table public.appointments drop constraint if exists appointments_actual_mi
 alter table public.appointments add constraint appointments_actual_min_check
   check (actual_min is null or (actual_min between 15 and 1440 and actual_min % 15 = 0));
 alter table public.appointments add column if not exists summary_sent boolean not null default false;
+-- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
+create table if not exists public.member_invites (
+  token_hash  text primary key,
+  from_user   uuid not null references auth.users (id) on delete cascade,
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  used_by     uuid,
+  used_at     timestamptz,
+  family_sent boolean not null default false
+);
+create index if not exists member_invites_from_idx on public.member_invites (from_user);
+create index if not exists member_invites_used_idx on public.member_invites (used_by) where used_by is not null;
 -- 2.6 (FR-282, V65): the Monday whose weekly_report notifications went out.
 alter table public.app_config add column if not exists report_week date;
 
@@ -630,6 +648,7 @@ alter table public.families enable row level security;
 alter table public.family_members enable row level security;
 alter table public.family_invites enable row level security;
 alter table public.contracts enable row level security;
+alter table public.member_invites enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -641,7 +660,8 @@ revoke all on public.app_config, public.app_secrets, public.profiles, public.veh
               public.appointments, public.appointment_series,
               public.kids, public.appointment_kids, public.kid_ratings, public.messages, public.chat_presence,
               public.appointment_updates,
-              public.families, public.family_members, public.family_invites, public.contracts
+              public.families, public.family_members, public.family_invites, public.contracts,
+              public.member_invites
   from anon, authenticated;
 -- The sender (Edge Function, service role) reads the queue and the subscriptions.
 do $$
@@ -814,6 +834,14 @@ returns text[] language sql stable security definer set search_path = public as 
   select case when p.master_id is not null then coalesce(m.offers, '{}'::text[]) else coalesce(p.offers, '{}'::text[]) end
     from profiles p left join master_profiles m on m.id = p.master_id
    where p.user_id = p_user and not p.deleted;
+$$;
+
+-- 2.8 (V70): a person offers an entry when they offer it or the entry it takes after (its base:
+-- whoever offers Childcare offers the YOLO events). Twin of Engine.offersService.
+create or replace function public.siosia_offers_service(p_user uuid, p_service text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(p_service = any (siosia_offers_of(p_user))
+                  or (siosia_service(p_service) ->> 'base') = any (siosia_offers_of(p_user)), false);
 $$;
 
 -- ---------------------------------------------------------------------------------------------
@@ -2052,6 +2080,8 @@ begin
   update contracts set provider_id = v_uid where provider_id = v_old;
   update contracts set proposed_by = v_uid where proposed_by = v_old;
   update contracts set ended_by = v_uid where ended_by = v_old;
+  update member_invites set from_user = v_uid where from_user = v_old; -- 2.8: links made and used follow the account
+  update member_invites set used_by = v_uid where used_by = v_old;
   delete from chat_presence o using chat_presence n where o.user_id = v_old and n.user_id = v_uid and n.room = o.room;
   update chat_presence set user_id = v_uid where user_id = v_old;
   -- The replaced profile's row goes, and with it its photo: that object is dropped from the bucket.
@@ -2167,6 +2197,7 @@ begin
   insert into profiles (user_id, nickname, language)
   values (auth.uid(), v_nick, case when p_language = 'pl' then 'pl' else 'en' end)
   on conflict (user_id) do update set nickname = excluded.nickname, language = excluded.language, deleted = false;
+  perform siosia_link_family_invites(auth.uid()); -- 2.8 (FR-302): who invited me by link asks me into their family
   return siosia_ok(siosia_profile_json(auth.uid()));
 end $$;
 
@@ -2813,7 +2844,7 @@ returns text language plpgsql immutable as $$
 declare e jsonb; d jsonb; v_ids text[] := '{}'; v_rides int := 0;
 begin
   if p is null or jsonb_typeof(p) <> 'array' then return 'the catalog is a JSON array'; end if;
-  if jsonb_array_length(p) not between 1 and 12 then return 'a catalog has 1 to 12 entries'; end if;
+  if jsonb_array_length(p) not between 1 and 32 then return 'a catalog has 1 to 32 entries'; end if;
   for e in select value from jsonb_array_elements(p) loop
     if jsonb_typeof(e) <> 'object' or coalesce(e ->> 'id', '') !~ '^[a-z][a-z0-9_]{1,23}$' then
       return format('bad id: %s', e ->> 'id');
@@ -2837,6 +2868,20 @@ begin
          (jsonb_typeof(e -> 'price' -> 'perHour') = 'number' and (e -> 'price' ->> 'perHour')::numeric > 0)
          or (jsonb_typeof(e -> 'price' -> 'fixed') = 'number' and (e -> 'price' ->> 'fixed')::numeric >= 0)) then
       return format('%s: price is null, {"perHour": n} or {"fixed": n}', e ->> 'id');
+    end if;
+    -- 2.8 (V70): a YOLO event — section "yolo", a base entry of kind time (its own id excluded), a
+    -- yearly date "MM-DD" or null, "when" {en, pl} or null.
+    if coalesce(e ->> 'section', 'yolo') <> 'yolo' then return format('%s: section is "yolo" or null', e ->> 'id'); end if;
+    if e ->> 'base' is not null and (e ->> 'base' = e ->> 'id' or not exists (
+         select 1 from jsonb_array_elements(p) b where b ->> 'id' = e ->> 'base' and b ->> 'kind' = 'time' and b ->> 'base' is null)) then
+      return format('%s: base is the id of another time entry without a base', e ->> 'id');
+    end if;
+    if e ->> 'date' is not null and (e ->> 'date' !~ '^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$') then
+      return format('%s: date is "MM-DD" or null', e ->> 'id');
+    end if;
+    if e -> 'when' is not null and jsonb_typeof(e -> 'when') <> 'null' and (jsonb_typeof(e -> 'when') <> 'object'
+         or char_length(coalesce(e -> 'when' ->> 'en', '')) not between 1 and 24 or char_length(coalesce(e -> 'when' ->> 'pl', '')) not between 1 and 24) then
+      return format('%s: when {en, pl}, 1-24 characters each', e ->> 'id');
     end if;
     if e ->> 'kind' = 'ride' then
       v_rides := v_rides + 1;
@@ -3222,7 +3267,10 @@ begin
                                 || jsonb_build_object('contractRate', (select r.per_hour from siosia_contract_rate(v_uid, p.user_id, x.e ->> 'id') r))
                                 order by p.nickname)
                  from profiles p
-                where not p.deleted and p.user_id <> v_uid and (x.e ->> 'id') = any (siosia_offers_of(p.user_id))
+                where not p.deleted and p.user_id <> v_uid
+                  -- 2.8 (V68, V70): who offers it (or its base), or has a contract for it with my family
+                  and (siosia_offers_service(p.user_id, x.e ->> 'id')
+                       or exists (select 1 from siosia_contract_rate(v_uid, p.user_id, x.e ->> 'id')))
                   and siosia_member_ok(p.user_id) and siosia_same_realm(v_uid, p.user_id)
                   and siosia_listed(p.user_id, v_uid)), '[]'::jsonb) end)
            order by x.ord)
@@ -3259,7 +3307,10 @@ begin
     if v_prov is null or v_prov = v_uid or not siosia_member_ok(v_prov) or not siosia_same_realm(v_uid, v_prov) then
       return siosia_err('no_provider');
     end if;
-    if not (p_service = any (siosia_offers_of(v_prov))) then return siosia_err('not_offered'); end if;
+    -- 2.8 (V68, V70): offered (itself or its base), or on a contract between my family and them.
+    if not siosia_offers_service(v_prov, p_service) and not exists (select 1 from siosia_contract_rate(v_uid, v_prov, p_service)) then
+      return siosia_err('not_offered');
+    end if;
   end if;
   if p_starts_at is null or p_starts_at < now() + make_interval(mins => c.booking_min_lead_min)
      or p_starts_at > now() + make_interval(days => c.booking_max_days) then
@@ -3834,6 +3885,7 @@ begin
   delete from chat_presence where seen_at < now() - interval '1 day';
   -- 2.6: answered invitations and finished contracts after 12 months.
   delete from family_invites where status <> 'pending' and coalesce(answered_at, created_at) < now() - interval '12 months';
+  delete from member_invites where coalesce(used_at, expires_at) < now() - interval '12 months'; -- 2.8
   delete from contracts where status not in ('proposed', 'active')
      and coalesce(ended_at, answered_at, created_at) < now() - interval '12 months';
 end $$;
@@ -4378,12 +4430,14 @@ end $$;
 -- 2.6", SPEC.md V58–V65). Twin of the Engine's 2.6 methods; the rules are the same on both sides.
 -- ---------------------------------------------------------------------------------------------
 
--- The active contract line between the client's family and the provider for a service (V62).
+-- The active contract line between the client's family and the provider for a service (V62) —
+-- 2.8 (FR-305): else the line of its base (a YOLO event takes the Childcare rate).
 create or replace function public.siosia_contract_rate(p_client uuid, p_provider uuid, p_service text)
 returns table (contract_id uuid, per_hour numeric) language sql stable security definer set search_path = public as $$
   select k.id, (r ->> 'perHour')::numeric from contracts k, jsonb_array_elements(k.rates) r
    where k.family_id = siosia_family_of(p_client) and k.provider_id = p_provider and k.status = 'active'
-     and r ->> 'serviceId' = p_service
+     and (r ->> 'serviceId' = p_service or r ->> 'serviceId' = siosia_service(p_service) ->> 'base')
+   order by (r ->> 'serviceId' = p_service) desc
    limit 1;
 $$;
 
@@ -4530,31 +4584,99 @@ end $$;
 -- already in it, family_full at 6; the same invitation twice is one. Without a family, one is made.
 create or replace function public.siosia_family_invite(p_public text)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_to uuid; v_fid uuid;
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_to uuid;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   select user_id into v_to from profiles where public_id = p_public and not deleted;
-  if v_to is null or v_to = v_uid or not siosia_member_ok(v_to) or not siosia_same_realm(v_uid, v_to) then
-    return siosia_err('not_found');
+  v_err := siosia_family_invite_as(v_uid, v_to);
+  if v_err is not null then return siosia_err(v_err); end if;
+  return siosia_ok(siosia_family_json(v_uid));
+end $$;
+
+-- The invitation itself (FR-250, V58), for siosia_family_invite and (2.8) a member who came by an
+-- invite link: an error code, or null when invited (or already invited).
+create or replace function public.siosia_family_invite_as(p_from uuid, p_to uuid)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_fid uuid;
+begin
+  if p_to is null or p_to = p_from or not siosia_member_ok(p_to) or not siosia_same_realm(p_from, p_to)
+     or not exists (select 1 from profiles where user_id = p_from and not deleted) then
+    return 'not_found';
   end if;
-  if siosia_same_family(v_uid, v_to) then return siosia_err('in_family'); end if;
-  v_fid := siosia_family_of(v_uid);
+  if siosia_same_family(p_from, p_to) then return 'in_family'; end if;
+  v_fid := siosia_family_of(p_from);
   if v_fid is not null then
     perform pg_advisory_xact_lock(hashtextextended(v_fid::text, 7));
-    if (select count(*) from family_members where family_id = v_fid) >= 6 then return siosia_err('family_full'); end if;
-    if exists (select 1 from family_invites where family_id = v_fid and to_user = v_to and status = 'pending') then
-      return siosia_ok(siosia_family_json(v_uid));
+    if (select count(*) from family_members where family_id = v_fid) >= 6 then return 'family_full'; end if;
+    if exists (select 1 from family_invites where family_id = v_fid and to_user = p_to and status = 'pending') then
+      return null;
     end if;
   else
-    v_fid := siosia_new_family(v_uid);
+    v_fid := siosia_new_family(p_from);
   end if;
-  insert into family_invites (family_id, from_user, to_user) values (v_fid, v_uid, v_to);
-  perform siosia_push(v_to, 'family_invite', null, jsonb_build_object('sender', siosia_nick(v_uid)));
-  perform siosia_notify_household(v_uid);
-  perform siosia_notify(v_to);
-  return siosia_ok(siosia_family_json(v_uid));
+  insert into family_invites (family_id, from_user, to_user) values (v_fid, p_from, p_to);
+  perform siosia_push(p_to, 'family_invite', null, jsonb_build_object('sender', siosia_nick(p_from)));
+  perform siosia_notify_household(p_from);
+  perform siosia_notify(p_to);
+  return null;
+end $$;
+
+-- 2.8 (FR-301, V69): a personal link into Siosia — the app shares <site>#join=<token>. 24 random
+-- URL-safe characters; only their SHA-256 is kept; 14 days, once; at most 10 open per member.
+create or replace function public.siosia_create_member_invite()
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_token text; v_exp timestamptz := now() + interval '14 days';
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
+  if (select count(*) from member_invites where from_user = v_uid and used_by is null and expires_at > now()) >= 10 then
+    return siosia_err('too_many');
+  end if;
+  v_token := translate(encode(gen_random_bytes(18), 'base64'), '+/', '-_');
+  insert into member_invites (token_hash, from_user, expires_at) values (encode(digest(v_token, 'sha256'), 'hex'), v_uid, v_exp);
+  return siosia_ok(jsonb_build_object('token', v_token, 'expiresAt', siosia_ms(v_exp)));
+end $$;
+
+-- 2.8 (FR-302, V69): opening a link admits this phone like the invite code — into the inviter's
+-- realm (V66) — and spends the link; a member who opens one gets the family invitation at once.
+-- A wrong, used or expired link counts as a failed invite attempt (10 an hour).
+create or replace function public.siosia_join_link(p_token text, p_device text)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_uid uuid := auth.uid(); i member_invites;
+begin
+  if v_uid is null then return siosia_err('forbidden'); end if;
+  if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
+  if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
+    return siosia_err('rate_limited');
+  end if;
+  select * into i from member_invites where token_hash = encode(digest(coalesce(p_token, ''), 'sha256'), 'hex') for update;
+  if i.token_hash is null or i.used_by is not null or i.expires_at <= now()
+     or not exists (select 1 from profiles where user_id = i.from_user and not deleted) or not siosia_member_ok(i.from_user) then
+    insert into invite_failures (user_id) values (v_uid);
+    return siosia_err('bad_link');
+  end if;
+  update member_invites set used_by = v_uid, used_at = now() where token_hash = i.token_hash;
+  if not siosia_member_ok(v_uid) then
+    insert into memberships (user_id, device_id, sandbox) values (v_uid, p_device, siosia_sandbox(i.from_user))
+    on conflict (user_id, device_id) do update set sandbox = memberships.sandbox or excluded.sandbox;
+  end if;
+  perform siosia_link_family_invites(v_uid);
+  return siosia_ok('true'::jsonb);
+end $$;
+
+-- The family invitations owed to someone who joined by link, once they have a profile (silently
+-- none when not allowed: in a family already, a full family, a gone inviter).
+create or replace function public.siosia_link_family_invites(p_user uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare i member_invites;
+begin
+  if not exists (select 1 from profiles where user_id = p_user and not deleted) then return; end if;
+  for i in select * from member_invites where used_by = p_user and not family_sent order by used_at for update loop
+    update member_invites set family_sent = true where token_hash = i.token_hash;
+    perform siosia_family_invite_as(i.from_user, p_user);
+  end loop;
 end $$;
 
 -- Join or decline an invitation (FR-250, FR-251). Joining: in_family while in a family with someone
@@ -4681,8 +4803,8 @@ begin
     v_rate := (r ->> 'perHour')::numeric;
     if v_rate < 0 or v_rate > 10000 or v_rate <> round(v_rate, 2) then return siosia_err('bad_input'); end if;
     e := siosia_service(r ->> 'serviceId');
-    if e is null or e ->> 'kind' <> 'time' or not coalesce((e ->> 'enabled')::boolean, false)
-       or not ((r ->> 'serviceId') = any (siosia_offers_of(v_provider))) then
+    -- 2.8 (V68): any enabled service — a contract is how a person who lists nothing takes one on.
+    if e is null or e ->> 'kind' <> 'time' or not coalesce((e ->> 'enabled')::boolean, false) then
       return siosia_err('not_offered');
     end if;
     v_seen := v_seen || (r ->> 'serviceId');
@@ -5082,6 +5204,9 @@ grant execute on function public.siosia_withdraw_contract(uuid) to authenticated
 grant execute on function public.siosia_end_contract(uuid) to authenticated;
 grant execute on function public.siosia_set_actual(uuid, int) to authenticated;
 grant execute on function public.siosia_report(text, text) to authenticated;
+-- 2.8
+grant execute on function public.siosia_create_member_invite() to authenticated;
+grant execute on function public.siosia_join_link(text, text) to authenticated;
 -- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
 -- 2-argument rules stay the server's: revoked above with everything else)
 grant execute on function public.siosia_can_see_photo(text) to authenticated;

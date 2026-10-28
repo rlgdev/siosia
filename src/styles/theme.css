@@ -2317,3 +2317,74 @@ html[data-launch] .mode-card:nth-child(3) {
 .cost-total {
   font-size: 1.15rem;
 }
+
+/* ---------- 2.8: the YOLO section (V71) ---------- */
+.yolo-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.yolo-title .ico {
+  color: var(--accent);
+}
+.yolo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.yolo-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 44px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow:
+    inset 0 1px 0 var(--surface-hi),
+    var(--shadow);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.yolo-card strong {
+  line-height: 1.25;
+}
+.yolo-who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.yolo-tile {
+  --tone: var(--accent);
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  border-radius: 16px;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 16%, transparent);
+}
+.yolo-tile .ico {
+  width: 28px;
+  height: 28px;
+}
+.yolo-tile[data-tone="orange"] { --tone: #f08a24; }
+.yolo-tile[data-tone="red"] { --tone: #e5484d; }
+.yolo-tile[data-tone="green"] { --tone: #2f9e5b; }
+.yolo-tile[data-tone="violet"] { --tone: #8e4ec6; }
+.yolo-tile[data-tone="sky"] { --tone: #2a9fd6; }
+.yolo-tile[data-tone="pink"] { --tone: #e93d82; }
+.yolo-tile[data-tone="yellow"] { --tone: #d4a106; }
+.yolo-tile[data-tone="teal"] { --tone: #12a594; }
+.yolo-tile[data-tone="blue"] { --tone: #3e63dd; }
+.yolo-tile[data-tone="indigo"] { --tone: #5b5bd6; }
+.yolo-soon {
+  margin-top: 2px;
+}
+

@@ -106,6 +106,10 @@ export interface Backend {
 
   isMember(deviceId: string): Promise<boolean>;
   join(code: string, deviceId: string): Promise<void>;
+  /** 2.8 (FR-301): a personal link into Siosia for someone new (the app shares `<site>#join=<token>`). */
+  createMemberInvite(): Promise<{ token: string; expiresAt: number }>;
+  /** 2.8 (FR-302): joins with such a link (bad_link when wrong, used or expired); a member gets the family invitation. */
+  joinWithLink(token: string, deviceId: string): Promise<void>;
   /**
    * Opens a shared master profile from its link token (replaces the invite code). Fails with
    * has_profile when this account already has another profile, unless `replace` (user confirmed).

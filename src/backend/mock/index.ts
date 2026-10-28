@@ -122,6 +122,12 @@ export class MockBackend implements Backend {
   join(code: string, deviceId: string) {
     return this.call((e) => e.join(this.uid, code, deviceId));
   }
+  createMemberInvite() {
+    return this.call((e) => e.createMemberInvite(this.uid));
+  }
+  joinWithLink(token: string, deviceId: string) {
+    return this.call((e) => e.joinWithLink(this.uid, token, deviceId));
+  }
   bookRide(input: BookingInput) {
     return this.call((e) => e.bookRide(this.uid, input));
   }

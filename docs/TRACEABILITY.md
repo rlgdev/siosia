@@ -191,3 +191,15 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 282 | Monday 08:00 weekly_report once to everyone with something last week | family + sqlfam "tells everyone with something last week…"; push "sends the week's spent and earned…" |
 | 283 | Only own / family rows; the other side by nickname | family + sqlfam "…no user id" checks; report lines by nickname |
 | 284 | Retention unchanged | siosia_retention (invites, contracts after 12 months) |
+
+## Siosia 2.7–2.8 (Amendments 2.7 and 2.8 in `siosia-spec-v2.0.md`, FR-290 – FR-306; SPEC.md V66–V71)
+
+| FR | Requirement (short) | Verified by |
+| --- | --- | --- |
+| 290–292 | Test invite code → sandbox; real and test accounts never meet; smoke/live tests on the test code, deleting their users | sandbox + sqlsb "test accounts (2.7, V66)"; live `npm run smoke` |
+| 293 | A master profile listed once (newest phone), not to its own phones | sandbox + sqlsb "a master profile's phones are listed once…" |
+| 300 | Contract with anyone; a contract line makes the person bookable for that family | family + sqlfam "contracts with someone who offers nothing…"; e2e v28 |
+| 301–303 | Invite link: 14 days, once, ≤ 10 open, share sheet / copy, family invitation after the nickname, the inviter's realm | family + sqlfam "2.8: invite links…"; sandbox + sqlsb "a test account's invite link…"; e2e v28 |
+| 304–305 | YOLO events: like Childcare, offered via the base, priced from the contract's base rate | family + sqlfam "a YOLO event is offered by whoever offers its base…"; sql2 catalog checks; e2e v28 |
+| 306 | C1 YOLO section, next date first, "in N days", icons | e2e v28 (15 cards, request at the contract rate); browser check |
+

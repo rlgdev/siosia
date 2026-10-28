@@ -732,5 +732,18 @@ export const pl: Record<MessageKey, string> = {
   "report.memberLine": "wydane {spent} · zarobione {earned}",
   "report.error": "Nie udało się wczytać raportu.",
   "err.in_family": "Już w rodzinie z kimś innym — najpierw trzeba ją opuścić.",
-  "err.family_full": "Rodzina może mieć najwyżej 6 osób."
+  "err.family_full": "Rodzina może mieć najwyżej 6 osób.",
+  "invite.welcome": "Witaj w Siosi — dołączasz z zaproszenia. Wybierz pseudonim, aby zacząć.",
+  "inviteNew.button": "Zaproś kogoś nowego do Siosi",
+  "inviteNew.shareText": "{name} zaprasza Cię do Siosi — przejazdy, pomoc przy dzieciach i rodzinne plany w jednej aplikacji. Otwórz link, aby dołączyć:",
+  "inviteNew.link": "Link z zaproszeniem",
+  "inviteNew.share": "Udostępnij link",
+  "inviteNew.copy": "Skopiuj link",
+  "inviteNew.copied": "Link skopiowany",
+  "inviteNew.valid": "Działa raz, do {date}. Po dołączeniu ta osoba dostanie zaproszenie do Twojej rodziny.",
+  "contract.yoloNote": "Wydarzenia YOLO (Halloween, urodziny…) mają stawkę opieki nad dziećmi, chyba że ustawisz dla nich własną.",
+  "request.baseRate": "stawka z umowy za: {service}",
+  "yolo.intro": "Wyjątkowe dni w roku — przebrania, imprezy, święta i wakacje. Rezerwujesz jak opiekę nad dziećmi, w stawce opieki z umowy.",
+  "yolo.today": "Dziś!",
+  "yolo.inDays": "za {n} dni"
 };
