@@ -183,7 +183,7 @@ T40|x|2.7 master profiles listed once: siosia_listed + engine twin in members + 
 T41|x|2.8 contracts with anyone + YOLO rules: offers_service / base fallback / catalog providers via contract; catalog limits 32 + new fields; YOLO seed (SQL + DEFAULT_SERVICES + config.example); engine twin; tests|V68,V70,V19,V21
 T42|x|2.8 member invite links: member_invites, create/join (realm, single use, rate limit), family invitation after first profile, engine twin, adapters, boot #join= + Invite screen paste, Family panel Invite someone new (share sheet / copy), i18n, tests|V69
 T43|x|2.8 YOLO UI: stroke icons, C1 YOLO section (sort, countdown), C2 base-rate line, contract form (anyone, non-YOLO lines), i18n, e2e|V71,V53
-T44|.|release 2.8: live migration (YOLO appended), main, live check|§15,V68–V71
+T44|x|release 2.8: live migration (YOLO appended), main, live check|§15,V68–V71
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
