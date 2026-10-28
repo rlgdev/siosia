@@ -306,6 +306,9 @@ describe("2.8: a contract with anyone; YOLO priced from the base rate (V68, V70)
     at((e) => e.answerContract("nanny", c.id, "accept"));
     expect(at((e) => e.catalog("dad")).find((x) => x.id === "yolo_halloween")!.providers[0].contractRate).toBe(40);
     expect(request("dad", "nanny", 50 * 60, { service: "yolo_halloween" })).toMatchObject({ price: 120, rate: 40, contractId: c.id });
+    // Kids come along to a YOLO event like to Childcare (FR-304).
+    const z = at((e) => e.addKid("dad", { name: "Zosia", bornYear: 2018, note: "" }));
+    expect(request("dad", "nanny", 60 * 60, { service: "yolo_birthday", kidIds: [z.id] }).kids.map((k) => k.name)).toEqual(["Zosia"]);
     const c2 = propose("dad", "nanny", "family", [{ serviceId: "childcare", perHour: 40 }, { serviceId: "yolo_new_year", perHour: 60 }]);
     at((e) => e.answerContract("nanny", c2.id, "accept"));
     expect(request("dad", "nanny", 74 * 60, { service: "yolo_new_year", duration: 360 })).toMatchObject({ price: 360, rate: 60 });
