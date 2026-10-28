@@ -318,16 +318,27 @@ sub-path works.
 
 ### Optional: live smoke test of the backend (2 min)
 
-From your computer, with the project values and your invite code:
+First set a **test invite code** once (SQL editor, different from the real one):
 
-```bash
-SUPABASE_URL=https://<ref>.supabase.co SUPABASE_KEY=sb_publishable_… SIOSIA_INVITE=YOUR-CODE npm run smoke
+```sql
+select public.siosia_set_test_invite_code('YOUR-TEST-CODE');
 ```
 
-It signs in three throwaway anonymous users (rider, driver, outsider) and checks 18 things end to
-end: invite gate, private realtime channels, the driver ping, the offer, the atomic accept, live
-positions over the ride channel (outsider refused), lifecycle rules, receipts and RLS. Expect
-*All live checks passed.*
+Whoever joins with it is a *test account*: test accounts see only each other, and real members
+never see them — not in the member list, the catalog, open requests, ride offers or bookings.
+Then, from your computer, with the project values and that test code:
+
+```bash
+SUPABASE_URL=https://<ref>.supabase.co SUPABASE_KEY=sb_publishable_… SIOSIA_TEST_INVITE=YOUR-TEST-CODE npm run smoke
+```
+
+It signs in three throwaway anonymous test users (rider, driver, outsider), checks 18 things end
+to end (invite gate, private realtime channels, the driver ping, the offer, the atomic accept, live
+positions over the ride channel with the outsider refused, lifecycle rules, receipts, RLS) and
+deletes the three users again. Expect *All live checks passed.*
+
+An account made with the real code by mistake can be moved into the sandbox (or back) by its
+public id: `select public.siosia_set_sandbox('<public id>', true);`
 
 ## Running it day to day
 

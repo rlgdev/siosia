@@ -111,7 +111,7 @@ export class MockBackend implements Backend {
   }
   async ping(): Promise<void> {}
   async getConfig(): Promise<DeploymentConfig> {
-    const { inviteCode: _secret, masters: _links, ...pub } = this.cfg;
+    const { inviteCode: _secret, testInviteCode: _test, masters: _links, ...pub } = this.cfg;
     // Like siosia_config(): the enabled catalog only (appointments carry their entry's name).
     return { ...pub, services: pub.services.filter((e) => e.enabled) };
   }

@@ -93,6 +93,8 @@ insert into public.app_secrets (id) values (1) on conflict (id) do nothing;
 -- every call to the Edge Function push-dispatch), and the function creates its Web Push (VAPID) key
 -- pair on first run and keeps it here. Only the public key ever leaves (siosia_config).
 alter table public.app_secrets add column if not exists push_secret text;
+-- 2.7 (V66): the test invite code (bcrypt), for the live smoke tests; null = none.
+alter table public.app_secrets add column if not exists test_invite_code_hash text;
 alter table public.app_secrets add column if not exists vapid_public text;
 alter table public.app_secrets add column if not exists vapid_private text;
 update public.app_secrets set push_secret = encode(extensions.gen_random_bytes(24), 'hex') where id = 1 and push_secret is null;
@@ -161,6 +163,9 @@ create table if not exists public.memberships (
 -- Set when the device joined through a master link instead of the invite code: such a membership
 -- counts only while that master profile is switched on, and ends when its token changes.
 alter table public.memberships add column if not exists via_master text;
+-- 2.7 (V66): joined with the TEST invite code — a test account, in the sandbox: it meets only other
+-- test accounts, and real members never see it (lists, catalog, open requests, rides).
+alter table public.memberships add column if not exists sandbox boolean not null default false;
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'profiles_master_id_fkey') then
@@ -817,6 +822,18 @@ $$;
 -- ---------------------------------------------------------------------------------------------
 
 -- This year (UTC, as the engine counts it): a kid's age, and the year-of-birth check.
+-- 2.7 (V66): a test account (any membership made with the test invite code), and whether two
+-- accounts are in the same realm — both real or both test — and so may find and reach each other.
+create or replace function public.siosia_sandbox(p_user uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from memberships where user_id = p_user and sandbox);
+$$;
+
+create or replace function public.siosia_same_realm(p_a uuid, p_b uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select siosia_sandbox(p_a) = siosia_sandbox(p_b);
+$$;
+
 -- 2.6 (FR-250): a person's family (null without one), everyone in it (just the person without one,
 -- first joined first), whether two people share one, and who sees an appointment (FR-254).
 create or replace function public.siosia_family_of(p_user uuid)
@@ -1134,6 +1151,7 @@ returns setof public.appointments language sql stable security definer set searc
   select o.* from (select distinct on (coalesce(a.series_id, a.id)) a.* from appointments a
                     where a.provider_id is null and a.status = 'requested' and a.starts_at > now()
                       and a.client_id <> p_user and not siosia_same_family(p_user, a.client_id)
+                      and siosia_same_realm(p_user, a.client_id)
                       and exists (select 1 from profiles p where p.user_id = p_user and not p.deleted)
                     order by coalesce(a.series_id, a.id), a.starts_at) o
    order by o.starts_at, o.id;
@@ -1333,6 +1351,7 @@ begin
            where s.standby_until > now()
              and not (s.online and s.last_seen > now() - interval '6 seconds') -- app in front: the card shows it
              and s.user_id <> r.rider_id and not (s.user_id = any (r.excluded))
+             and siosia_same_realm(s.user_id, r.rider_id)
              and siosia_master_role(s.user_id) is distinct from 'rider'
              and not exists (select 1 from rides x where (x.rider_id = s.user_id or x.driver_id = s.user_id)
                              and x.status in ('requested','accepted','arrived','in_progress')) loop
@@ -1606,6 +1625,7 @@ begin
   select * into c from app_config where id = 1;
   for r in select x.id, x.round, x.pickup_lat, x.pickup_lng from rides x
            where x.status = 'requested' and x.rider_id <> p_driver and not (p_driver = any (x.excluded))
+             and siosia_same_realm(p_driver, x.rider_id) -- 2.7 (V66)
            order by x.requested_at loop
     -- A card withdrawn for driver-side reasons (offline, silent, won another ride) is offered again
     -- once the driver is eligible (§6 rule 4). A card the driver let lapse comes back after
@@ -1678,6 +1698,7 @@ begin
     'nearbyRequests', case when p_lat is null or p_lng is null then null else
       (select count(*) from rides x
         where x.status = 'requested' and x.rider_id <> p_user and not (p_user = any (x.excluded))
+          and siosia_same_realm(p_user, x.rider_id)
           and siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng) <= c.dispatch_radius_km) end,
     'pendingReceipt', case when p.id is null then null else siosia_ride_json(p, p_user) end,
     'bookings', (select count(*) from rides x where x.status = 'scheduled' and x.rider_id = p_user),
@@ -1687,7 +1708,7 @@ begin
     'openBookings', case when siosia_master_role(p_user) = 'rider'
                            or not exists (select 1 from vehicles where user_id = p_user) then 0 else
       (select count(*) from rides x where x.status = 'scheduled' and x.driver_id is null
-          and x.rider_id <> p_user and not (p_user = any (x.excluded))) end,
+          and x.rider_id <> p_user and not (p_user = any (x.excluded)) and siosia_same_realm(p_user, x.rider_id)) end,
     -- 2.0 (V22): requests waiting for my answer (a series counts once), upcoming items, the next one.
     'toAnswer', (select count(distinct coalesce(series_id, id)) from appointments
                   where provider_id = p_user and status = 'requested' and starts_at > now()),
@@ -1789,21 +1810,52 @@ begin
   return 'Invite code set. Share it with your pilot group.';
 end $$;
 
+-- Operator only (SQL editor), 2.7 (V66): the test invite code for the live smoke tests; null removes it.
+create or replace function public.siosia_set_test_invite_code(p_code text)
+returns text language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if p_code is null then
+    update app_secrets set test_invite_code_hash = null where id = 1;
+    return 'Test invite code removed.';
+  end if;
+  if char_length(siosia_norm_code(p_code)) < 4 then raise exception 'Test invite code must have at least 4 characters'; end if;
+  if exists (select 1 from app_secrets where id = 1 and crypt(siosia_norm_code(p_code), invite_code_hash) = invite_code_hash) then
+    raise exception 'The test invite code must differ from the invite code';
+  end if;
+  update app_secrets set test_invite_code_hash = crypt(siosia_norm_code(p_code), gen_salt('bf', 8)) where id = 1;
+  return 'Test invite code set. Accounts that join with it are test accounts.';
+end $$;
+
+-- Operator only, 2.7 (V66): moves an account (by public id) into the sandbox or out of it.
+create or replace function public.siosia_set_sandbox(p_public text, p_on boolean)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_uid uuid;
+begin
+  select user_id into v_uid from profiles where public_id = p_public;
+  if v_uid is null then raise exception 'No profile with public id %', p_public; end if;
+  update memberships set sandbox = coalesce(p_on, false) where user_id = v_uid;
+  perform siosia_notify(v_uid);
+  return case when coalesce(p_on, false) then 'Now a test account.' else 'Now a real account.' end;
+end $$;
+
 create or replace function public.siosia_join(p_code text, p_device text)
 returns jsonb language plpgsql security definer set search_path = public, extensions as $$
-declare v_uid uuid := auth.uid(); v_hash text;
+declare v_uid uuid := auth.uid(); v_hash text; v_test text; v_sandbox boolean;
 begin
   if v_uid is null then return siosia_err('forbidden'); end if;
   if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
   if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
     return siosia_err('rate_limited');
   end if;
-  select invite_code_hash into v_hash from app_secrets where id = 1;
-  if v_hash is null or crypt(siosia_norm_code(p_code), v_hash) <> v_hash then
+  select invite_code_hash, test_invite_code_hash into v_hash, v_test from app_secrets where id = 1;
+  -- 2.7 (V66): the test code admits too, into the sandbox (once in it, an account stays there).
+  v_sandbox := v_test is not null and crypt(siosia_norm_code(p_code), v_test) = v_test;
+  if not v_sandbox and (v_hash is null or crypt(siosia_norm_code(p_code), v_hash) <> v_hash) then
     insert into invite_failures (user_id) values (v_uid);
     return siosia_err('bad_invite');
   end if;
-  insert into memberships (user_id, device_id) values (v_uid, p_device) on conflict do nothing;
+  insert into memberships (user_id, device_id, sandbox) values (v_uid, p_device, v_sandbox)
+  on conflict (user_id, device_id) do update set sandbox = memberships.sandbox or excluded.sandbox;
   return siosia_ok('true'::jsonb);
 end $$;
 
@@ -2002,9 +2054,11 @@ begin
   delete from driver_status where user_id = v_old;
   -- This device becomes a member the way the old account was: invite code first, else its link.
   select via_master into v_via from memberships where user_id = v_old order by via_master nulls first limit 1;
-  insert into memberships (user_id, device_id, via_master) values (v_uid, p_device, v_via)
+  -- 2.7 (V66): a test account stays one on the new phone.
+  insert into memberships (user_id, device_id, via_master, sandbox) values (v_uid, p_device, v_via, siosia_sandbox(v_old))
   on conflict (user_id, device_id) do update
-    set via_master = case when memberships.via_master is null then null else excluded.via_master end;
+    set via_master = case when memberships.via_master is null then null else excluded.via_master end,
+        sandbox = memberships.sandbox or excluded.sandbox;
   delete from memberships where user_id = v_old;
   delete from account_transfers where user_id = v_old;
   delete from push_subscriptions where user_id = v_old;
@@ -2367,7 +2421,7 @@ begin
                                 else round(siosia_km(p_lat, p_lng, x.pickup_lat, x.pickup_lng)::numeric, 1) end)
            order by x.scheduled_for)
       from rides x where x.status = 'scheduled' and x.driver_id is null and x.rider_id <> v_uid
-                     and not (v_uid = any (x.excluded))), '[]'::jsonb));
+                     and not (v_uid = any (x.excluded)) and siosia_same_realm(v_uid, x.rider_id)), '[]'::jsonb));
 end $$;
 
 -- A driver takes a booking in advance (atomic: one driver wins); no two overlapping ones.
@@ -2381,7 +2435,9 @@ begin
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   select * into r from rides where id = p_ride;
-  if r.id is null or r.rider_id = v_uid or v_uid = any (r.excluded) then return siosia_err('not_found'); end if;
+  if r.id is null or r.rider_id = v_uid or v_uid = any (r.excluded) or not siosia_same_realm(v_uid, r.rider_id) then
+    return siosia_err('not_found');
+  end if;
   if r.status <> 'scheduled' or r.driver_id is not null then return siosia_err('taken'); end if;
   if exists (select 1 from rides x where x.status = 'scheduled' and x.driver_id = v_uid
              and abs(extract(epoch from x.scheduled_for - r.scheduled_for)) < (greatest(x.est_min, r.est_min) + 30) * 60) then
@@ -2980,7 +3036,8 @@ begin
     from push_subscriptions s
     join vehicles v on v.user_id = s.user_id
     join profiles p on p.user_id = s.user_id and not p.deleted
-   where s.user_id <> p_uid and siosia_master_role(s.user_id) is distinct from 'rider' and siosia_member_ok(s.user_id);
+   where s.user_id <> p_uid and siosia_master_role(s.user_id) is distinct from 'rider' and siosia_member_ok(s.user_id)
+     and siosia_same_realm(p_uid, s.user_id);
   perform siosia_kick_push();
   -- The other party hears that a ride was added (a series template tells once, when it is set).
   if a.id is not null and not coalesce(p_template, false) then
@@ -3152,7 +3209,7 @@ begin
                                 order by p.nickname)
                  from profiles p
                 where not p.deleted and p.user_id <> v_uid and (x.e ->> 'id') = any (siosia_offers_of(p.user_id))
-                  and siosia_member_ok(p.user_id)), '[]'::jsonb) end)
+                  and siosia_member_ok(p.user_id) and siosia_same_realm(v_uid, p.user_id)), '[]'::jsonb) end)
            order by x.ord)
       from app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) with ordinality as x(e, ord)
      where c.id = 1 and coalesce((x.e ->> 'enabled')::boolean, false)), '[]'::jsonb));
@@ -3184,7 +3241,9 @@ begin
   end if;
   if p_provider is not null then
     select user_id into v_prov from profiles where public_id = p_provider and not deleted;
-    if v_prov is null or v_prov = v_uid or not siosia_member_ok(v_prov) then return siosia_err('no_provider'); end if;
+    if v_prov is null or v_prov = v_uid or not siosia_member_ok(v_prov) or not siosia_same_realm(v_uid, v_prov) then
+      return siosia_err('no_provider');
+    end if;
     if not (p_service = any (siosia_offers_of(v_prov))) then return siosia_err('not_offered'); end if;
   end if;
   if p_starts_at is null or p_starts_at < now() + make_interval(mins => c.booking_min_lead_min)
@@ -3284,7 +3343,7 @@ begin
   else
     -- Every other member hears of an open request once (V36), tagged with its (first) date; their
     -- lists change (siosia_appointments_trigger).
-    for u in select user_id from profiles where not deleted and user_id <> v_uid loop
+    for u in select user_id from profiles where not deleted and user_id <> v_uid and siosia_same_realm(v_uid, user_id) loop
       perform siosia_push_appt(u.user_id, 'appt_open', v_first.id,
                                siosia_appt_params(v_first) || siosia_series_params(s.id) || '{"open": true}'::jsonb);
     end loop;
@@ -3373,7 +3432,7 @@ begin
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   select * into a from appointments where id = p_id;
-  if a.id is null then return siosia_err('not_found'); end if;
+  if a.id is null or not siosia_same_realm(v_uid, a.client_id) then return siosia_err('not_found'); end if;
   -- 2.6 (FR-254): my family's open request is ours, not one to take.
   if a.client_id = v_uid or siosia_same_family(v_uid, a.client_id) then return siosia_err('forbidden'); end if;
   if a.provider_id is not null then return siosia_err('taken'); end if;
@@ -3696,6 +3755,7 @@ begin
   select * into a from appointments x
    where x.id = p_id and (siosia_sees(v_uid, x) -- 2.6: my family's too
                           or (x.provider_id is null and x.status = 'requested' and x.starts_at > now()
+                              and siosia_same_realm(v_uid, x.client_id)
                               and exists (select 1 from profiles where user_id = v_uid and not deleted)));
   if a.id is null then return siosia_err('not_found'); end if;
   return siosia_ok(siosia_appointment_json(a, v_uid));
@@ -4447,7 +4507,8 @@ declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   return siosia_ok(coalesce((select jsonb_agg(siosia_public_party(p.user_id, true) order by p.nickname, p.user_id)
-                               from profiles p where not p.deleted and p.user_id <> v_uid and siosia_member_ok(p.user_id)), '[]'::jsonb));
+                               from profiles p where not p.deleted and p.user_id <> v_uid and siosia_member_ok(p.user_id)
+                                and siosia_same_realm(v_uid, p.user_id)), '[]'::jsonb));
 end $$;
 
 -- Invites a member into my family (FR-250): not_found for nobody / myself, in_family for someone
@@ -4460,7 +4521,9 @@ begin
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
   perform siosia_sweep();
   select user_id into v_to from profiles where public_id = p_public and not deleted;
-  if v_to is null or v_to = v_uid or not siosia_member_ok(v_to) then return siosia_err('not_found'); end if;
+  if v_to is null or v_to = v_uid or not siosia_member_ok(v_to) or not siosia_same_realm(v_uid, v_to) then
+    return siosia_err('not_found');
+  end if;
   if siosia_same_family(v_uid, v_to) then return siosia_err('in_family'); end if;
   v_fid := siosia_family_of(v_uid);
   if v_fid is not null then
@@ -4585,7 +4648,9 @@ begin
   perform siosia_sweep();
   if p_as is null or p_as not in ('family', 'provider') then return siosia_err('bad_input'); end if;
   select user_id into v_other from profiles where public_id = p_to and not deleted;
-  if v_other is null or v_other = v_uid or not siosia_member_ok(v_other) then return siosia_err('not_found'); end if;
+  if v_other is null or v_other = v_uid or not siosia_member_ok(v_other) or not siosia_same_realm(v_uid, v_other) then
+    return siosia_err('not_found');
+  end if;
   if siosia_same_family(v_uid, v_other) then return siosia_err('forbidden'); end if;
   v_provider := case when p_as = 'family' then v_other else v_uid end;
   v_client := case when p_as = 'family' then v_uid else v_other end;

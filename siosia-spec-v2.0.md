@@ -913,3 +913,19 @@ earned. Prices stay informational — Siosia never charges anything (§4).
 
 **Demo**: the robot Siosia accepts a contract proposal a few seconds after it is sent and proposes
 nothing herself; families form only between the demo's people the user adds.
+
+## Amendment 2.7 (2026-10-28): test accounts
+
+Operator request of 2026-10-28: the live smoke tests left "Smoke …" and "Live …" users in the
+member list. Tests keep running against the live project, but in a sandbox real members never see.
+
+- **FR-290**: The operator MAY set a *test invite code* (`siosia_set_test_invite_code`, different
+  from the invite code). An account that joins with it is a *test account*; it stays one (a move
+  to another phone keeps it) until the operator moves it out (`siosia_set_sandbox`).
+- **FR-291**: Real and test accounts MUST NOT find or reach each other: the member list, the
+  catalog's providers, a request to a provider, open requests (list, badge, notification, taking),
+  family invitations, contracts, ride offers and nearby counts, booking notifications and open
+  bookings only match accounts of the same kind. Nothing else changes for either.
+- **FR-292**: The live smoke script and the live adapter test join with the test code and delete
+  their accounts at the end.
+

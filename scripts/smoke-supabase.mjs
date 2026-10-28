@@ -2,14 +2,17 @@
 // Three throwaway anonymous users: rider, driver, outsider. Exercises the RPC API, realtime
 // authorisation (private channels), the ride channel and the access rules end to end.
 //
-//   SUPABASE_URL=… SUPABASE_KEY=sb_publishable_… SIOSIA_INVITE=… node scripts/smoke-supabase.mjs
+//   SUPABASE_URL=… SUPABASE_KEY=sb_publishable_… SIOSIA_TEST_INVITE=… node scripts/smoke-supabase.mjs
+//
+// 2.7 (V66): it joins with the TEST invite code (siosia_set_test_invite_code), so its users are test
+// accounts that real members never see, and it deletes them again at the end.
 import { createClient } from "@supabase/supabase-js";
 
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_KEY;
-const invite = process.env.SIOSIA_INVITE;
+const invite = process.env.SIOSIA_TEST_INVITE;
 if (!url || !key || !invite) {
-  console.error("Set SUPABASE_URL, SUPABASE_KEY (publishable) and SIOSIA_INVITE.");
+  console.error("Set SUPABASE_URL, SUPABASE_KEY (publishable) and SIOSIA_TEST_INVITE (the test invite code, not the real one).");
   process.exit(2);
 }
 
@@ -86,7 +89,7 @@ check(Boolean(cfg?.tariff?.currency) && !JSON.stringify(cfg).includes("hash"), `
 const rider = await user("Smoke Rider");
 const driver = await user("Smoke Driver");
 const outsider = await user("Smoke Outsider");
-check(true, "three anonymous users joined with the invite code");
+check(true, "three anonymous test users joined with the test invite code");
 await rpc(driver.c, "siosia_save_vehicle", { p_make: "Test", p_model: "Car", p_colour: "Grey", p_plate: "SMOKE1", p_seats: 4 });
 await rpc(driver.c, "siosia_set_online", { p_online: true });
 
@@ -144,5 +147,8 @@ check(Boolean(writeErr) && (rows ?? []).length === 0, "direct table writes and r
 
 await rpc(driver.c, "siosia_set_online", { p_online: false });
 for (const c of [rider.c, driver.c, outsider.c, anon]) await c.removeAllChannels();
+// The throwaway accounts go again (their rides stay, anonymised as "Deleted user").
+for (const u of [rider, driver, outsider]) await rpc(u.c, "siosia_delete_profile").catch((e) => check(false, `cleanup: ${e.message}`));
+check(true, "the three test users deleted again");
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nAll live checks passed.");
 process.exit(failures ? 1 : 0);

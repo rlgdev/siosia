@@ -395,6 +395,8 @@ export interface DbState {
   contracts?: Record<string, ContractRow>;
   /** The Monday ("YYYY-MM-DD") whose weekly_report notifications went out (Supabase: app_config.report_week). */
   reportWeek?: string | null;
+  /** 2.7 (V66): users who joined with the test invite code — the sandbox (Supabase: memberships.sandbox). */
+  sandbox?: Record<string, boolean>;
 }
 
 /** Transfer codes: 8 characters without look-alikes (no I, O, 0, 1), shown as XXXX-XXXX. */
@@ -433,6 +435,8 @@ export function emptyDb(): DbState {
 export interface EngineConfig extends DeploymentConfig {
   /** Plain invite code for the mock backend; null = no invite needed. (Supabase stores only a hash.) */
   inviteCode: string | null;
+  /** 2.7 (V66): the test invite code — who joins with it is in the sandbox; null/absent = none. */
+  testInviteCode?: string | null;
   /** Master profiles and their link tokens (mock only; Supabase stores token hashes). */
   masters?: MasterProfile[];
 }
@@ -551,12 +555,25 @@ export class Engine {
     if (this.cfg.inviteCode === null) return;
     const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
     if (fails.length >= 10) throw new ServerError("rate_limited");
-    if (normalizeInvite(code) !== normalizeInvite(this.cfg.inviteCode)) {
+    // 2.7 (V66): the test code admits too, into the sandbox (once in it, an account stays there).
+    const test = !!this.cfg.testInviteCode && normalizeInvite(code) === normalizeInvite(this.cfg.testInviteCode);
+    if (!test && normalizeInvite(code) !== normalizeInvite(this.cfg.inviteCode)) {
       this.db.inviteFails[uid] = [...fails, this.now];
       throw new ServerError("bad_invite");
     }
     const devices = this.db.members[uid] ?? [];
     if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+    if (test) (this.db.sandbox ??= {})[uid] = true;
+  }
+
+  /** 2.7 (V66): a test account (joined with the test invite code). */
+  private sandboxOf(uid: string | null): boolean {
+    return !!uid && !!this.db.sandbox?.[uid];
+  }
+
+  /** 2.7 (V66): two accounts that may find and reach each other — both real or both test. */
+  private sameRealm(a: string | null, b: string | null): boolean {
+    return this.sandboxOf(a) === this.sandboxOf(b);
   }
 
   /**
@@ -711,6 +728,11 @@ export class Engine {
     }
     delete this.db.members[old];
     if (this.db.linkMembers) delete this.db.linkMembers[old];
+    // 2.7 (V66): a test account stays one on the new phone.
+    if (this.db.sandbox?.[old]) {
+      this.db.sandbox[uid] = true;
+      delete this.db.sandbox[old];
+    }
     for (const [k, x] of Object.entries(this.db.transfers ?? {})) if (x.userId === old) delete this.db.transfers![k];
     this.effects.notify.add(old);
     this.effects.notify.add(uid);
@@ -887,6 +909,7 @@ export class Engine {
     delete this.db.vehicles[uid];
     delete this.db.members[uid];
     if (this.db.linkMembers) delete this.db.linkMembers[uid];
+    delete this.db.sandbox?.[uid]; // 2.7: with the memberships
     // 2.3 (FR-200, V49): the kids go with the profile — their photos and ratings too — and so do my
     // photo, the messages I sent and my chat presence.
     for (const k of this.kidsOf(uid)) this.deleteKid(k);
@@ -1115,7 +1138,7 @@ export class Engine {
     this.effects.notify.add(uid);
     // Everyone who can take it hears about it (Supabase: only those with notifications on).
     for (const d of Object.keys(this.db.vehicles))
-      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider" && this.isMember(d))
+      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider" && this.isMember(d) && this.sameRealm(uid, d))
         this.pushTo(d, "booking_new", ride, { pickup: ride.pickup.label, dropoff: ride.dropoff.label });
     if (a) {
       this.notifyAppt(a);
@@ -1149,7 +1172,7 @@ export class Engine {
   }
 
   private claimable(r: RideRow, uid: string): boolean {
-    return r.status === "scheduled" && !r.driverId && r.riderId !== uid && !r.excluded.includes(uid);
+    return r.status === "scheduled" && !r.driverId && r.riderId !== uid && !r.excluded.includes(uid) && this.sameRealm(uid, r.riderId);
   }
 
   /** A driver takes a booking in advance (atomic: one driver wins); no two overlapping ones. */
@@ -1159,7 +1182,7 @@ export class Engine {
     if (!this.db.vehicles[uid]) throw new ServerError("no_vehicle");
     this.sweep();
     const r = this.db.rides[rideId];
-    if (!r || r.riderId === uid || r.excluded.includes(uid)) throw new ServerError("not_found");
+    if (!r || r.riderId === uid || r.excluded.includes(uid) || !this.sameRealm(uid, r.riderId)) throw new ServerError("not_found");
     if (r.status !== "scheduled" || r.driverId) throw new ServerError("taken");
     const clash = Object.values(this.db.rides).some(
       (x) =>
@@ -1542,7 +1565,7 @@ export class Engine {
       if (!row.standbyUntil || row.standbyUntil <= this.now) continue;
       if (row.online && this.now - row.lastSeen < SERVER.activeAppS * 1000) continue; // the offer card shows it
       const u = this.db.users[d];
-      if (!u || u.deleted || d === r.riderId || r.excluded.includes(d) || !this.db.vehicles[d]) continue;
+      if (!u || u.deleted || d === r.riderId || r.excluded.includes(d) || !this.db.vehicles[d] || !this.sameRealm(d, r.riderId)) continue;
       if (this.linkedRole(d) === "rider" || this.activeRideOf(d)) continue;
       this.pushTo(d, "request_new", r, { pickup: r.pickup.label });
     }
@@ -1572,7 +1595,7 @@ export class Engine {
           e.kind !== "time"
             ? []
             : Object.values(this.db.users)
-                .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.offersOf(u.id).includes(e.id))
+                .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.sameRealm(uid, u.id) && this.offersOf(u.id).includes(e.id))
                 .sort((a, b) => a.nickname.localeCompare(b.nickname))
                 // Whoever browses the catalog may see the providers' photos (FR-211).
                 .map((u): CatalogProvider => ({ ...this.publicParty(u.id, true), contractRate: this.contractRate(uid, u.id, e.id)?.perHour ?? null }))
@@ -1614,7 +1637,7 @@ export class Engine {
     const open = input.providerId == null;
     const provider = open ? null : Object.values(this.db.users).find((u) => !u.deleted && u.publicId === input.providerId);
     if (!open) {
-      if (!provider || provider.id === uid || !this.isMember(provider.id)) throw new ServerError("no_provider");
+      if (!provider || provider.id === uid || !this.isMember(provider.id) || !this.sameRealm(uid, provider.id)) throw new ServerError("no_provider");
       if (!this.offersOf(provider.id).includes(e.id)) throw new ServerError("not_offered");
     }
     const { minLeadMin, maxDays } = this.cfg.booking;
@@ -1727,7 +1750,7 @@ export class Engine {
     if (provider) this.pushAppt(provider.id, "appt_new", first!, this.seriesParams(series));
     else {
       // V36: every other member hears once (a series as its first date); their lists and badges update.
-      for (const m of this.members(uid)) this.pushAppt(m, "appt_open", first!, { ...this.seriesParams(series), open: true });
+      for (const m of this.members(uid)) if (this.sameRealm(uid, m)) this.pushAppt(m, "appt_open", first!, { ...this.seriesParams(series), open: true });
       this.notifyMembers();
     }
     return this.apptView(first!, uid);
@@ -1756,7 +1779,7 @@ export class Engine {
     this.requireUser(uid);
     this.sweep();
     const a = this.db.appointments?.[id];
-    if (!a) throw new ServerError("not_found");
+    if (!a || !this.sameRealm(uid, a.clientId)) throw new ServerError("not_found");
     // 2.6 (FR-254): my family's open request is ours, not one to take.
     if (a.clientId === uid || this.sameFamily(uid, a.clientId)) throw new ServerError("forbidden");
     if (a.providerId !== null) throw new ServerError("taken");
@@ -2505,7 +2528,9 @@ export class Engine {
   /** 2.1: an open request of someone else, still waiting, and the viewer has a profile. 2.6: not my family's. */
   private takeable(a: ApptRow, uid: string): boolean {
     const u = this.db.users[uid];
-    return a.providerId === null && a.status === "requested" && a.startsAt > this.now && a.clientId !== uid && !this.sameFamily(uid, a.clientId) && !!u && !u.deleted;
+    return (
+      a.providerId === null && a.status === "requested" && a.startsAt > this.now && a.clientId !== uid && !this.sameFamily(uid, a.clientId) && this.sameRealm(uid, a.clientId) && !!u && !u.deleted
+    );
   }
 
   /** 2.1 (V34, FR-161): the open requests this user could take, soonest first, a series once (its first open date). */
@@ -2840,6 +2865,7 @@ export class Engine {
   memberList(uid: string): PublicProvider[] {
     this.requireUser(uid);
     return this.members(uid)
+      .filter((m) => this.sameRealm(uid, m))
       .sort((a, b) => this.nick(a).localeCompare(this.nick(b)))
       .map((m) => this.publicParty(m, true));
   }
@@ -2849,7 +2875,7 @@ export class Engine {
     this.requireUser(uid);
     this.sweep();
     const to = this.userByPublicId(publicId);
-    if (!to || to === uid) throw new ServerError("not_found");
+    if (!to || to === uid || !this.sameRealm(uid, to)) throw new ServerError("not_found");
     if (this.sameFamily(uid, to)) throw new ServerError("in_family");
     let fid = this.familyOf(uid);
     if (fid && this.familyPeople(fid).length >= FAMILY_MAX) throw new ServerError("family_full");
@@ -3068,7 +3094,7 @@ export class Engine {
     this.sweep();
     if (!input || (input.as !== "family" && input.as !== "provider")) throw new ServerError("bad_input");
     const other = this.userByPublicId(input.to);
-    if (!other || other === uid) throw new ServerError("not_found");
+    if (!other || other === uid || !this.sameRealm(uid, other)) throw new ServerError("not_found");
     if (this.sameFamily(uid, other)) throw new ServerError("forbidden");
     const providerId = input.as === "family" ? other : uid;
     const client = input.as === "family" ? uid : other;
@@ -3377,7 +3403,7 @@ export class Engine {
 
   private pullOffers(uid: string, pos: LatLng): void {
     const open = Object.values(this.db.rides)
-      .filter((r) => r.status === "requested" && r.riderId !== uid && !r.excluded.includes(uid))
+      .filter((r) => r.status === "requested" && r.riderId !== uid && !r.excluded.includes(uid) && this.sameRealm(uid, r.riderId))
       .sort((a, b) => a.requestedAt - b.requestedAt);
     for (const r of open) {
       // A card withdrawn for driver-side reasons (went offline, went silent, won another ride) is
@@ -3430,7 +3456,7 @@ export class Engine {
   /** Open requests this driver could be offered, within the dispatch radius of `pos`. */
   private countNearby(uid: string, pos: LatLng): number {
     return Object.values(this.db.rides).filter(
-      (r) => r.status === "requested" && r.riderId !== uid && !r.excluded.includes(uid) && haversineKm(pos, r.pickup) <= this.cfg.dispatchRadiusKm
+      (r) => r.status === "requested" && r.riderId !== uid && !r.excluded.includes(uid) && this.sameRealm(uid, r.riderId) && haversineKm(pos, r.pickup) <= this.cfg.dispatchRadiusKm
     ).length;
   }
 

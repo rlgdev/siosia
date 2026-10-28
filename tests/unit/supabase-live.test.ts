@@ -1,7 +1,8 @@
 // @vitest-environment node
 // OPT-IN live test of the real SupabaseBackend adapter against a deployed project (spec §11
 // "Backend rules … on demand"). Skipped unless these are set:
-//   SIOSIA_LIVE_URL, SIOSIA_LIVE_KEY (publishable), SIOSIA_LIVE_INVITE
+//   SIOSIA_LIVE_URL, SIOSIA_LIVE_KEY (publishable), SIOSIA_LIVE_TEST_INVITE (2.7, V66: the TEST
+//   invite code — its users are test accounts real members never see; they are deleted at the end)
 // It creates two throwaway anonymous users and runs the loop through the same class the app uses:
 // presence, pings, offers, atomic accept, user-topic events, the ride channel with peer presence.
 
@@ -11,7 +12,7 @@ import type { DriverPos, DriverPresence } from "../../src/core/types";
 
 const URL = process.env.SIOSIA_LIVE_URL ?? "";
 const KEY = process.env.SIOSIA_LIVE_KEY ?? "";
-const INVITE = process.env.SIOSIA_LIVE_INVITE ?? "";
+const INVITE = process.env.SIOSIA_LIVE_TEST_INVITE ?? "";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(pred: () => boolean, ms = 10_000): Promise<number> {
@@ -105,6 +106,8 @@ describe.skipIf(!URL || !KEY || !INVITE)("SupabaseBackend against the live proje
     offR();
     offD();
     await driver.setOnline(false);
+    await rider.deleteProfile();
+    await driver.deleteProfile();
     console.log(`live: presence ${presenceMs} ms · ping ${pingMs} ms · accept event ${eventMs} ms · position ${posMs} ms · driver events ${driverEvents.length}`);
   }, 90_000);
 });
