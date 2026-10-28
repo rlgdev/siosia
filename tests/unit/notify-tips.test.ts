@@ -108,7 +108,10 @@ describe("the notifications bell (FR-311–313, V73)", () => {
   });
 
   it("lists the newest 50 of the last 60 days, keeps 200 per member; a booking reaches every driver's bell", () => {
-    for (let i = 0; i < 205; i++) at((e) => e.inviteToFamily("other", pub("nanny"))) && at((e) => e.withdrawInvite("other", e.family("other").invites[0].id));
+    for (let i = 0; i < 205; i++) {
+      at((e) => e.inviteToFamily("other", pub("nanny")));
+      at((e) => e.withdrawInvite("other", e.family("other").invites[0].id));
+    }
     expect(db.notifications!.filter((n) => n.userId === "nanny")).toHaveLength(200);
     const b = bell("nanny");
     expect(b.items).toHaveLength(50);

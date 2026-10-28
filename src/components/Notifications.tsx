@@ -34,6 +34,7 @@ export function NotificationsBell() {
   const app = useApp();
   const store = useStore();
   const unread = app.my?.unreadNotifications ?? 0;
+  const hasUnread = unread > 0;
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<NotificationItem[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -55,7 +56,7 @@ export function NotificationsBell() {
     return () => {
       live = false;
     };
-  }, [open, unread > 0, store]);
+  }, [open, hasUnread, store]);
 
   // A tap outside or Escape closes it.
   useEffect(() => {
