@@ -11,6 +11,7 @@ import { TipBox } from "../../src/components/Tip";
 import { DEFAULT_CONFIG } from "../../src/core/defaults";
 import type { Lang, NotificationItem, Profile } from "../../src/core/types";
 import { I18nProvider } from "../../src/i18n";
+import { PartyAvatar } from "../../src/components/ProfileIcon";
 import { Home } from "../../src/screens/Home";
 import { AppStore, StoreContext } from "../../src/state/store";
 
@@ -136,5 +137,23 @@ describe("the tip box (FR-314, FR-315)", () => {
       </I18nProvider>
     );
     expect(screen.getByTestId("tip-given")).toHaveTextContent("Zostawiono napiwek: 12,50 zł. Dziękujemy!");
+  });
+});
+
+describe("the other party, drawn alike on both phones (FR-318)", () => {
+  it("shows the photo, else the icon in its paint, else the initial — never nothing", () => {
+    const { rerender } = render(
+      <I18nProvider lang="en">
+        <PartyAvatar p={{ nickname: "toria", photo: null, icon: null }} />
+      </I18nProvider>
+    );
+    expect(screen.getByTestId("party-initial")).toHaveTextContent("T");
+    rerender(
+      <I18nProvider lang="en">
+        <PartyAvatar p={{ nickname: "Roman", photo: null, icon: "taycan-ct-green", paint: null }} />
+      </I18nProvider>
+    );
+    expect(screen.queryByTestId("party-initial")).toBeNull();
+    expect(screen.getByTestId("profile-icon")).toBeInTheDocument();
   });
 });

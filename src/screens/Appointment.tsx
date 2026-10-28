@@ -21,7 +21,7 @@ import { ChatButton } from "../components/ChatSheet";
 import { fromInput, toLocalInput } from "../components/datetime";
 import { AttachedKidCards, KidPicker, RateKidBox, useMyKids } from "../components/Kids";
 import { PlaceInput } from "../components/PlaceInput";
-import { Avatar } from "../components/ProfileIcon";
+import { PartyAvatar } from "../components/ProfileIcon";
 import { ComingHomeBox, ComingLine, SessionFeedSection } from "../components/SessionFeed";
 import { TipBox } from "../components/Tip";
 import { rangeTimes, timeText, whenText } from "../components/when";
@@ -146,7 +146,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
           </p>
         )}
         <p className="row" data-testid="appt-party">
-          <Avatar photo={other?.photo} icon={other?.icon} size="sm" paint={other?.paint} />
+          <PartyAvatar p={other} />
           <span>{partyText(a, t)}</span>
           {other && <RatingBadge rating={other.rating} />}
         </p>

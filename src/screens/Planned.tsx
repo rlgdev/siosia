@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { apptRoom, kidsLine, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ChatButton } from "../components/ChatSheet";
-import { Avatar } from "../components/ProfileIcon";
+import { PartyAvatar } from "../components/ProfileIcon";
 import { comingText, updateCountText } from "../components/SessionFeed";
 import { dayText, rangeTimes, sameDay, timeText } from "../components/when";
 import { Money, Page, RatingBadge, useBusy } from "../components/ui";
@@ -179,7 +179,7 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
           <span>{rangeTimes(a.startsAt, a.endsAt, locale)}</span>
         </span>
         <span className="row muted small">
-          <Avatar photo={other?.photo} icon={other?.icon} size="sm" paint={other?.paint} /> {partyText(a, t)}
+          <PartyAvatar p={other} /> {partyText(a, t)}
           {a.price !== null && (
             <>
               {" · "}
@@ -287,7 +287,7 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
           {dayText(a.startsAt, now, locale, t)} · {rangeTimes(a.startsAt, a.endsAt, locale)} ({durationText(a.durationMin, t)})
         </span>
         <span className="row small">
-          <Avatar photo={a.client.photo} icon={a.client.icon} size="sm" paint={a.client.paint} /> {partyText(a, t)} <RatingBadge rating={a.client.rating} />
+          <PartyAvatar p={a.client} /> {partyText(a, t)} <RatingBadge rating={a.client.rating} />
         </span>
         <span className="muted small">
           <Icon name="place" className="ico-inline" /> {a.place ? a.place.label : t("appt.noPlace")}

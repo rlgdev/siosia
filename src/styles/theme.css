@@ -2522,7 +2522,14 @@ html[data-launch] .mode-card:nth-child(4) {
   background: var(--accent-fill);
 }
 
-/* ---------- 2.9: an event's tile, the same on every phone ---------- */
+/* ---------- 2.9: an event's tile and the other party's picture, alike on every phone ---------- */
+.avatar.avatar-sm {
+  width: 40px;
+  height: 40px;
+  font-size: 1rem;
+  display: inline-grid;
+  vertical-align: middle;
+}
 .entry-icon.event-tile {
   width: 36px;
   height: 36px;

@@ -60,12 +60,21 @@ export function Avatar({
 }
 
 /** The first letter of a name in a round badge: the placeholder of the v1 driver card. */
-export function Initial({ name }: { name: string }) {
+export function Initial({ name, small }: { name: string; small?: boolean }) {
   return (
-    <div className="avatar" aria-hidden="true">
+    <div className={small ? "avatar avatar-sm" : "avatar"} aria-hidden="true" data-testid="party-initial">
       {name.slice(0, 1).toUpperCase()}
     </div>
   );
+}
+
+/**
+ * 2.9 (FR-318): the other party of an appointment, drawn alike on both phones — the photo, else
+ * their icon in its paint (FR-170), else their initial: never an empty spot on one side only.
+ */
+export function PartyAvatar({ p }: { p: { nickname: string; photo?: string | null; icon?: string | null; paint?: string | null } | null | undefined }) {
+  if (!p) return null;
+  return <Avatar photo={p.photo} icon={p.icon} paint={p.paint} size="sm" fallback={<Initial name={p.nickname || "?"} small />} />;
 }
 
 /** The user's own car icon when the profile's icon is a car and the profile may drive (FR-170). */

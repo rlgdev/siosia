@@ -985,7 +985,8 @@ both parties.
 - **FR-317**: S1 has a fourth card *My profile* (gear) under History; language and the guide sit
   below it.
 - **FR-318**: An appointment shows the same icon to both parties: its service's icon in a tile
-  (party rows keep FR-170: the other party's photo, else their icon in its paint). Phones pick up a
+  and the other party drawn alike — their photo, else their icon in its paint (FR-170), else their
+  initial, never an empty spot on one side only. Phones pick up a
   new version of the app on start and whenever it is brought back to the front (at most every
   5 minutes), so both parties run the same version.
 
