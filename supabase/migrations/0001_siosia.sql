@@ -1758,6 +1758,20 @@ returns boolean language sql stable security definer set search_path = public as
                     and (mb.via_master is null or m.active));
 $$;
 
+-- 2.7 (V67): a master profile's phones are one person in the member list and the catalog — its
+-- newest account stands for it (created_at, then user_id), and its own other phones do not list it.
+create or replace function public.siosia_listed(p_user uuid, p_viewer uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((
+    select p.master_id is null
+        or (p.master_id is distinct from (select v.master_id from profiles v where v.user_id = p_viewer and not v.deleted)
+            and not exists (select 1 from profiles o
+                             where o.master_id = p.master_id and not o.deleted and o.user_id <> p.user_id
+                               and siosia_member_ok(o.user_id) and siosia_same_realm(p_viewer, o.user_id)
+                               and (o.created_at, o.user_id) > (p.created_at, p.user_id)))
+      from profiles p where p.user_id = p_user), true);
+$$;
+
 -- Caller checks shared by every client function. Returns an error code or null.
 create or replace function public.siosia_guard(p_need_profile boolean)
 returns text language plpgsql stable security definer set search_path = public as $$
@@ -3209,7 +3223,8 @@ begin
                                 order by p.nickname)
                  from profiles p
                 where not p.deleted and p.user_id <> v_uid and (x.e ->> 'id') = any (siosia_offers_of(p.user_id))
-                  and siosia_member_ok(p.user_id) and siosia_same_realm(v_uid, p.user_id)), '[]'::jsonb) end)
+                  and siosia_member_ok(p.user_id) and siosia_same_realm(v_uid, p.user_id)
+                  and siosia_listed(p.user_id, v_uid)), '[]'::jsonb) end)
            order by x.ord)
       from app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) with ordinality as x(e, ord)
      where c.id = 1 and coalesce((x.e ->> 'enabled')::boolean, false)), '[]'::jsonb));
@@ -4508,7 +4523,7 @@ begin
   if v_err is not null then return siosia_err(v_err); end if;
   return siosia_ok(coalesce((select jsonb_agg(siosia_public_party(p.user_id, true) order by p.nickname, p.user_id)
                                from profiles p where not p.deleted and p.user_id <> v_uid and siosia_member_ok(p.user_id)
-                                and siosia_same_realm(v_uid, p.user_id)), '[]'::jsonb));
+                                and siosia_same_realm(v_uid, p.user_id) and siosia_listed(p.user_id, v_uid)), '[]'::jsonb));
 end $$;
 
 -- Invites a member into my family (FR-250): not_found for nobody / myself, in_family for someone

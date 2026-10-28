@@ -928,4 +928,7 @@ member list. Tests keep running against the live project, but in a sandbox real 
   bookings only match accounts of the same kind. Nothing else changes for either.
 - **FR-292**: The live smoke script and the live adapter test join with the test code and delete
   their accounts at the end.
+- **FR-293**: A master profile (one link, one account per phone) MUST appear once in the member
+  list and among the catalog's providers — as its newest phone's account — and not at all to its
+  own other phones (2026-10-28: "Toria" showed ten times).
 

@@ -10,7 +10,13 @@ import { ServerError, type Place } from "../../src/core/types";
 const MIN = 60_000;
 const HOME: Place = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
 const AWAY: Place = { lat: 52.2663135, lng: 20.814317, label: "Husarska 16" };
-const CFG: EngineConfig = { ...DEFAULT_CONFIG, services: DEFAULT_SERVICES, inviteCode: "PILOT", testInviteCode: "SMOKE TEST" };
+const CFG: EngineConfig = {
+  ...DEFAULT_CONFIG,
+  services: DEFAULT_SERVICES,
+  inviteCode: "PILOT",
+  testInviteCode: "SMOKE TEST",
+  masters: [{ id: "nanny", token: "nanny-token", nickname: "Niania", icon: null, fixedFare: null, role: "rider", offers: ["childcare"] }]
+};
 
 let db: DbState;
 let now: number;
@@ -98,6 +104,17 @@ describe("test accounts (2.7, V66)", () => {
     expect(at((e) => e.myState("anna")).openBookings).toBe(0);
     expect(code(() => at((e) => e.claimBooking("anna", b.id)))).toBe("not_found");
     expect(at((e) => e.claimBooking("t2", b.id))).toBe("won");
+  });
+
+  it("a master profile's phones are listed once — its newest account — and not to its own phones (V67)", () => {
+    at((e) => e.joinMaster("m1", "nanny-token", "dev-m1", "pl"));
+    now += MIN;
+    at((e) => e.joinMaster("m2", "nanny-token", "dev-m2", "pl"));
+    const listed = (viewer: string) => at((e) => e.memberList(viewer)).filter((p) => p.nickname === "Niania").map((p) => p.publicId);
+    expect(listed("anna")).toEqual([pub("m2")]);
+    expect(at((e) => e.catalog("anna")).find((x) => x.id === "childcare")!.providers.filter((p) => p.nickname === "Niania").map((p) => p.publicId)).toEqual([pub("m2")]);
+    expect(listed("m1")).toEqual([]);
+    expect(listed("t1")).toEqual([]);
   });
 
   it("a test account stays one after the account move", () => {

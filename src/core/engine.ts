@@ -571,6 +571,21 @@ export class Engine {
     return !!uid && !!this.db.sandbox?.[uid];
   }
 
+  /**
+   * 2.7 (V67): a master profile's phones are one person in the member list and the catalog — its
+   * newest account stands for it, and its own other phones do not list it (twin of siosia_listed).
+   */
+  private listed(uid: string, viewer: string): boolean {
+    const m = this.linkedMaster(uid);
+    if (!m) return true;
+    if (this.linkedMaster(viewer) === m) return false;
+    const u = this.db.users[uid];
+    return !Object.values(this.db.users).some(
+      (o) =>
+        o.id !== uid && !o.deleted && o.masterId === m && this.isMember(o.id) && this.sameRealm(viewer, o.id) && (o.createdAt > u.createdAt || (o.createdAt === u.createdAt && o.id > uid))
+    );
+  }
+
   /** 2.7 (V66): two accounts that may find and reach each other — both real or both test. */
   private sameRealm(a: string | null, b: string | null): boolean {
     return this.sandboxOf(a) === this.sandboxOf(b);
@@ -1595,7 +1610,7 @@ export class Engine {
           e.kind !== "time"
             ? []
             : Object.values(this.db.users)
-                .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.sameRealm(uid, u.id) && this.offersOf(u.id).includes(e.id))
+                .filter((u) => !u.deleted && u.id !== uid && this.isMember(u.id) && this.sameRealm(uid, u.id) && this.listed(u.id, uid) && this.offersOf(u.id).includes(e.id))
                 .sort((a, b) => a.nickname.localeCompare(b.nickname))
                 // Whoever browses the catalog may see the providers' photos (FR-211).
                 .map((u): CatalogProvider => ({ ...this.publicParty(u.id, true), contractRate: this.contractRate(uid, u.id, e.id)?.perHour ?? null }))
@@ -2865,7 +2880,7 @@ export class Engine {
   memberList(uid: string): PublicProvider[] {
     this.requireUser(uid);
     return this.members(uid)
-      .filter((m) => this.sameRealm(uid, m))
+      .filter((m) => this.sameRealm(uid, m) && this.listed(m, uid))
       .sort((a, b) => this.nick(a).localeCompare(this.nick(b)))
       .map((m) => this.publicParty(m, true));
   }

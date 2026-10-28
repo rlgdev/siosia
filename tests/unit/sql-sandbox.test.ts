@@ -12,7 +12,9 @@ const U = {
   t1: "00000000-0000-4000-8000-000000000403",
   t2: "00000000-0000-4000-8000-000000000404",
   x: "00000000-0000-4000-8000-000000000405",
-  t1b: "00000000-0000-4000-8000-000000000406"
+  t1b: "00000000-0000-4000-8000-000000000406",
+  m1: "00000000-0000-4000-8000-000000000407",
+  m2: "00000000-0000-4000-8000-000000000408"
 };
 type Who = keyof typeof U;
 const HOME = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
@@ -99,12 +101,27 @@ describe("test accounts (2.7, V66)", () => {
     expect(await call("t2", "siosia_claim_booking", [b.id])).toBe("won");
   });
 
+  it("a master profile's phones are listed once — its newest account — and not to its own phones (V67)", async () => {
+    await h.admin("select public.siosia_set_master('nanny', 'nanny-token-0123456789', 'Niania', null, null, 'rider', null, null, null, array['childcare'])");
+    for (const m of ["m1", "m2"] as Who[]) {
+      await call(m, "siosia_join_master", ["nanny-token-0123456789", `dev-${m}`, "pl", false]);
+      pub[m] = String((await call<Json>(m, "siosia_get_profile")).publicId);
+    }
+    await h.admin("update public.profiles set created_at = now() - interval '1 day' where user_id = $1", [U.m1]);
+    const listed = async (viewer: Who) => (await call<Json[]>(viewer, "siosia_members")).filter((p) => p.nickname === "Niania").map((p) => p.publicId);
+    expect(await listed("anna")).toEqual([pub.m2]);
+    const cat = await call<Json[]>("anna", "siosia_catalog");
+    expect((cat.find((x) => x.id === "childcare")!.providers as Json[]).filter((p) => p.nickname === "Niania").map((p) => p.publicId)).toEqual([pub.m2]);
+    expect(await listed("m1")).toEqual([]);
+    expect(await listed("t1")).toEqual([]);
+  });
+
   it("a test account stays one after the account move; the operator can move one out", async () => {
     const { code } = await call<{ code: string }>("t1", "siosia_create_transfer");
     await call("t1b", "siosia_redeem_transfer", [code, "dev-t1b", false]);
     expect((await h.admin("select bool_or(sandbox) as s from public.memberships where user_id = $1", [U.t1b])).rows[0].s).toBe(true);
     expect(names(await call<Json[]>("t1b", "siosia_members"))).toEqual(["Smoke Driver"]);
     await h.admin("select public.siosia_set_sandbox($1, false)", [pub.t2]);
-    expect(names(await call<Json[]>("anna", "siosia_members"))).toEqual(["Smoke Driver", "Toria"]);
+    expect(names(await call<Json[]>("anna", "siosia_members"))).toEqual(["Niania", "Smoke Driver", "Toria"]);
   });
 });

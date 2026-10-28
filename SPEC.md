@@ -129,6 +129,7 @@ V62: price (FR-262): request w/ provider & active contract(client's family, prov
 V63: cost (FR-270–273): view.cost only status done: minutes = actual_min ?? duration; total = rate ≠ null ? round2(rate × minutes / 60) : price; source contract|catalog|fixed|none; appt_summary 1× on done (summary_sent) to client ∪ client's family ∪ provider when total ≠ null; set_actual ! provider & done & now ≤ end + 24 h & minutes ∈ [15, 1440] % 15 = 0 → actual_min, push client side (corrected)
 V64: report (FR-280–283): week = Mon 00:00–next Mon 00:00 deployment tz, ≤ 52 back; spent = done appts client ∈ scope (cost.total ?? 0, minutes) + completed rides rider ∈ scope (fare); earned = done appts provider ∈ scope + completed rides driver ∈ scope; appt by starts_at, ride by ended_at; lines grouped (other nickname, serviceId); family scope = current members, members[] per person; me scope ⊥ others' rows; numbers identical both twins
 V66: test accounts (FR-290–292): join w/ test invite code → sandbox (sticky; move keeps it; delete drops it); two accounts meet only in the same realm (both real | both test): member list, catalog providers, request to provider (no_provider), open requests (list, badge, appt_open push, get, take → not_found), family invite + contract (not_found), ride offers + nearbyRequests, booking_new push, open bookings + count, claim (not_found), standby request_new push; test code ≠ invite code; operator moves an account by public id; smoke + live tests join w/ test code and delete their users
+V67: master profile listed once (FR-293): member list + catalog providers show one account per master_id — the newest (created_at, then id) member of the viewer's realm — and none to that master's own phones; other paths (requests already sent, open requests, rides) unchanged; twin siosia_listed ↔ Engine.listed
 V65: weekly push (FR-282): sweep now ≥ Mon 08:00 local & app report_week < this Mon → ∀ member w/ ≥ 1 item last week: 1 weekly_report {spent, earned, week}; report_week = this Mon in same step; per-row errors isolated (V30)
 
 ## §T tasks
@@ -172,6 +173,7 @@ T35|x|2.6 adapters + push-text: Backend iface, supabase + mock adapters, push-te
 T36|x|2.6 UI: Family & contracts panel (members, invite picker, incoming invites, leave, contracts list + propose sheet + answer/withdraw/end), S1 family notice, MyKids family-wide (owner name), C2 contract rate, C3 cost summary + correct time + family role (read-only, feed), P1/H1 family marker + totals, Weekly report panel (week nav, me|family), `?open=family|report`, i18n EN/PL, tests components + e2e; docs|V58–V65,V42,V53
 T38|x|2.7 test accounts: sandbox membership + test invite code + realm filters (SQL + engine twin), operator fns, smoke/live tests on the test code + cleanup, SETUP docs, tests engine + sql|V66,V19
 T39|x|release 2.7: live DB migration, set test invite code, move existing Smoke/Live accounts into the sandbox, main|§15,V66
+T40|x|2.7 master profiles listed once: siosia_listed + engine twin in members + catalog, tests both sides, release|V67,V19
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
