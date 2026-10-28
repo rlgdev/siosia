@@ -2,7 +2,7 @@
 // Pure logic with injected I/O (database, web-push), so it is unit-tested in Node
 // (tests/unit/push.test.ts) and wired to Supabase + web-push in index.ts (Deno).
 
-import { pushText, type PushKind, type PushParams } from "../_shared/push-text.ts";
+import { pushText, pushUrl, type PushKind, type PushParams } from "../_shared/push-text.ts";
 
 export interface OutboxRow {
   id: number;
@@ -58,16 +58,7 @@ export interface DispatchResult {
  *  "./" is S1; 2.1: appt_open's I can do it too, FR-162); ride ones open the app (the active ride
  *  shows). A held ride / D1 still wins on launch. 2.3: a chat message opens its room (FR-222) — the
  *  room comes from params; without one, the app. */
-export const openUrl = (kind: PushKind, params?: PushParams, appointmentId?: string | null): string => {
-  if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
-  // 2.5 (FR-232, FR-241): the feed and the notice live on C3 of that appointment.
-  if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
-  // 2.6: the summary opens C3; the family and contract news the Family panel; the report its week.
-  if (kind === "appt_summary") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=history";
-  if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
-  if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
-  return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
-};
+export const openUrl = (kind: PushKind, params?: PushParams, appointmentId?: string | null): string => pushUrl(kind, params, appointmentId);
 
 /** A message is claimed at most this many times (= runs); then it is given up. */
 export const MAX_ATTEMPTS = 5;

@@ -203,3 +203,15 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 304–305 | YOLO events: like Childcare, offered via the base, priced from the contract's base rate | family + sqlfam "a YOLO event is offered by whoever offers its base…"; sql2 catalog checks; e2e v28 |
 | 306 | C1 YOLO section, next date first, "in N days", icons | e2e v28 (15 cards, request at the contract rate); browser check |
 
+## Siosia 2.9 (Amendment 2.9 in `siosia-spec-v2.0.md`, FR-310 – FR-318; SPEC.md V72–V75)
+
+| FR | Requirement (short) | Verified by |
+| --- | --- | --- |
+| 310 | Phones of one master profile = one person for contracts and family invitations; the phone seen last is listed | sandbox + sqlsb "2.9 (V72)…" (incl. the live case: a proposal to an unused phone answered from another) |
+| 311 | Every notification but chat kept 60 days / 200, with or without a subscription | notify-tips + sqlnt "keeps what was notified…", "lists the newest 50…" |
+| 312 | Bell on every screen, unread count, list newest first, read on open, tap → where it is about (pushUrl) | bell-tips (bell, Home); notify-tips "opens what a notification is about"; push (openUrl = pushUrl); e2e family (Anna joins from the bell) |
+| 313 | Only the member's own list | sqlnt (RLS: table revoked; fns use auth.uid()) |
+| 314–316 | Tips: appointment (client side, 7 d, 1–1000), ride (rider, 24 h, 1–500), once, notified, in the weekly report | notify-tips + sqlnt "tips (FR-314–316, V74)"; bell-tips "the tip box"; e2e family (C3 tip, report 140), ride-loop (receipt tip) |
+| 317 | S1 4th card My profile; language + guide below | bell-tips "S1: My profile is a card…"; e2e v28 |
+| 318 | Same event icon tile for every party; new version picked up on start / foreground | browser check (P1/H1/C3); main.tsx update check |
+

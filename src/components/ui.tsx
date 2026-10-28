@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { formatMoney } from "../core/fare";
 import { Icon } from "./Icon";
+import { NotificationsBell } from "./Notifications";
 import type { RatingSummary } from "../core/types";
 import { errorMessage, useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
@@ -133,6 +134,7 @@ export function TopBar({ title, right, onBack }: { title: string; right?: ReactN
       <h1 className="topbar-title">{title}</h1>
       {app.cfg?.backend === "mock" && <span className="badge badge-demo">DEMO</span>}
       {right}
+      <NotificationsBell />
     </header>
   );
 }
@@ -148,6 +150,7 @@ export function Page({ title, children, testId }: { title: string; children: Rea
           <Icon name="back" />
         </button>
         <h1>{title}</h1>
+        <NotificationsBell />
         <button type="button" className="icon-btn page-menu" aria-label={t("common.menu")} onClick={() => store.openPanel("profile")}>
           <Icon name="menu" />
         </button>
@@ -166,6 +169,7 @@ export function Panel({ title, children, onClose }: { title: string; children: R
           <Icon name="back" />
         </button>
         <h2>{title}</h2>
+        <NotificationsBell />
       </header>
       <div className="panel-body">{children}</div>
     </div>

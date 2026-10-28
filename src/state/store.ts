@@ -12,11 +12,11 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { createBackend } from "../backend";
 import type { Backend, PushMessage } from "../backend/types";
-import { pushText } from "../../supabase/functions/_shared/push-text";
+import { pushText, pushUrl } from "../../supabase/functions/_shared/push-text";
 import { showLocal } from "../services/push";
 import { loadConfig, type AppConfig } from "../config";
 import { CADENCE } from "../core/defaults";
-import type { ChatRoom, DeploymentConfig, Lang, Mode, MyState, Profile, Vehicle } from "../core/types";
+import type { ChatRoom, DeploymentConfig, Lang, Mode, MyState, NotificationItem, Profile, Vehicle } from "../core/types";
 import { ServerError } from "../core/types";
 import { browserLang } from "../i18n";
 import { setGeocodeUrl } from "../services/geocode";
@@ -607,6 +607,20 @@ export class AppStore {
     }
   }
 
+  /**
+   * 2.9 (FR-312): a notification in the bell opens what it is about, as its push would; one about a
+   * ride ("./") shows the ride in progress, else History, where the past ones are.
+   */
+  openNotification(n: NotificationItem): void {
+    const url = pushUrl(n.kind, n.params, n.appointmentId);
+    if (url !== "./") {
+      this.openFromUrl(url);
+      return;
+    }
+    const pin = this.pinned();
+    this.go(pin ?? "history");
+  }
+
   /** The online driver confirmed leaving D1: go offline, then where they were going (S1, or e.g. Planned from a notification). */
   async leaveDriveConfirmed(): Promise<void> {
     const target = this.snap.leaveDrive ?? "home";
@@ -729,16 +743,9 @@ export class AppStore {
     // A message in the thread the user is looking at needs no banner (FR-222).
     if (room && inFront && this.snap.panel === "chat" && this.snap.panelArg === room) return;
     const text = pushText(m.kind, m.params, this.snap.lang, this.snap.deployment?.timezone ?? "Europe/Warsaw", m.appointmentId ?? m.rideId);
-    const url = room
-      ? `./?chat=${encodeURIComponent(room)}`
-      : (m.kind === "session_update" || m.kind === "client_coming" || m.kind === "appt_summary") && m.appointmentId
-        ? `./?appointment=${encodeURIComponent(m.appointmentId)}`
-        : // 2.6: as push-dispatch opens them (openUrl)
-          m.kind.startsWith("family_") || m.kind.startsWith("contract_")
-          ? "./?open=family"
-          : m.kind === "weekly_report"
-            ? `./?open=report${m.params.week ? `&week=${encodeURIComponent(m.params.week)}` : ""}`
-            : null;
+    // As push-dispatch opens them (2.9: one pushUrl for the push, the banner and the bell).
+    const target = room ? `./?chat=${encodeURIComponent(room)}` : pushUrl(m.kind, m.params, m.appointmentId);
+    const url = target === "./" ? null : target;
     if (inFront) this.patch({ pushToast: { title: text.title, body: text.body, url } });
     else await showLocal(text.title, text.body, text.tag);
   }

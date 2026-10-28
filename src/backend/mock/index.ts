@@ -212,6 +212,12 @@ export class MockBackend implements Backend {
   rate(rideId: string, stars: number, comment: string) {
     return this.call((e) => e.rate(this.uid, rideId, stars, comment));
   }
+  tipRide(rideId: string, amount: number) {
+    return this.call((e) => e.tipRide(this.uid, rideId, amount));
+  }
+  tipAppointment(id: string, amount: number) {
+    return this.call((e) => e.tipAppointment(this.uid, id, amount));
+  }
 
   // ---------- 2.0 ----------
 
@@ -345,6 +351,12 @@ export class MockBackend implements Backend {
   }
   report(week: string | null, scope: "me" | "family") {
     return this.call((e) => e.report(this.uid, week, scope));
+  }
+  notifications() {
+    return this.call((e) => e.notifications(this.uid));
+  }
+  async readNotifications() {
+    await this.call((e) => e.readNotifications(this.uid));
   }
 
   // ---------- realtime ----------

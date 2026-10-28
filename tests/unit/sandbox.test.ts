@@ -124,6 +124,31 @@ describe("test accounts (2.7, V66)", () => {
     expect(db.sandbox?.n2).toBeUndefined();
   });
 
+  it("2.9: a master profile's phones are one person — a proposal to an unused phone is answered from the one in use (V72)", () => {
+    at((e) => e.joinMaster("m1", "nanny-token", "dev-m1", "pl"));
+    now += MIN;
+    at((e) => e.joinMaster("m2", "nanny-token", "dev-m2", "pl")); // newer, never used again
+    now += MIN;
+    at((e) => e.myState("m1")); // the phone in use
+    expect(at((e) => e.memberList("anna")).filter((p) => p.nickname === "Niania").map((p) => p.publicId)).toEqual([pub("m1")]);
+    // The live case: Anna's proposal went to the unused phone.
+    const c = at((e) => e.proposeContract("anna", { to: pub("m2"), as: "family", rates: [{ serviceId: "childcare", perHour: 40 }] }));
+    expect(pushes.filter((p) => p.kind === "contract_proposed").map((p) => p.userId).sort()).toEqual(["m1", "m2"]);
+    expect(at((e) => e.myState("m1")).familyPending).toBe(1);
+    expect(at((e) => e.contracts("m1"))[0]).toMatchObject({ id: c.id, side: "provider", canAnswer: true });
+    at((e) => e.answerContract("m1", c.id, "accept"));
+    expect(at((e) => e.contracts("anna"))[0].status).toBe("active");
+    // A request to the phone in use takes the contract's rate.
+    const a = at((e) => e.requestService("anna", { serviceId: "childcare", providerId: pub("m1"), startsAt: now + 26 * 60 * MIN, durationMin: 180, place: HOME, note: "" }));
+    expect(a).toMatchObject({ price: 120, rate: 40, contractId: c.id });
+    // A family invitation to the unused phone is seen and answered on the other.
+    at((e) => e.inviteToFamily("anna", pub("m2")));
+    const inv = at((e) => e.family("m1")).incoming;
+    expect(inv.map((i) => i.from.nickname)).toEqual(["Anna"]);
+    at((e) => e.answerInvite("m1", inv[0].id, "join"));
+    expect(at((e) => e.family("anna")).members.map((m) => m.nickname)).toContain("Niania");
+  });
+
   it("a test account stays one after the account move", () => {
     const { code: c } = at((e) => e.createTransfer("t1"));
     at((e) => e.redeemTransfer("t1b", c, "dev-t1b"));

@@ -2250,7 +2250,7 @@ html[data-launch] .home-head > :first-child {
   opacity: 0;
   animation: launch-appear 0.2s linear 0.45s forwards;
 }
-html[data-launch] .home-head > :last-child {
+html[data-launch] .home-head > :not(:first-child) {
   opacity: 0;
   animation: launch-up 0.45s var(--ease) 0.2s forwards;
 }
@@ -2267,6 +2267,9 @@ html[data-launch] .mode-card:nth-child(2) {
 }
 html[data-launch] .mode-card:nth-child(3) {
   animation-delay: 0.3s;
+}
+html[data-launch] .mode-card:nth-child(4) {
+  animation-delay: 0.36s;
 }
 @keyframes launch-up {
   from {
@@ -2393,14 +2396,172 @@ html[data-launch] .mode-card:nth-child(3) {
   margin-top: 2px;
 }
 
-/* ---------- S1: the My profile button in the bottom bar ---------- */
-.home-profile {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 44px;
+/* ---------- 2.9: S1's My profile card; the language and the guide below ---------- */
+.mode-icon-profile {
+  color: var(--ink-2);
+}
+.home-foot {
+  justify-content: center;
+  gap: 4px 18px;
+}
+
+/* ---------- 2.9: the notifications bell (every header) and its drop-down ---------- */
+.bell {
+  position: relative;
+  flex: none;
+}
+.home-head .bell {
+  margin-left: auto;
+  align-self: flex-start;
+}
+.panel-head .bell {
+  margin-left: auto;
+}
+.bell-btn {
+  position: relative;
+}
+.bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
   border-radius: 999px;
+  background: var(--error);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--surface-solid);
+}
+.bell-drop {
+  position: absolute;
+  z-index: 1300;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  color: var(--ink);
+  box-shadow: var(--shadow-lift);
+  text-align: left;
+  animation: bell-in 0.18s var(--ease);
+}
+@keyframes bell-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+.bell-head {
+  margin: 4px 8px 8px;
+  font-size: 1.1rem;
+}
+.bell-empty {
+  margin: 8px;
+}
+.bell-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.bell-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.bell-item:hover {
+  background: var(--chip-bg);
+}
+.bell-item-new {
+  background: var(--accent-soft);
+}
+.bell-ico {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--chip-bg);
+  color: var(--ink-2);
+}
+.bell-item-new .bell-ico {
+  color: var(--accent);
+}
+.bell-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+.bell-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--accent-fill);
+}
+
+/* ---------- 2.9: an event's tile, the same on every phone ---------- */
+.entry-icon.event-tile {
+  width: 36px;
+  height: 36px;
+  font-size: 1.3rem;
+  border-radius: 12px;
+  display: inline-grid;
+  vertical-align: middle;
+  margin: 0 6px 0 0;
+}
+.event-tile .ico {
+  width: 22px;
+  height: 22px;
+}
+.event-tile .ico[data-icon="parrot"] {
+  width: 28px;
+  height: 28px;
+}
+
+/* ---------- 2.9: tips ---------- */
+.tip-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tip-chip {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--chip-bg);
+  color: var(--ink);
+  font: inherit;
   font-weight: 600;
+  cursor: pointer;
+}
+.tip-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .yolo-sound {
   justify-content: flex-end;

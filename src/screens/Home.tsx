@@ -5,6 +5,7 @@
 
 import { AppHint } from "../components/AppInstall";
 import { Icon, Logo } from "../components/Icon";
+import { NotificationsBell } from "../components/Notifications";
 import { Avatar, CarIconButton, ownCarIcon } from "../components/ProfileIcon";
 import { whenText } from "../components/when";
 import { useI18n } from "../i18n";
@@ -49,10 +50,12 @@ export function Home() {
             fallback={<Logo />}
           />
         )}
-        <div>
+        <div className="home-hello">
           <h1>{t("home.hello", { name: app.profile?.nickname ?? "" })}</h1>
           <p className="muted">{t("start.choose")}</p>
         </div>
+        {/* 2.9 (FR-311): Siosia's notifications */}
+        <NotificationsBell />
       </header>
       {app.cfg?.backend === "mock" && <p className="notice notice-info">{t("demo.banner")}</p>}
       <AppHint />
@@ -126,6 +129,14 @@ export function Home() {
           <span className="mode-title">{t("start.history")}</span>
           <span className="mode-body">{t("start.historyBody")}</span>
         </button>
+        {/* 2.9: My profile is a card like the others; the language and the guide sit below. */}
+        <button type="button" className="mode-card" onClick={() => store.openPanel("profile")} data-testid="home-profile">
+          <span className="mode-icon mode-icon-profile" aria-hidden="true">
+            <Icon name="gear" size={26} />
+          </span>
+          <span className="mode-title">{t("home.profile")}</span>
+          <span className="mode-body">{t("start.profileBody")}</span>
+        </button>
       </nav>
       <div className="home-foot">
         <label className="field inline">
@@ -138,9 +149,6 @@ export function Home() {
         <a className="btn btn-link" href="./guide.html">
           {t("home.guide")}
         </a>
-        <button type="button" className="btn btn-secondary btn-small home-profile" onClick={() => store.openPanel("profile")} data-testid="home-profile">
-          <Icon name="gear" className="ico-inline" /> {t("home.profile")}
-        </button>
       </div>
     </main>
   );

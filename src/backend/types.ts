@@ -48,7 +48,8 @@ import type {
   RiderPos,
   Role,
   SharingStop,
-  Vehicle
+  Vehicle,
+  NotificationItem
 } from "../core/types";
 
 export type BackendKind = "mock" | "supabase";
@@ -155,6 +156,10 @@ export interface Backend {
   markPaid(rideId: string): Promise<void>;
   markCollected(rideId: string): Promise<void>;
   rate(rideId: string, stars: number, comment: string): Promise<void>;
+  /** 2.9 (FR-315): the rider's tip to the driver, once, within 24 h of the end. */
+  tipRide(rideId: string, amount: number): Promise<RideView>;
+  /** 2.9 (FR-314): the client side's tip to the provider, once, within 7 days of the end. */
+  tipAppointment(id: string, amount: number): Promise<AppointmentView>;
 
   // ---------- 2.0: the service catalog and appointments ----------
 
@@ -233,6 +238,10 @@ export interface Backend {
   setActualTime(appointmentId: string, minutes: number): Promise<AppointmentView>;
   /** One week's spent and earned (`week` = any day "YYYY-MM-DD", null = this week). */
   report(week: string | null, scope: "me" | "family"): Promise<WeeklyReport>;
+  /** 2.9 (FR-312): my recent notifications (the bell), newest first, and how many are unread. */
+  notifications(): Promise<{ items: NotificationItem[]; unread: number }>;
+  /** Opening the bell marks them all read. */
+  readNotifications(): Promise<void>;
 
   onMyChanges(cb: () => void): Unsub;
   /** Web Push subscription of this device (notifications). */

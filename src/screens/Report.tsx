@@ -172,6 +172,15 @@ function Side({ title, side, currency, testId }: { title: string; side: ReportSi
           <Money amount={side.rides.total} currency={currency} />
         </div>
       )}
+      {/* 2.9 (FR-316): tips given or received, part of the total */}
+      {side.tips > 0 && (
+        <div className="row spread report-line" data-testid="report-tips">
+          <span>
+            <Icon name="sparkles" className="ico-inline" /> {t("report.tips")}
+          </span>
+          <Money amount={side.tips} currency={currency} />
+        </div>
+      )}
     </section>
   );
 }

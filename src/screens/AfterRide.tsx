@@ -3,13 +3,15 @@
 
 import { Icon } from "../components/Icon";
 import { useState } from "react";
+import { TipBox } from "../components/Tip";
 import { Money, Notice, Sheet, StarInput, fmtKm, fmtMin, useBusy } from "../components/ui";
+import { formatMoney } from "../core/fare";
 import type { RideView } from "../core/types";
 import { useI18n } from "../i18n";
 import { useStore } from "../state/store";
 
 export function AfterRide({ ride, onDone }: { ride: RideView; onDone: () => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const store = useStore();
   const api = store.api;
   const [r, setR] = useState(ride);
@@ -94,6 +96,23 @@ export function AfterRide({ ride, onDone }: { ride: RideView; onDone: () => void
             {t("receipt.sendRating")}
           </button>
         </div>
+      )}
+      {/* 2.9 (FR-315): the rider may tip the driver, once, within 24 h; the driver sees it. */}
+      {rider && r.driver && (r.tip != null || store.serverNow() < (r.endedAt ?? 0) + 24 * 3600_000) && (
+        <TipBox
+          currency={r.currency}
+          max={500}
+          suggested={[5, 10, 20]}
+          tip={r.tip ?? null}
+          onTip={async (n) => setR(await api.tipRide(r.id, n))}
+        />
+      )}
+      {!rider && r.tip != null && (
+        <Notice kind="ok">
+          <span data-testid="ride-tip">
+            <Icon name="sparkles" className="ico-inline" /> {t("tip.received", { amount: formatMoney(r.tip, r.currency, locale) })}
+          </span>
+        </Notice>
       )}
       {error && <p className="form-error" role="alert">{error}</p>}
       <button type="button" className="btn btn-primary btn-block" onClick={onDone} data-testid="after-ride-done">

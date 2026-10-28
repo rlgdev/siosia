@@ -52,6 +52,7 @@ const MY: MyState = {
   openRequests: 0,
   unreadChats: 0,
   familyPending: 0,
+  unreadNotifications: 0,
   planned: 0,
   nextPlanned: null
 };
@@ -469,7 +470,7 @@ describe("2.3: a chat notification and the chat panel (FR-221, FR-222)", () => {
     await show({ kind: "chat_message", rideId: "r1", appointmentId: null, params: { sender: "Adam", text: "Here", room: "ride:r1" } });
     expect(store.get().pushToast?.url).toBe("./?chat=ride%3Ar1");
     await show({ kind: "appt_accepted", rideId: null, appointmentId: "a1", params: { provider: "Ewa", service: "Childcare" } });
-    expect(store.get().pushToast?.url).toBeNull();
+    expect(store.get().pushToast?.url).toBe("./?open=planned"); // 2.9: where its push opens (pushUrl)
   });
 });
 

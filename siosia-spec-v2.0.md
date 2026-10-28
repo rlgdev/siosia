@@ -961,3 +961,31 @@ year, approved like any service and priced from the contract's hourly rate.
 - **FR-306**: C1 shows YOLO as its own section with an icon per event; dated events come in the
   order of their next date ("in 12 days" within two months), the rest after them.
 
+## Amendment 2.9 (2026-10-28): one person on many phones, notifications, tips
+
+Operator request of 2026-10-28: a contract proposal never reached Toria (her master link made one
+account per phone; the proposal went to a phone she does not use); a notifications list on every
+screen; tips at the end of every service; a clearer profile entry on S1; the same event icons for
+both parties.
+
+- **FR-310**: All phones of one master profile are one person for contracts and family
+  invitations: any of them sees a proposal or invitation, answers it, and is notified. New requests
+  go to the phone used most recently.
+- **FR-311**: Every notification Siosia sends a member (except chat messages, which have their own
+  badge) is kept for 60 days, whether or not notifications are turned on.
+- **FR-312**: Every screen shows a bell with the unread count; tapping it opens the list, newest
+  first (Facebook-style), and marks it read; tapping an item opens what it is about — the
+  appointment, Planned, the family panel, the weekly report…
+- **FR-313**: Only the member sees their own list.
+- **FR-314**: After an appointment is done, the client (or someone of the client's family) MAY leave
+  a tip once within 7 days (1–1000, to the cent); the provider is notified (`appt_tip`).
+- **FR-315**: After a completed ride the rider MAY leave a tip once within 24 hours (1–500); the
+  driver is notified (`ride_tip`).
+- **FR-316**: Tips show apart from the price and count in the weekly report (spent and earned).
+- **FR-317**: S1 has a fourth card *My profile* (gear) under History; language and the guide sit
+  below it.
+- **FR-318**: An appointment shows the same icon to both parties: its service's icon in a tile
+  (party rows keep FR-170: the other party's photo, else their icon in its paint). Phones pick up a
+  new version of the app on start and whenever it is brought back to the front (at most every
+  5 minutes), so both parties run the same version.
+

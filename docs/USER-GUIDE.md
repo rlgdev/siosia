@@ -269,6 +269,22 @@ ones come first ("in 3 days"). Each is booked like Childcare — place, time, ki
 whoever looks after kids can be asked; with a contract it costs your Childcare rate unless the
 contract sets one for that event.
 
+## Notifications, tips and My profile
+
+The **bell** at the top of every screen keeps Siosia's news of the last 60 days — also when
+notifications are off on this phone — newest first; the red number counts the new ones and opening
+the list marks them read. Tap one to go where it is about: the appointment, Planned, your family,
+the weekly report, or History for a past ride. Chat messages stay in their chats.
+
+At the end of a service you may leave a **tip**: on a done appointment (within 7 days; anyone of
+the client's family may) and on the ride receipt (within 24 hours). Pick an amount or type another;
+it is paid the way the rest is and shows in both weekly reports.
+
+**My profile** is the fourth card on the start screen; the language and *How it works* sit below
+it. Several phones of one profile are one person: a contract proposal or a family invitation reaches
+all of them and any of them can answer. An installed app checks for a new version when you open it,
+so both of you see the same screens.
+
 ## The round *i*
 
 Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
@@ -574,6 +590,23 @@ Sylwester, ferie, randkę we dwoje, karnawał, Wielkanoc, Dzień Dziecka, wakacj
 urodziny, imprezy dla dzieci, piżama party, wesela. Najbliższe są pierwsze („za 3 dni”). Każde
 rezerwujesz jak opiekę nad dziećmi — miejsce, czas, dzieci, akceptacja — a poprosić możesz każdego,
 kto opiekuje się dziećmi; z umową kosztuje stawkę opieki, chyba że umowa ma osobną dla tego dnia.
+
+## Powiadomienia, napiwki i Mój profil
+
+**Dzwonek** u góry każdego ekranu zbiera wiadomości od Siosi z ostatnich 60 dni — także gdy
+powiadomienia są na tym telefonie wyłączone — najnowsze pierwsze; czerwona liczba to nowe, a
+otwarcie listy oznacza je jako przeczytane. Dotknij, by przejść tam, czego dotyczą: do terminu,
+Planu, rodziny, raportu tygodniowego albo Historii dla minionego kursu. Wiadomości czatu zostają w
+czatach.
+
+Na koniec usługi możesz zostawić **napiwek**: w zakończonym terminie (w ciągu 7 dni; może każdy z
+rodziny klienta) i na paragonie kursu (w ciągu 24 godzin). Wybierz kwotę albo wpisz inną; płacisz go
+tak jak resztę, a pojawia się w raportach obu stron.
+
+**Mój profil** to czwarta karta na ekranie startowym; język i *Jak to działa* są pod nią. Kilka
+telefonów jednego profilu to jedna osoba: propozycja umowy czy zaproszenie do rodziny trafia na
+wszystkie i każdy może odpowiedzieć. Zainstalowana aplikacja sprawdza nową wersję przy otwarciu,
+więc oboje widzicie te same ekrany.
 
 ## Okrągłe *i*
 

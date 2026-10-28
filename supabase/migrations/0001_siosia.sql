@@ -521,6 +521,9 @@ create table if not exists public.chat_presence (
 
 -- The profile photo's object path (FR-210); null = none.
 alter table public.profiles add column if not exists photo_path text;
+-- 2.9 (V72): when this phone last fetched its state (at most once a minute) — which phone of a
+-- master profile is in use.
+alter table public.profiles add column if not exists seen_at timestamptz;
 -- Photo ownership is ROW-based (V49): the row that holds a path owns it. These make the lookups cheap.
 create index if not exists profiles_photo_path_idx on public.profiles (photo_path) where photo_path is not null;
 create index if not exists kids_photo_path_idx on public.kids (photo_path) where photo_path is not null;
@@ -603,6 +606,13 @@ alter table public.appointments drop constraint if exists appointments_actual_mi
 alter table public.appointments add constraint appointments_actual_min_check
   check (actual_min is null or (actual_min between 15 and 1440 and actual_min % 15 = 0));
 alter table public.appointments add column if not exists summary_sent boolean not null default false;
+-- 2.9 (FR-314, FR-315, V74): a tip after a done appointment (from the client side) and after a
+-- completed ride (from the rider) — once each.
+alter table public.appointments add column if not exists tip numeric(10, 2);
+alter table public.appointments add column if not exists tip_by uuid;
+alter table public.appointments add column if not exists tip_at timestamptz;
+alter table public.rides add column if not exists tip numeric(10, 2);
+alter table public.rides add column if not exists tip_at timestamptz;
 -- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
 create table if not exists public.member_invites (
   token_hash  text primary key,
@@ -617,6 +627,20 @@ create index if not exists member_invites_from_idx on public.member_invites (fro
 create index if not exists member_invites_used_idx on public.member_invites (used_by) where used_by is not null;
 -- 2.6 (FR-282, V65): the Monday whose weekly_report notifications went out.
 alter table public.app_config add column if not exists report_week date;
+
+-- 2.9 (FR-311, V73): every notification a member got (but chat messages), kept for the bell —
+-- whether or not their phone has notifications on. 60 days, at most 200 per member.
+create table if not exists public.notifications (
+  id             bigserial primary key,
+  user_id        uuid not null references auth.users (id) on delete cascade,
+  kind           text not null,
+  params         jsonb not null default '{}',
+  ride_id        uuid,
+  appointment_id uuid,
+  created_at     timestamptz not null default now(),
+  read_at        timestamptz
+);
+create index if not exists notifications_user_idx on public.notifications (user_id, id desc);
 
 -- ---------------------------------------------------------------------------------------------
 -- Row level security: clients may only READ their own rows; all writes go through functions.
@@ -649,6 +673,7 @@ alter table public.family_members enable row level security;
 alter table public.family_invites enable row level security;
 alter table public.contracts enable row level security;
 alter table public.member_invites enable row level security;
+alter table public.notifications enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -661,7 +686,7 @@ revoke all on public.app_config, public.app_secrets, public.profiles, public.veh
               public.kids, public.appointment_kids, public.kid_ratings, public.messages, public.chat_presence,
               public.appointment_updates,
               public.families, public.family_members, public.family_invites, public.contracts,
-              public.member_invites
+              public.member_invites, public.notifications
   from anon, authenticated;
 -- The sender (Edge Function, service role) reads the queue and the subscriptions.
 do $$
@@ -1163,6 +1188,10 @@ returns jsonb language sql stable security definer set search_path = public as $
     'contractId', case when v.sees then a.contract_id end,
     'actualMin', a.actual_min,
     'cost', case when v.sees then siosia_cost_json(a) end,
+    -- 2.9 (FR-314): the tip — the parties and their families see it.
+    'tip', case when v.sees and a.tip is not null then jsonb_build_object(
+             'amount', a.tip, 'by', coalesce((select p.nickname from profiles p where p.user_id = a.tip_by), ''),
+             'at', siosia_ms(coalesce(a.tip_at, a.ended_at, a.starts_at))) end,
     'family', case when v.role = 'family' then jsonb_build_object(
                 'side', case when siosia_same_family(p_viewer, a.client_id) then 'client' else 'provider' end,
                 'member', coalesce((select p.nickname from profiles p
@@ -1246,6 +1275,8 @@ returns jsonb language sql stable security definer set search_path = public as $
     'driver', case when r.driver_id is null then null
                    else siosia_party_for(r.driver_id, v.party) || jsonb_build_object('vehicle', siosia_vehicle_json(r.driver_id)) end,
     'myRating', (select g.stars from ratings g where g.ride_id = r.id and g.from_user = p_viewer),
+    -- 2.9 (FR-315): the tip, for the two parties.
+    'tip', case when v.party then r.tip end,
     -- 2.0: the appointment and leg are the rider's business only (FR-114); booked rides go into calendars.
     'appointmentId', case when r.rider_id = p_viewer then r.appointment_id end,
     'leg', case when r.rider_id = p_viewer then r.leg end,
@@ -1307,15 +1338,25 @@ begin
   end loop;
 end $$;
 
--- Queue a notification for a user who turned them on (in their language and the deployment's
--- time zone). Sent by the Edge Function push-dispatch.
+-- 2.9 (V73): keep a notification for the bell (the newest 200 per member) and refetch.
+create or replace function public.siosia_keep_notification(p_user uuid, p_kind text, p_ride uuid, p_appt uuid, p_params jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into notifications (user_id, kind, ride_id, appointment_id, params)
+  values (p_user, p_kind, p_ride, p_appt, coalesce(p_params, '{}'::jsonb));
+  delete from notifications where user_id = p_user
+     and id not in (select id from notifications where user_id = p_user order by id desc limit 200);
+  perform siosia_notify(p_user);
+end $$;
+
+-- Keep a notification for a member (the bell) and queue it for a phone that turned them on (in
+-- their language and the deployment's time zone). Sent by the Edge Function push-dispatch.
 create or replace function public.siosia_push(p_user uuid, p_kind text, p_ride uuid, p_params jsonb)
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user)
-     or not siosia_member_ok(p_user) then
-    return;
-  end if;
+  if p_user is null or not siosia_member_ok(p_user) then return; end if;
+  perform siosia_keep_notification(p_user, p_kind, p_ride, null, p_params);
+  if not exists (select 1 from push_subscriptions where user_id = p_user) then return; end if;
   insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
   values (p_user, p_kind, p_ride, coalesce(p_params, '{}'::jsonb),
           coalesce((select language from profiles where user_id = p_user), 'en'),
@@ -1744,9 +1785,12 @@ begin
     'openRequests', (select count(*) from siosia_open_rows(p_user)),
     -- 2.3 (FR-221): unread chat messages across my rooms (the S1 badge).
     'unreadChats', siosia_unread_total(p_user),
+    -- 2.9 (FR-312): unread notifications (the bell's badge).
+    'unreadNotifications', (select count(*) from notifications n
+                             where n.user_id = p_user and n.read_at is null and n.created_at > now() - interval '60 days'),
     -- 2.6: family invitations to me and contract proposals my side should answer (the S1 notice).
     'familyPending', (select count(*) from family_invites i
-                       where i.to_user = p_user and i.status = 'pending' and now() < i.created_at + interval '7 days')
+                       where siosia_same_person(i.to_user, p_user) and i.status = 'pending' and now() < i.created_at + interval '7 days')
                    + (select count(*) from contracts k where k.status = 'proposed' and siosia_contract_answers(p_user, k)),
     'planned', (select count(*) from appointments
                  where (client_id = p_user or provider_id = p_user) and status in ('requested', 'accepted')
@@ -1796,8 +1840,27 @@ returns boolean language sql stable security definer set search_path = public as
             and not exists (select 1 from profiles o
                              where o.master_id = p.master_id and not o.deleted and o.user_id <> p.user_id
                                and siosia_member_ok(o.user_id) and siosia_same_realm(p_viewer, o.user_id)
-                               and (o.created_at, o.user_id) > (p.created_at, p.user_id)))
+                               -- 2.9 (V72): the phone seen most recently (else the newest) stands for it
+                               and (coalesce(o.seen_at, o.created_at), o.created_at, o.user_id)
+                                 > (coalesce(p.seen_at, p.created_at), p.created_at, p.user_id)))
       from profiles p where p.user_id = p_user), true);
+$$;
+
+-- 2.9 (V72): the phones of one master profile are one person (contracts, family invitations), and
+-- every phone (account) of a person — the master profile's members, else just them.
+create or replace function public.siosia_same_person(p_a uuid, p_b uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(p_a = p_b or exists (
+    select 1 from profiles x join profiles y on y.master_id = x.master_id
+     where x.user_id = p_a and y.user_id = p_b and x.master_id is not null and not x.deleted and not y.deleted), false);
+$$;
+
+create or replace function public.siosia_person_accounts(p_user uuid)
+returns uuid[] language sql stable security definer set search_path = public as $$
+  select array(select p_user union
+               select o.user_id from profiles me join profiles o on o.master_id = me.master_id
+                where me.user_id = p_user and me.master_id is not null and not me.deleted and not o.deleted
+                  and siosia_member_ok(o.user_id));
 $$;
 
 -- Caller checks shared by every client function. Returns an error code or null.
@@ -2042,6 +2105,7 @@ begin
   update rides set excluded = array_replace(excluded, v_old, v_uid) where v_old = any (excluded);
   update appointments set client_id = v_uid where client_id = v_old;
   update appointments set provider_id = v_uid where provider_id = v_old;
+  update appointments set tip_by = v_uid where tip_by = v_old; -- 2.9
   update appointment_series set client_id = v_uid where client_id = v_old;
   update appointment_series set provider_id = v_uid where provider_id = v_old;
   -- Both accounts may hold a card for the same ride, or have rated the same ride: keep the new one.
@@ -2082,6 +2146,8 @@ begin
   update contracts set ended_by = v_uid where ended_by = v_old;
   update member_invites set from_user = v_uid where from_user = v_old; -- 2.8: links made and used follow the account
   update member_invites set used_by = v_uid where used_by = v_old;
+  delete from notifications where user_id = v_uid; -- 2.9: the bell follows the account
+  update notifications set user_id = v_uid where user_id = v_old;
   delete from chat_presence o using chat_presence n where o.user_id = v_old and n.user_id = v_uid and n.room = o.room;
   update chat_presence set user_id = v_uid where user_id = v_old;
   -- The replaced profile's row goes, and with it its photo: that object is dropped from the bucket.
@@ -2292,6 +2358,7 @@ begin
   delete from vehicles where user_id = v_uid;
   delete from memberships where user_id = v_uid;
   delete from push_subscriptions where user_id = v_uid;
+  delete from notifications where user_id = v_uid; -- 2.9
   -- 2.3 (FR-200, V44, V49): the kids go with the profile — their attachments and ratings by cascade
   -- — so do the messages sent, the chat presence and every photo object of this account: each
   -- object a row holds (a merged account's kid may sit under a former folder), then whatever is
@@ -2317,6 +2384,9 @@ declare v_err text := siosia_guard(false);
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   perform siosia_sweep();
+  -- 2.9 (V72): this phone is in use (at most once a minute).
+  update profiles set seen_at = now()
+   where user_id = auth.uid() and not deleted and (seen_at is null or seen_at < now() - interval '1 minute');
   return siosia_ok(siosia_state_json(auth.uid()));
 end $$;
 
@@ -2832,6 +2902,27 @@ exception when unique_violation then
   return siosia_err('already_rated');
 end $$;
 
+-- 2.9 (FR-315, V74): the rider thanks the driver with a tip (1–500) — once, within 24 h of the end.
+create or replace function public.siosia_tip_ride(p_ride uuid, p_amount numeric)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); r rides; v numeric := round(p_amount, 2);
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  select * into r from rides where id = p_ride and (rider_id = v_uid or driver_id = v_uid) for update;
+  if r.id is null then return siosia_err('not_found'); end if;
+  if r.status <> 'completed' then return siosia_err('illegal_transition'); end if;
+  if now() > r.ended_at + interval '24 hours' then return siosia_err('window_closed'); end if;
+  if r.rider_id <> v_uid or r.driver_id is null then return siosia_err('forbidden'); end if;
+  if v is null or v < 1 or v > 500 then return siosia_err('bad_input'); end if;
+  if r.tip is not null then return siosia_err('already_tipped'); end if;
+  update rides set tip = v, tip_at = now() where id = r.id returning * into r;
+  perform siosia_push(r.driver_id, 'ride_tip', r.id,
+    jsonb_build_object('at', r.scheduled_for, 'sender', siosia_nick(v_uid), 'total', v, 'currency', r.currency, 'pickup', r.pickup_label));
+  perform siosia_notify(r.rider_id);
+  perform siosia_notify(r.driver_id);
+  return siosia_ok(siosia_ride_json(r, v_uid));
+end $$;
+
 -- ---------------------------------------------------------------------------------------------
 -- Siosia 2.0: the service catalog (deployment configuration)
 -- ---------------------------------------------------------------------------------------------
@@ -2927,23 +3018,22 @@ end $$;
 -- service named in that language, tagged with the appointment (§8, V18).
 create or replace function public.siosia_push_appt(p_user uuid, p_kind text, p_appt uuid, p_params jsonb)
 returns void language plpgsql security definer set search_path = public as $$
-declare v_lang text;
+declare v_lang text; v_params jsonb;
 begin
-  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user)
-     or not siosia_member_ok(p_user) then
-    return;
-  end if;
+  if p_user is null or not siosia_member_ok(p_user) then return; end if;
   v_lang := coalesce((select language from profiles where user_id = p_user), 'en');
+  v_params := coalesce(p_params, '{}'::jsonb)
+    || case when p_params ? 'serviceId'
+            then jsonb_build_object('service', siosia_service_name(p_params ->> 'serviceId', v_lang))
+            else '{}'::jsonb end
+    -- 2.3 (FR-202): the provider hears who comes ("with Zosia and Kuba"); the client knows their own kids.
+    || case when exists (select 1 from appointments a join appointment_kids ak on ak.appointment_id = a.id
+                          where a.id = p_appt and a.provider_id = p_user)
+            then jsonb_build_object('kids', siosia_kid_names(p_appt)) else '{}'::jsonb end;
+  perform siosia_keep_notification(p_user, p_kind, null, p_appt, v_params); -- 2.9 (V73): the bell
+  if not exists (select 1 from push_subscriptions where user_id = p_user) then return; end if;
   insert into push_outbox (user_id, kind, ride_id, appointment_id, params, lang, tz)
-  values (p_user, p_kind, null, p_appt,
-          coalesce(p_params, '{}'::jsonb)
-            || case when p_params ? 'serviceId'
-                    then jsonb_build_object('service', siosia_service_name(p_params ->> 'serviceId', v_lang))
-                    else '{}'::jsonb end
-            -- 2.3 (FR-202): the provider hears who comes ("with Zosia and Kuba"); the client knows their own kids.
-            || case when exists (select 1 from appointments a join appointment_kids ak on ak.appointment_id = a.id
-                                  where a.id = p_appt and a.provider_id = p_user)
-                    then jsonb_build_object('kids', siosia_kid_names(p_appt)) else '{}'::jsonb end,
+  values (p_user, p_kind, null, p_appt, v_params,
           v_lang, coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
   perform siosia_kick_push();
 end $$;
@@ -3024,7 +3114,7 @@ create or replace function public.siosia_book_for(p_uid uuid, p_pickup jsonb, p_
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   c app_config; r rides; a appointments;
-  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric;
+  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric; v_driver uuid;
 begin
   if siosia_master_role(p_uid) = 'driver' then return siosia_err('driver_only'); end if;
   begin
@@ -3087,7 +3177,14 @@ begin
           v_fixed is null and coalesce(p_fare_is_estimate, false),
           p_appointment, case when p_appointment is null then null else p_leg end, coalesce(p_template, false))
   returning * into r;
-  -- Everyone who can take it and turned notifications on hears about it.
+  -- 2.9 (V73): everyone who can take it finds it in the bell…
+  for v_driver in select v.user_id from vehicles v join profiles p on p.user_id = v.user_id and not p.deleted
+                   where v.user_id <> p_uid and siosia_master_role(v.user_id) is distinct from 'rider'
+                     and siosia_member_ok(v.user_id) and siosia_same_realm(p_uid, v.user_id) loop
+    perform siosia_keep_notification(v_driver, 'booking_new', r.id, null,
+      jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label));
+  end loop;
+  -- …and those who turned notifications on hear about it.
   insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
   select distinct s.user_id, 'booking_new', r.id,
          jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label),
@@ -3880,6 +3977,7 @@ begin
      and not exists (select 1 from appointments a where a.series_id = s.id);
   delete from invite_failures where at < now() - interval '1 day';
   delete from push_outbox where created_at < now() - interval '2 days';
+  delete from notifications where created_at < now() - interval '60 days'; -- 2.9 (V73)
   delete from account_transfers where expires_at < now();
   -- 2.3: presence matters for 45 s; a day-old mark is noise.
   delete from chat_presence where seen_at < now() - interval '1 day';
@@ -4435,7 +4533,7 @@ end $$;
 create or replace function public.siosia_contract_rate(p_client uuid, p_provider uuid, p_service text)
 returns table (contract_id uuid, per_hour numeric) language sql stable security definer set search_path = public as $$
   select k.id, (r ->> 'perHour')::numeric from contracts k, jsonb_array_elements(k.rates) r
-   where k.family_id = siosia_family_of(p_client) and k.provider_id = p_provider and k.status = 'active'
+   where k.family_id = siosia_family_of(p_client) and siosia_same_person(k.provider_id, p_provider) and k.status = 'active'
      and (r ->> 'serviceId' = p_service or r ->> 'serviceId' = siosia_service(p_service) ->> 'base')
    order by (r ->> 'serviceId' = p_service) desc
    limit 1;
@@ -4445,8 +4543,8 @@ $$;
 -- of the family of a provider's?
 create or replace function public.siosia_contract_answers(p_user uuid, k public.contracts)
 returns boolean language sql stable security definer set search_path = public as $$
-  select coalesce(case when k.proposed_side = 'family' then k.provider_id = p_user
-                       else k.family_id = siosia_family_of(p_user) and k.provider_id <> p_user end, false);
+  select coalesce(case when k.proposed_side = 'family' then siosia_same_person(k.provider_id, p_user)
+                       else k.family_id = siosia_family_of(p_user) and not siosia_same_person(k.provider_id, p_user) end, false);
 $$;
 
 create or replace function public.siosia_invite_json(i public.family_invites)
@@ -4468,7 +4566,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'invites', coalesce((select jsonb_agg(siosia_invite_json(i) order by i.created_at, i.id)
                            from family_invites i where i.family_id = x.f and i.status = 'pending'), '[]'::jsonb),
     'incoming', coalesce((select jsonb_agg(siosia_invite_json(i) order by i.created_at, i.id)
-                            from family_invites i where i.to_user = p_user and i.status = 'pending'), '[]'::jsonb))
+                            from family_invites i where siosia_same_person(i.to_user, p_user) and i.status = 'pending'), '[]'::jsonb))
   from (select siosia_family_of(p_user) as f) x;
 $$;
 
@@ -4488,7 +4586,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'proposedByMe', k.proposed_side = v.side,
     'canAnswer', k.status = 'proposed' and siosia_contract_answers(p_viewer, k),
     'createdAt', siosia_ms(k.created_at), 'answeredAt', siosia_ms(k.answered_at), 'endedAt', siosia_ms(k.ended_at))
-  from (select case when k.provider_id = p_viewer then 'provider' else 'family' end as side) v;
+  from (select case when siosia_same_person(k.provider_id, p_viewer) then 'provider' else 'family' end as side) v;
 $$;
 
 -- A contract's provider and family refetch.
@@ -4496,7 +4594,7 @@ create or replace function public.siosia_notify_contract(k public.contracts)
 returns void language plpgsql security definer set search_path = public as $$
 declare m uuid;
 begin
-  perform siosia_notify(k.provider_id);
+  foreach m in array siosia_person_accounts(k.provider_id) loop perform siosia_notify(m); end loop;
   for m in select user_id from family_members where family_id = k.family_id loop
     perform siosia_notify(m);
   end loop;
@@ -4531,7 +4629,9 @@ begin
     update contracts set status = case when k.status = 'active' then 'ended' else 'withdrawn' end, ended_at = now(), ended_by = p_user
      where id = k.id;
     if k.status = 'active' then
-      perform siosia_push(k.provider_id, 'contract_ended', null, jsonb_build_object('sender', siosia_nick(p_user)));
+      foreach m in array siosia_person_accounts(k.provider_id) loop
+        perform siosia_push(m, 'contract_ended', null, jsonb_build_object('sender', siosia_nick(p_user)));
+      end loop;
     end if;
   end loop;
   delete from families where id = v_fid;
@@ -4541,8 +4641,14 @@ end $$;
 -- are told), and it leaves its family.
 create or replace function public.siosia_drop_from_families(p_user uuid)
 returns void language plpgsql security definer set search_path = public as $$
-declare m uuid; k contracts;
+declare m uuid; k contracts; v_sibling uuid;
 begin
+  -- 2.9 (V72): another phone of the same master profile takes over what was addressed to this one.
+  select x into v_sibling from unnest(siosia_person_accounts(p_user)) x where x <> p_user limit 1;
+  if v_sibling is not null then
+    update family_invites set to_user = v_sibling where status = 'pending' and to_user = p_user;
+    update contracts set provider_id = v_sibling where provider_id = p_user;
+  end if;
   for m in update family_invites set status = case when to_user = p_user then 'declined' else 'withdrawn' end, answered_at = now()
             where status = 'pending' and (to_user = p_user or from_user = p_user) returning to_user loop
     perform siosia_notify(m);
@@ -4599,7 +4705,7 @@ end $$;
 -- invite link: an error code, or null when invited (or already invited).
 create or replace function public.siosia_family_invite_as(p_from uuid, p_to uuid)
 returns text language plpgsql security definer set search_path = public as $$
-declare v_fid uuid;
+declare v_fid uuid; v_to uuid;
 begin
   if p_to is null or p_to = p_from or not siosia_member_ok(p_to) or not siosia_same_realm(p_from, p_to)
      or not exists (select 1 from profiles where user_id = p_from and not deleted) then
@@ -4610,16 +4716,18 @@ begin
   if v_fid is not null then
     perform pg_advisory_xact_lock(hashtextextended(v_fid::text, 7));
     if (select count(*) from family_members where family_id = v_fid) >= 6 then return 'family_full'; end if;
-    if exists (select 1 from family_invites where family_id = v_fid and to_user = p_to and status = 'pending') then
+    if exists (select 1 from family_invites where family_id = v_fid and siosia_same_person(to_user, p_to) and status = 'pending') then
       return null;
     end if;
   else
     v_fid := siosia_new_family(p_from);
   end if;
   insert into family_invites (family_id, from_user, to_user) values (v_fid, p_from, p_to);
-  perform siosia_push(p_to, 'family_invite', null, jsonb_build_object('sender', siosia_nick(p_from)));
+  foreach v_to in array siosia_person_accounts(p_to) loop -- 2.9 (V72): every phone of that person
+    perform siosia_push(v_to, 'family_invite', null, jsonb_build_object('sender', siosia_nick(p_from)));
+    perform siosia_notify(v_to);
+  end loop;
   perform siosia_notify_household(p_from);
-  perform siosia_notify(p_to);
   return null;
 end $$;
 
@@ -4690,7 +4798,7 @@ begin
   if v_err is not null then return siosia_err(v_err); end if;
   if p_decision is null or p_decision not in ('join', 'decline') then return siosia_err('bad_input'); end if;
   perform siosia_sweep();
-  select * into i from family_invites where id = p_id and to_user = v_uid for update;
+  select * into i from family_invites where id = p_id and siosia_same_person(to_user, v_uid) for update;
   if i.id is null then return siosia_err('not_found'); end if;
   if i.status <> 'pending' or not exists (select 1 from families where id = i.family_id) then return siosia_err('illegal_transition'); end if;
   perform pg_advisory_xact_lock(hashtextextended(i.family_id::text, 7));
@@ -4708,8 +4816,8 @@ begin
   if v_mine is not null then
     update contracts k set status = case when k.status = 'active' then 'ended' else 'withdrawn' end, ended_at = now(), ended_by = null
      where k.family_id = v_mine and k.status in ('active', 'proposed')
-       and (k.provider_id in (select user_id from family_members where family_id = i.family_id)
-            or exists (select 1 from contracts x where x.family_id = i.family_id and x.provider_id = k.provider_id
+       and (exists (select 1 from family_members fm where fm.family_id = i.family_id and siosia_same_person(fm.user_id, k.provider_id))
+            or exists (select 1 from contracts x where x.family_id = i.family_id and siosia_same_person(x.provider_id, k.provider_id)
                         and x.status in ('active', 'proposed')));
     update contracts set family_id = i.family_id where family_id = v_mine;
     update family_invites set status = 'withdrawn' where family_id = v_mine and status = 'pending';
@@ -4717,13 +4825,13 @@ begin
     delete from families where id = v_mine;
   end if;
   update contracts set status = case when status = 'active' then 'ended' else 'withdrawn' end, ended_at = now(), ended_by = null
-   where family_id = i.family_id and provider_id = v_uid and status in ('active', 'proposed');
+   where family_id = i.family_id and siosia_same_person(provider_id, v_uid) and status in ('active', 'proposed');
   for m in select user_id from family_members where family_id = i.family_id loop
     perform siosia_push(m, 'family_joined', null, jsonb_build_object('sender', siosia_nick(v_uid)));
   end loop;
   insert into family_members (user_id, family_id) values (v_uid, i.family_id);
   update family_invites set status = 'joined', answered_at = now() where id = i.id;
-  update family_invites set status = 'declined' where to_user = v_uid and status = 'pending';
+  update family_invites set status = 'declined' where siosia_same_person(to_user, v_uid) and status = 'pending';
   perform siosia_notify_household(v_uid);
   return siosia_ok(siosia_family_json(v_uid));
 end $$;
@@ -4763,10 +4871,10 @@ begin
   if v_err is not null then return siosia_err(v_err); end if;
   return siosia_ok(coalesce((select jsonb_agg(siosia_contract_json(k, v_uid) order by q.grp, q.at desc, k.version desc) from (
       select x.id, case when x.status = 'proposed' then 0 else 1 end as grp, x.created_at as at from contracts x
-       where (x.provider_id = v_uid or x.family_id = v_fid) and x.status in ('proposed', 'active')
+       where (siosia_same_person(x.provider_id, v_uid) or x.family_id = v_fid) and x.status in ('proposed', 'active')
       union all
       (select x.id, 2, coalesce(x.ended_at, x.answered_at, x.created_at) from contracts x
-        where (x.provider_id = v_uid or x.family_id = v_fid) and x.status not in ('proposed', 'active')
+        where (siosia_same_person(x.provider_id, v_uid) or x.family_id = v_fid) and x.status not in ('proposed', 'active')
         order by coalesce(x.ended_at, x.answered_at, x.created_at) desc, x.version desc limit 10)) q
       join contracts k on k.id = q.id), '[]'::jsonb));
 end $$;
@@ -4813,13 +4921,13 @@ begin
   v_fid := coalesce(siosia_family_of(v_client), siosia_new_family(v_client));
   perform pg_advisory_xact_lock(hashtextextended(v_fid::text || v_provider::text, 7));
   update contracts set status = 'withdrawn', ended_at = now(), ended_by = v_uid
-   where family_id = v_fid and provider_id = v_provider and status = 'proposed';
+   where family_id = v_fid and siosia_same_person(provider_id, v_provider) and status = 'proposed';
   insert into contracts (family_id, provider_id, version, rates, note, currency, proposed_by, proposed_side)
   values (v_fid, v_provider,
-          coalesce((select max(version) from contracts where family_id = v_fid and provider_id = v_provider), 0) + 1,
+          coalesce((select max(version) from contracts where family_id = v_fid and siosia_same_person(provider_id, v_provider)), 0) + 1,
           v_rates, v_note, (select currency from app_config where id = 1), v_uid, p_as)
   returning * into k;
-  for m in select x from unnest(case when p_as = 'family' then array[v_provider]
+  for m in select x from unnest(case when p_as = 'family' then siosia_person_accounts(v_provider)
                                      else (select array_agg(user_id) from family_members where family_id = v_fid) end) x loop
     perform siosia_push(m, 'contract_proposed', null, jsonb_build_object('sender', siosia_nick(v_uid)));
   end loop;
@@ -4834,20 +4942,20 @@ declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k contracts;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
   if p_decision is null or p_decision not in ('accept', 'decline') then return siosia_err('bad_input'); end if;
-  select * into k from contracts where id = p_id and (provider_id = v_uid or family_id = siosia_family_of(v_uid)) for update;
+  select * into k from contracts where id = p_id and (siosia_same_person(provider_id, v_uid) or family_id = siosia_family_of(v_uid)) for update;
   if k.id is null then return siosia_err('not_found'); end if;
   if k.status <> 'proposed' then return siosia_err('illegal_transition'); end if;
   if not siosia_contract_answers(v_uid, k) then return siosia_err('forbidden'); end if;
   if p_decision = 'accept' then
     update contracts set status = 'replaced', ended_at = now(), ended_by = v_uid
-     where family_id = k.family_id and provider_id = k.provider_id and status = 'active' and id <> k.id;
+     where family_id = k.family_id and siosia_same_person(provider_id, k.provider_id) and status = 'active' and id <> k.id;
     update contracts set status = 'active', answered_at = now() where id = k.id returning * into k;
   else
     update contracts set status = 'declined', answered_at = now() where id = k.id returning * into k;
   end if;
   for m in select x from unnest(case when k.proposed_side = 'family'
                                      then (select array_agg(user_id) from family_members where family_id = k.family_id)
-                                     else array[k.provider_id] end) x loop
+                                     else siosia_person_accounts(k.provider_id) end) x loop
     perform siosia_push(m, case when p_decision = 'accept' then 'contract_accepted' else 'contract_declined' end, null,
                         jsonb_build_object('sender', siosia_nick(v_uid)));
   end loop;
@@ -4861,7 +4969,7 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k contracts;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
-  select * into k from contracts where id = p_id and (provider_id = v_uid or family_id = siosia_family_of(v_uid)) for update;
+  select * into k from contracts where id = p_id and (siosia_same_person(provider_id, v_uid) or family_id = siosia_family_of(v_uid)) for update;
   if k.id is null then return siosia_err('not_found'); end if;
   if k.status <> 'proposed' then return siosia_err('illegal_transition'); end if;
   if siosia_contract_answers(v_uid, k) then return siosia_err('forbidden'); end if;
@@ -4876,13 +4984,13 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k contracts; m uuid;
 begin
   if v_err is not null then return siosia_err(v_err); end if;
-  select * into k from contracts where id = p_id and (provider_id = v_uid or family_id = siosia_family_of(v_uid)) for update;
+  select * into k from contracts where id = p_id and (siosia_same_person(provider_id, v_uid) or family_id = siosia_family_of(v_uid)) for update;
   if k.id is null then return siosia_err('not_found'); end if;
   if k.status <> 'active' then return siosia_err('illegal_transition'); end if;
   update contracts set status = 'ended', ended_at = now(), ended_by = v_uid where id = k.id;
-  for m in select x from unnest(case when k.provider_id = v_uid
+  for m in select x from unnest(case when siosia_same_person(k.provider_id, v_uid)
                                      then (select array_agg(user_id) from family_members where family_id = k.family_id)
-                                     else array[k.provider_id] end) x loop
+                                     else siosia_person_accounts(k.provider_id) end) x loop
     perform siosia_push(m, 'contract_ended', null, jsonb_build_object('sender', siosia_nick(v_uid)));
   end loop;
   perform siosia_notify_contract(k);
@@ -4928,6 +5036,32 @@ begin
   return siosia_ok(siosia_appointment_json(a, v_uid));
 end $$;
 
+-- 2.9 (FR-314, V74): the client — or someone in the client's family — thanks the provider with a
+-- tip (1–1000) after a done appointment: once, within 7 days of its end.
+create or replace function public.siosia_tip_appointment(p_id uuid, p_amount numeric)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; v numeric := round(p_amount, 2);
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into a from appointments x
+   where x.id = p_id and (x.client_id = v_uid or siosia_same_family(v_uid, x.client_id)) and x.provider_id is distinct from v_uid
+   for update;
+  if a.id is null then return siosia_err('not_found'); end if;
+  if a.status <> 'done' or a.provider_id is null then return siosia_err('illegal_transition'); end if;
+  if now() > coalesce(a.ended_at, a.starts_at + make_interval(mins => a.duration_min)) + interval '7 days' then
+    return siosia_err('window_closed');
+  end if;
+  if v is null or v < 1 or v > 1000 then return siosia_err('bad_input'); end if;
+  if a.tip is not null then return siosia_err('already_tipped'); end if;
+  update appointments set tip = v, tip_by = v_uid, tip_at = now() where id = a.id returning * into a;
+  perform siosia_push_appt(a.provider_id, 'appt_tip', a.id,
+    siosia_appt_params(a) || jsonb_build_object('sender', siosia_nick(v_uid), 'total', v, 'currency', a.currency));
+  perform siosia_notify_household(a.client_id);
+  perform siosia_notify_household(a.provider_id);
+  return siosia_ok(siosia_appointment_json(a, v_uid));
+end $$;
+
 -- One side of a week (ReportSide, V64): done appointments by their start — as the client (spent) or
 -- the provider (earned) — grouped by the other side's nickname and the service; completed rides by
 -- their end — as the rider or the driver.
@@ -4945,11 +5079,18 @@ returns jsonb language sql stable security definer set search_path = public as $
            round(sum(coalesce((cost ->> 'total')::numeric, 0)), 2) as total
       from ap group by who, service_id),
   rd as (
-    select count(*)::int as n, round(coalesce(sum(r.fare), 0), 2) as total from rides r
+    select count(*)::int as n, round(coalesce(sum(r.fare), 0), 2) as total, coalesce(sum(r.tip), 0) as tips from rides r
      where r.status = 'completed' and r.ended_at >= p_start and r.ended_at < p_end
-       and case when p_earned then r.driver_id = any (p_people) else r.rider_id = any (p_people) end)
+       and case when p_earned then r.driver_id = any (p_people) else r.rider_id = any (p_people) end),
+  -- 2.9 (FR-316): tips count in the week of their appointment or ride.
+  tp as (
+    select round(coalesce((select sum(a.tip) from appointments a
+                            where a.status = 'done' and a.starts_at >= p_start and a.starts_at < p_end
+                              and case when p_earned then a.provider_id = any (p_people) else a.client_id = any (p_people) end), 0)
+                 + (select tips from rd), 2) as total)
   select jsonb_build_object(
-    'total', round(coalesce((select sum(total) from lines), 0) + (select total from rd), 2),
+    'total', round(coalesce((select sum(total) from lines), 0) + (select total from rd) + (select total from tp), 2),
+    'tips', (select total from tp),
     'services', coalesce((select jsonb_agg(jsonb_build_object('who', who, 'serviceId', service_id, 'count', n,
                                                               'minutes', minutes, 'total', total)
                                            order by total desc, who, service_id) from lines), '[]'::jsonb),
@@ -5120,6 +5261,40 @@ returns boolean language sql stable security definer set search_path = public as
 $$;
 
 -- ---------------------------------------------------------------------------------------------
+-- Siosia 2.9: the notifications bell (siosia-spec-v2.0.md "Amendment 2.9", SPEC.md V73).
+-- ---------------------------------------------------------------------------------------------
+
+-- FR-312: my notifications, newest first (the last 60 days, at most 50), and how many are unread.
+-- The app words them as the push does (push-text) and opens what they are about (pushUrl).
+create or replace function public.siosia_notifications()
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  return siosia_ok(jsonb_build_object(
+    'items', coalesce((select jsonb_agg(jsonb_build_object(
+                         'id', n.id::text, 'kind', n.kind, 'params', n.params, 'rideId', n.ride_id,
+                         'appointmentId', n.appointment_id, 'createdAt', siosia_ms(n.created_at),
+                         'read', n.read_at is not null) order by n.id desc)
+                       from (select * from notifications
+                              where user_id = v_uid and created_at > now() - interval '60 days'
+                              order by id desc limit 50) n), '[]'::jsonb),
+    'unread', (select count(*) from notifications
+                where user_id = v_uid and read_at is null and created_at > now() - interval '60 days')));
+end $$;
+
+-- FR-312: opening the bell marks everything read.
+create or replace function public.siosia_read_notifications()
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  update notifications set read_at = now() where user_id = v_uid and read_at is null;
+  perform siosia_notify(v_uid);
+  return siosia_ok('true'::jsonb);
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
 -- Function privileges: clients get the API above, nothing else.
 -- ---------------------------------------------------------------------------------------------
 
@@ -5207,6 +5382,11 @@ grant execute on function public.siosia_report(text, text) to authenticated;
 -- 2.8
 grant execute on function public.siosia_create_member_invite() to authenticated;
 grant execute on function public.siosia_join_link(text, text) to authenticated;
+-- 2.9
+grant execute on function public.siosia_tip_ride(uuid, numeric) to authenticated;
+grant execute on function public.siosia_tip_appointment(uuid, numeric) to authenticated;
+grant execute on function public.siosia_notifications() to authenticated;
+grant execute on function public.siosia_read_notifications() to authenticated;
 -- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
 -- 2-argument rules stay the server's: revoked above with everything else)
 grant execute on function public.siosia_can_see_photo(text) to authenticated;

@@ -96,10 +96,14 @@ test("rider and driver complete a ride end to end", async ({ context }) => {
   await expect(rider.getByTestId("sharing-banner")).toHaveCount(0);
 
   await rider.getByTestId("mark-paid").click();
-  await expect(rider.getByText("Paid")).toBeVisible();
+  await expect(rider.getByText("Paid", { exact: true })).toBeVisible();
   await rider.getByRole("radio", { name: "5 of 5 stars" }).click();
   await rider.getByTestId("send-rating").click();
   await expect(rider.getByText("Thanks for rating!")).toBeVisible();
+  // 2.9 (FR-315): a tip for the driver, once.
+  await rider.getByTestId("tip-chip").first().click();
+  await rider.getByTestId("tip-send").click();
+  await expect(rider.getByTestId("tip-given")).toContainText("5.00");
   await driver.getByTestId("mark-paid").click(); // "Mark fare collected"
   await driver.getByRole("radio", { name: "4 of 5 stars" }).click();
   await driver.getByTestId("send-rating").click();

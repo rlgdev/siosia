@@ -41,9 +41,13 @@ test("family and contracts: invite → join; a contract with Siosia; childcare a
   await roman.getByTestId("family-send").click();
   await expect(roman.getByTestId("family-invited")).toContainText("Invited: Anna");
 
-  // Anna: the S1 notice → Join.
+  // Anna: the S1 notice, and the bell (2.9) — its news opens the Family panel → Join.
   await expect(anna.getByTestId("home-family")).toContainText("1 waiting for your answer", { timeout: 10_000 });
-  await anna.getByTestId("home-family").click();
+  await expect(anna.getByTestId("bell-badge")).toHaveText("1");
+  await anna.getByTestId("bell").click();
+  await expect(anna.getByTestId("bell-item")).toContainText("Roman invites you to their family");
+  await anna.getByTestId("bell-item").click();
+  await expect(anna.getByTestId("bell-badge")).toHaveCount(0);
   await expect(anna.getByTestId("family-incoming")).toContainText("Roman invites you to their family");
   await anna.getByTestId("family-join").click();
   await expect(anna.getByTestId("family-members")).toContainText("Roman");
@@ -97,11 +101,17 @@ test("family and contracts: invite → join; a contract with Siosia; childcare a
   await expect(cost.getByTestId("cost-time")).toHaveText("3 h");
   await expect(cost.getByTestId("cost-rate")).toContainText("contract rate");
   await expect(cost.getByTestId("cost-total")).toContainText("120.00");
+  // 2.9: a tip at the end — 20 on top.
+  const tip = roman.getByTestId("appt-tip");
+  await tip.getByTestId("tip-chip").nth(1).click();
+  await tip.getByTestId("tip-send").click();
+  await expect(tip.getByTestId("tip-given")).toContainText("20.00", { timeout: 10_000 });
   await back(roman);
 
-  // The weekly report: spent 120 with Siosia.
+  // The weekly report: spent 120 with Siosia and a 20 tip.
   await roman.getByTestId("history-report").click();
-  await expect(roman.getByTestId("report-spent")).toContainText("120.00", { timeout: 10_000 });
+  await expect(roman.getByTestId("report-spent")).toContainText("140.00", { timeout: 10_000 });
+  await expect(roman.getByTestId("report-tips")).toContainText("20.00");
   await expect(roman.getByTestId("report-spent-lines").getByTestId("report-line")).toContainText("Siosia");
 
   // Anna's family report sums it, one line per member.
@@ -109,6 +119,6 @@ test("family and contracts: invite → join; a contract with Siosia; childcare a
   await anna.getByTestId("start-history").click();
   await anna.getByTestId("history-report").click();
   await anna.getByTestId("report-family").click();
-  await expect(anna.getByTestId("report-spent")).toContainText("120.00", { timeout: 10_000 });
+  await expect(anna.getByTestId("report-spent")).toContainText("140.00", { timeout: 10_000 });
   await expect(anna.getByTestId("report-members")).toContainText("Roman");
 });

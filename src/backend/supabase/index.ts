@@ -23,6 +23,7 @@ import {
   type FamilyView,
   type PublicProvider,
   type WeeklyReport,
+  type NotificationItem,
   type HistoryItem,
   type Kid,
   type KidInput,
@@ -457,6 +458,12 @@ export class SupabaseBackend implements Backend {
   async rate(rideId: string, stars: number, comment: string) {
     await this.rpc("siosia_rate", { p_ride: rideId, p_stars: stars, p_comment: comment });
   }
+  tipRide(rideId: string, amount: number) {
+    return this.rpc<RideView>("siosia_tip_ride", { p_ride: rideId, p_amount: amount });
+  }
+  async tipAppointment(id: string, amount: number) {
+    return withOpen(await this.rpc<AppointmentView>("siosia_tip_appointment", { p_id: id, p_amount: amount }));
+  }
 
   // ---------- 2.0 ----------
 
@@ -635,6 +642,12 @@ export class SupabaseBackend implements Backend {
   }
   report(week: string | null, scope: "me" | "family") {
     return this.rpc<WeeklyReport>("siosia_report", { p_week: week, p_scope: scope });
+  }
+  notifications() {
+    return this.rpc<{ items: NotificationItem[]; unread: number }>("siosia_notifications");
+  }
+  async readNotifications() {
+    await this.rpc("siosia_read_notifications");
   }
 
   async sendMessage(room: ChatRoom, text: string) {

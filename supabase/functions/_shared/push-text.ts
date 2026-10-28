@@ -42,7 +42,10 @@ export type PushKind =
   | "contract_declined"
   | "contract_ended"
   | "appt_summary"
-  | "weekly_report";
+  | "weekly_report"
+  // 2.9 (FR-314, FR-315): a tip after an appointment (opens C3) and after a ride (opens History)
+  | "appt_tip"
+  | "ride_tip";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -273,7 +276,9 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
     contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
     appt_summary: ["Summary: {service} {when}", "{duration} · {total}{corrected}"],
-    weekly_report: ["Your week in Siosia", "Last week: spent {spent} · earned {earned}."]
+    weekly_report: ["Your week in Siosia", "Last week: spent {spent} · earned {earned}."],
+    appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
+    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -307,7 +312,9 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     contract_declined: ["{sender} odrzuca umowę", "Nic się nie zmienia; możesz zaproponować inne stawki."],
     contract_ended: ["{sender} kończy umowę", "Nowe prośby znów według cennika."],
     appt_summary: ["Podsumowanie: {service} {when}", "{duration} · {total}{corrected}"],
-    weekly_report: ["Twój tydzień w Siosi", "Ostatni tydzień: wydane {spent} · zarobione {earned}."]
+    weekly_report: ["Twój tydzień w Siosi", "Ostatni tydzień: wydane {spent} · zarobione {earned}."],
+    appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dziękujemy!"],
+    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dziękujemy!"]
   }
 };
 
@@ -452,10 +459,30 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
             ? `summary:${id ?? ""}`
             : kind === "weekly_report"
               ? `report:${params.week ?? ""}`
+              : kind === "appt_tip" || kind === "ride_tip"
+                ? `tip:${id ?? ""}`
               : kind.startsWith("family_")
                 ? "family"
                 : kind.startsWith("contract_")
                   ? "contract"
                   : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
+}
+
+/**
+ * Where a notification opens (the push's URL and the bell's link, 2.9 FR-312): a chat its thread, an
+ * appointment's update, notice, summary or tip that appointment (C3), family and contract news the
+ * Family panel, a weekly report its week, other appointment and booking news Planned, a ride tip
+ * History; anything else the app's start ("./": the ride in progress, if any).
+ */
+export function pushUrl(kind: PushKind, params?: PushParams, appointmentId?: string | null): string {
+  if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
+  // 2.5 (FR-232, FR-241): the feed and the notice live on C3 of that appointment.
+  if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
+  // 2.6: the summary opens C3; the family and contract news the Family panel; the report its week.
+  if (kind === "appt_summary" || kind === "appt_tip") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=history";
+  if (kind === "ride_tip") return "./?open=history";
+  if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
+  if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
+  return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }

@@ -118,6 +118,26 @@ describe("test accounts (2.7, V66)", () => {
     expect(await listed("t1")).toEqual([]);
   });
 
+  it("2.9: a master profile's phones are one person — a proposal to an unused phone is answered from the one in use (V72)", async () => {
+    await h.admin("update public.profiles set seen_at = null where user_id = any ($1)", [[U.m1, U.m2]]);
+    await call("m1", "siosia_my_state"); // the phone in use
+    const listed = async () => (await call<Json[]>("anna", "siosia_members")).filter((p) => p.nickname === "Niania").map((p) => p.publicId);
+    expect(await listed()).toEqual([pub.m1]);
+    await h.admin("delete from public.push_outbox");
+    const c = await call<Json>("anna", "siosia_propose_contract", [pub.m2, "family", JSON.stringify([{ serviceId: "childcare", perHour: 40 }]), ""]);
+    expect(await call<Json>("m1", "siosia_my_state")).toMatchObject({ familyPending: 1 });
+    expect((await call<Json[]>("m1", "siosia_contracts"))[0]).toMatchObject({ id: c.id, side: "provider", canAnswer: true });
+    await call("m1", "siosia_answer_contract", [c.id, "accept"]);
+    expect((await call<Json[]>("anna", "siosia_contracts"))[0].status).toBe("active");
+    const a = await call<Json>("anna", "siosia_request_service", ["childcare", pub.m1, new Date(Date.now() + 26 * 3600_000).toISOString(), 180, HOME, "", null]);
+    expect(a).toMatchObject({ price: 120, rate: 40, contractId: c.id });
+    await call("anna", "siosia_family_invite", [pub.m2]);
+    const inv = (await call<Json>("m1", "siosia_family")).incoming as Json[];
+    expect(inv.map((i) => (i.from as Json).nickname)).toEqual(["Anna"]);
+    await call("m1", "siosia_family_answer", [inv[0].id, "join"]);
+    expect(((await call<Json>("anna", "siosia_family")).members as Json[]).map((m) => m.nickname)).toContain("Niania");
+  });
+
   it("a test account's invite link admits a test account (2.8, FR-303)", async () => {
     await call("n1", "siosia_join_link", [(await call<Json>("t1", "siosia_create_member_invite")).token, "dev-n1"]);
     await call("n2", "siosia_join_link", [(await call<Json>("anna", "siosia_create_member_invite")).token, "dev-n2"]);

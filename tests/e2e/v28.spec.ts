@@ -38,8 +38,8 @@ test("a contract with someone who offers nothing; an invite link into Siosia and
     });
   });
   await onboard(roman, "Roman");
-  // The start screen's bottom bar: a clear My profile button with a gear.
-  await expect(roman.getByTestId("home-profile")).toHaveText("My profile");
+  // 2.9: My profile is S1's 4th card, with a gear.
+  await expect(roman.getByTestId("home-profile")).toContainText("My profile");
   await expect(roman.getByTestId("home-profile").locator("svg")).toHaveAttribute("data-icon", "gear");
 
   // Ewa is on the list although she offers nothing; Childcare at 30 an hour.

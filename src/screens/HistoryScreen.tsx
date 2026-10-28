@@ -14,7 +14,7 @@ import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { useApp, useListsKey, useStore } from "../state/store";
 import { Route } from "./Bookings";
-import { EntryIcon, localText } from "./Catalog";
+import { EventIcon, localText } from "./Catalog";
 
 const RATE_WINDOW_MS = 24 * 3600_000;
 
@@ -131,7 +131,7 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
           <span className={`status status-${status === "done" ? "completed" : status}`}>{word}</span>
         </span>
         <strong>
-          <EntryIcon icon={a.service?.icon ?? "📅"} /> {localText(a.service?.name, lang) || a.serviceId}
+          <EventIcon icon={a.service?.icon ?? "📅"} serviceId={a.serviceId} /> {localText(a.service?.name, lang) || a.serviceId}
         </strong>
         <span className="row spread">
           <small className="muted">{partyText(a, t)}</small>

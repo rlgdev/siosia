@@ -35,6 +35,19 @@ export function EntryIcon({ icon }: { icon: string }) {
   return name ? <Icon name={name} size={24} /> : <span aria-hidden="true">{icon}</span>;
 }
 
+/**
+ * 2.9: an event's icon in its tile — the same for every party (client, provider, family) in P1, H1
+ * and C3; a YOLO event in its own colour.
+ */
+export function EventIcon({ icon, serviceId }: { icon: string; serviceId: string }) {
+  const tone = YOLO_TONES[serviceId];
+  return (
+    <span className={`entry-icon event-tile${tone ? " yolo-tile" : ""}`} data-tone={tone} aria-hidden="true" data-testid="event-icon">
+      <EntryIcon icon={icon} />
+    </span>
+  );
+}
+
 /** 2.8 (V71): each YOLO event's colour (the tile behind its icon); others take the accent. */
 const YOLO_TONES: Record<string, string> = {
   yolo_halloween: "orange",

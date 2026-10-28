@@ -252,6 +252,8 @@ export interface AppointmentView {
   actualMin: number | null;
   /** 2.6 (FR-270): what it cost — done appointments only (parties and family). */
   cost: CostSummary | null;
+  /** 2.9 (FR-314): the client side's tip to the provider (parties and families). */
+  tip: { amount: number; by: string; at: number } | null;
   /** 2.6 (FR-254): role "family" — whose appointment this is (that member's side and nickname). */
   family: { side: PartyRole; member: string } | null;
 }
@@ -266,6 +268,17 @@ export interface CostSummary {
   currency: string;
   source: "contract" | "catalog" | "fixed" | "none";
   corrected: boolean;
+}
+
+/** 2.9 (FR-311): one kept notification; the app words it with pushText and opens pushUrl. */
+export interface NotificationItem {
+  id: string;
+  kind: import("../../supabase/functions/_shared/push-text").PushKind;
+  params: import("../../supabase/functions/_shared/push-text").PushParams;
+  rideId: string | null;
+  appointmentId: string | null;
+  createdAt: number;
+  read: boolean;
 }
 
 // ---------- 2.6: family, contracts, weekly reports ----------
@@ -344,6 +357,8 @@ export interface ReportSide {
   services: ReportLine[];
   servicesTotal: number;
   rides: { count: number; total: number };
+  /** 2.9 (FR-316): tips given (spent) or received (earned) — part of the total. */
+  tips: number;
 }
 
 /** 2.6 (FR-280–281): one week, Monday to Sunday in the deployment's timezone. */
@@ -648,6 +663,8 @@ export interface RideView {
   driver: PublicDriver | null;
   /** Stars the viewer gave in this ride, if any. */
   myRating: number | null;
+  /** 2.9 (FR-315): the rider's tip to the driver (the two parties). */
+  tip?: number | null;
   /** 2.0: the appointment this ride belongs to — only for its rider (a driver sees a plain booking). */
   appointmentId?: string | null;
   leg?: Leg | null;
@@ -704,6 +721,8 @@ export interface MyState {
   unreadChats: number;
   /** 2.6: family invitations to me and contract proposals waiting for my side's answer. */
   familyPending: number;
+  /** 2.9 (FR-312): unread notifications (the bell's badge). */
+  unreadNotifications: number;
   /** Upcoming items in both roles. */
   planned: number;
   nextPlanned: NextPlanned | null;
@@ -813,7 +832,9 @@ export type ServerErrorCode =
   | "bad_repeat"
   // 2.6
   | "in_family"
-  | "family_full";
+  | "family_full"
+  // 2.9
+  | "already_tipped";
 
 export class ServerError extends Error {
   readonly code: ServerErrorCode;

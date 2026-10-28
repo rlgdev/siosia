@@ -18,7 +18,7 @@ import type { AppointmentView, Planned as PlannedData, RideView } from "../core/
 import { useI18n } from "../i18n";
 import { useApp, useListsKey, useStore } from "../state/store";
 import { DriverBookingCard, OpenBookingsList, RiderBookingCard, Route, useOpenBookings } from "./Bookings";
-import { durationText, EntryIcon, localText } from "./Catalog";
+import { durationText, EventIcon, localText } from "./Catalog";
 
 type Item = { kind: "appointment"; at: number; a: AppointmentView } | { kind: "ride"; at: number; r: RideView };
 
@@ -164,7 +164,7 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
       <button type="button" className="planned-open" onClick={() => store.openPanel("appointment", a.id)} data-testid="open-appointment">
         <span className="row spread">
           <strong>
-            <EntryIcon icon={a.service?.icon ?? "📅"} /> {localText(a.service?.name, lang) || a.serviceId}
+            <EventIcon icon={a.service?.icon ?? "📅"} serviceId={a.serviceId} /> {localText(a.service?.name, lang) || a.serviceId}
           </strong>
           <span className={`chip chip-${chip.kind}`} data-testid="appt-chip">
             {chip.text}
@@ -275,7 +275,7 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
       <button type="button" className="planned-open" onClick={() => store.openPanel("appointment", a.id)} data-testid="open-request-details">
         <span className="row spread">
           <strong>
-            <EntryIcon icon={a.service?.icon ?? "📅"} /> {localText(a.service?.name, lang) || a.serviceId}
+            <EventIcon icon={a.service?.icon ?? "📅"} serviceId={a.serviceId} /> {localText(a.service?.name, lang) || a.serviceId}
           </strong>
           {a.price !== null && (
             <strong>

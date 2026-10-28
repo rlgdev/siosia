@@ -125,7 +125,9 @@ var TEXTS = {
     contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
     contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
     appt_summary: ["Summary: {service} {when}", "{duration} \xB7 {total}{corrected}"],
-    weekly_report: ["Your week in Siosia", "Last week: spent {spent} \xB7 earned {earned}."]
+    weekly_report: ["Your week in Siosia", "Last week: spent {spent} \xB7 earned {earned}."],
+    appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
+    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -159,7 +161,9 @@ var TEXTS = {
     contract_declined: ["{sender} odrzuca umow\u0119", "Nic si\u0119 nie zmienia; mo\u017Cesz zaproponowa\u0107 inne stawki."],
     contract_ended: ["{sender} ko\u0144czy umow\u0119", "Nowe pro\u015Bby zn\xF3w wed\u0142ug cennika."],
     appt_summary: ["Podsumowanie: {service} {when}", "{duration} \xB7 {total}{corrected}"],
-    weekly_report: ["Tw\xF3j tydzie\u0144 w Siosi", "Ostatni tydzie\u0144: wydane {spent} \xB7 zarobione {earned}."]
+    weekly_report: ["Tw\xF3j tydzie\u0144 w Siosi", "Ostatni tydzie\u0144: wydane {spent} \xB7 zarobione {earned}."],
+    appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dzi\u0119kujemy!"],
+    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dzi\u0119kujemy!"]
   }
 };
 function moneyText(amount, currency, lang) {
@@ -244,19 +248,21 @@ function pushText(kind, params, lang, tz, id) {
   const fill = (s) => tidy(
     s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
   );
-  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind === "appt_tip" || kind === "ride_tip" ? `tip:${id ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }
-
-// supabase/functions/push-dispatch/dispatch.ts
-var openUrl = (kind, params, appointmentId) => {
+function pushUrl(kind, params, appointmentId) {
   if (kind === "chat_message") return params?.room ? `./?chat=${params.room}` : "./";
   if (kind === "session_update" || kind === "client_coming") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
-  if (kind === "appt_summary") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=history";
+  if (kind === "appt_summary" || kind === "appt_tip") return appointmentId ? `./?appointment=${appointmentId}` : "./?open=history";
+  if (kind === "ride_tip") return "./?open=history";
   if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
-};
+}
+
+// supabase/functions/push-dispatch/dispatch.ts
+var openUrl = (kind, params, appointmentId) => pushUrl(kind, params, appointmentId);
 var MAX_ATTEMPTS = 5;
 var CHAT_GRACE_MS = 2e3;
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

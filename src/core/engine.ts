@@ -34,6 +34,7 @@ import {
   type ContractView,
   type CostSummary,
   type FamilyInvite,
+  type NotificationItem,
   type FamilyView,
   type ReportLine,
   type ReportSide,
@@ -91,6 +92,8 @@ export interface UserRow {
   home?: Place | null;
   /** 2.3: the photo's object path (never a URL — V46); null = none. */
   photoPath?: string | null;
+  /** 2.9 (V72): when this phone last fetched its state (at most once a minute) — picks a master's phone in use. */
+  seenAt?: number | null;
 }
 
 /**
@@ -183,6 +186,9 @@ export interface RideRow {
   leg?: Leg | null;
   autoBooked?: boolean;
   apptSummary?: AttachedStatus | null;
+  /** 2.9 (FR-315): the rider's tip to the driver, and when. */
+  tip?: number | null;
+  tipAt?: number | null;
 }
 
 /** 2.0: an appointment (one occurrence of a series, or a single one). */
@@ -217,6 +223,10 @@ export interface ApptRow {
   contractId?: string | null;
   actualMin?: number | null;
   summarySent?: boolean;
+  /** 2.9 (FR-314): the client side's tip to the provider — how much, who gave it, when. */
+  tip?: number | null;
+  tipBy?: string | null;
+  tipAt?: number | null;
 }
 
 export interface StoredTemplate {
@@ -399,6 +409,20 @@ export interface DbState {
   sandbox?: Record<string, boolean>;
   /** 2.8 (V69): personal invite links by token (Supabase keeps a SHA-256 of the token). */
   memberInvites?: Record<string, MemberInviteRow>;
+  /** 2.9 (V73): every notification a member got (but chat messages), for the bell. */
+  notifications?: NotificationRow[];
+}
+
+/** 2.9 (FR-311): a kept notification (Supabase: notifications). */
+export interface NotificationRow {
+  id: string;
+  userId: string;
+  kind: PushKind;
+  params: PushParams;
+  rideId: string | null;
+  appointmentId: string | null;
+  createdAt: number;
+  readAt: number | null;
 }
 
 /** 2.8 (FR-301): a personal link into Siosia, made by a member; works once within 14 days. */
@@ -538,9 +562,22 @@ const REPORT_WEEKS = 52;
 /** 2.8 (V69): invite links — 14 days, at most 10 open per member (twins of siosia_create_member_invite). */
 const MEMBER_INVITE_MS = 14 * 86_400_000;
 const MEMBER_INVITES_MAX = 10;
+/** 2.9 (V73): the bell keeps 60 days, at most 200 per member, and lists the newest 50. */
+const NOTIF_KEEP_MS = 60 * 86_400_000;
+const NOTIF_MAX = 200;
+const NOTIF_LIST = 50;
 const REPORT_HOUR = 8;
 /** Money to the cent (twin of round(x::numeric, 2)). */
 const round2 = (x: number) => Math.round(x * 100) / 100;
+/** 2.9 (V74): a tip is 1–1000 after an appointment (within 7 days of its end), 1–500 after a ride. */
+const TIP_APPT_MAX = 1000;
+const TIP_RIDE_MAX = 500;
+const TIP_APPT_MS = 7 * 86_400_000;
+const tipAmount = (amount: number, max: number): number => {
+  const v = typeof amount === "number" && Number.isFinite(amount) ? round2(amount) : NaN;
+  if (!(v >= 1 && v <= max)) throw new ServerError("bad_input");
+  return v;
+};
 /** Trims the whitespace a keyboard produces, the same set as the SQL btrim(…, E' \t\n\r\f' || chr(11)) (V19). */
 const trimWs = (s: string): string => s.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
 
@@ -595,11 +632,33 @@ export class Engine {
     const m = this.linkedMaster(uid);
     if (!m) return true;
     if (this.linkedMaster(viewer) === m) return false;
+    // 2.9 (V72): the phone seen most recently (else the newest) stands for the master profile.
     const u = this.db.users[uid];
-    return !Object.values(this.db.users).some(
-      (o) =>
-        o.id !== uid && !o.deleted && o.masterId === m && this.isMember(o.id) && this.sameRealm(viewer, o.id) && (o.createdAt > u.createdAt || (o.createdAt === u.createdAt && o.id > uid))
-    );
+    const key = (x: UserRow) => [x.seenAt ?? x.createdAt, x.createdAt] as const;
+    const [s0, c0] = key(u);
+    return !Object.values(this.db.users).some((o) => {
+      if (o.id === uid || o.deleted || o.masterId !== m || !this.isMember(o.id) || !this.sameRealm(viewer, o.id)) return false;
+      const [s, c] = key(o);
+      return s > s0 || (s === s0 && (c > c0 || (c === c0 && o.id > uid)));
+    });
+  }
+
+  /** 2.9 (V72): the phones of one master profile are one person (contracts, family invitations). */
+  private samePerson(a: string | null, b: string | null): boolean {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const m = this.linkedMaster(a);
+    return !!m && m === this.linkedMaster(b);
+  }
+
+  /** 2.9 (V72): every phone (account) of this person — the master profile's members, else just them. */
+  private personAccounts(uid: string): string[] {
+    const m = this.linkedMaster(uid);
+    if (!m) return [uid];
+    const all = Object.values(this.db.users)
+      .filter((u) => !u.deleted && u.masterId === m && this.isMember(u.id))
+      .map((u) => u.id);
+    return all.includes(uid) ? all : [uid, ...all];
   }
 
   /** 2.7 (V66): two accounts that may find and reach each other — both real or both test. */
@@ -696,6 +755,7 @@ export class Engine {
     for (const a of [...Object.values(this.db.appointments ?? {}), ...Object.values(this.db.series ?? {})]) {
       if (a.clientId === old) a.clientId = uid;
       if (a.providerId === old) a.providerId = uid;
+      if ("tipBy" in a && a.tipBy === old) a.tipBy = uid; // 2.9
     }
     // Both accounts may hold a card for the same ride, or have rated the same ride: keep the new one.
     for (const [k, o] of Object.entries(this.db.offers))
@@ -765,6 +825,11 @@ export class Engine {
       delete this.db.sandbox[old];
     }
     for (const [k, x] of Object.entries(this.db.transfers ?? {})) if (x.userId === old) delete this.db.transfers![k];
+    // 2.9: the bell follows the account (whatever this phone had before goes).
+    if (this.db.notifications?.length) {
+      this.db.notifications = this.db.notifications.filter((n) => n.userId !== uid);
+      for (const n of this.db.notifications) if (n.userId === old) n.userId = uid;
+    }
     // 2.8: the invite links made and used follow the account.
     for (const i of Object.values(this.db.memberInvites ?? {})) {
       if (i.fromUser === old) i.fromUser = uid;
@@ -998,6 +1063,7 @@ export class Engine {
     delete this.db.members[uid];
     if (this.db.linkMembers) delete this.db.linkMembers[uid];
     delete this.db.sandbox?.[uid]; // 2.7: with the memberships
+    if (this.db.notifications?.length) this.db.notifications = this.db.notifications.filter((n) => n.userId !== uid); // 2.9
     // 2.3 (FR-200, V49): the kids go with the profile — their photos and ratings too — and so do my
     // photo, the messages I sent and my chat presence.
     for (const k of this.kidsOf(uid)) this.deleteKid(k);
@@ -1015,6 +1081,9 @@ export class Engine {
   myState(uid: string, pos: LatLng | null = null): MyState {
     this.requireMember(uid);
     this.sweep();
+    // 2.9 (V72): this phone is in use (at most once a minute; twin of siosia_my_state).
+    const me = this.db.users[uid];
+    if (me && !me.deleted && (me.seenAt == null || this.now - me.seenAt >= 60_000)) me.seenAt = this.now;
     const ride = this.activeRideOf(uid);
     const offerRow = Object.values(this.db.offers).find((o) => o.driverId === uid && o.status === "offered") ?? null;
     const queued = Object.values(this.db.offers).filter((o) => o.driverId === uid && o.status === "queued").length;
@@ -1036,6 +1105,7 @@ export class Engine {
         this.linkedRole(uid) === "rider" || !this.db.vehicles[uid] ? 0 : Object.values(this.db.rides).filter((r) => this.claimable(r, uid)).length,
       unreadChats: this.unreadChats(uid),
       familyPending: this.familyPending(uid),
+      unreadNotifications: (this.db.notifications ?? []).filter((n) => n.userId === uid && n.readAt === null && n.createdAt > this.now - NOTIF_KEEP_MS).length,
       ...this.plannedSummary(uid)
     };
   }
@@ -1533,6 +1603,19 @@ export class Engine {
     this.notifyRide(r);
   }
 
+  /** 2.9 (FR-315, V74): the rider thanks the driver with a tip — once, within the after-ride window. */
+  tipRide(uid: string, rideId: string, amount: number): RideView {
+    const r = this.afterRide(uid, rideId);
+    if (r.riderId !== uid || !r.driverId) throw new ServerError("forbidden");
+    const v = tipAmount(amount, TIP_RIDE_MAX);
+    if (r.tip != null) throw new ServerError("already_tipped");
+    r.tip = v;
+    r.tipAt = this.now;
+    this.pushTo(r.driverId, "ride_tip", r, { sender: this.nick(uid), total: v, currency: r.currency, pickup: r.pickup.label });
+    this.notifyRide(r);
+    return this.rideView(r, uid);
+  }
+
   private afterRide(uid: string, rideId: string): RideRow {
     this.requireUser(uid);
     const r = this.db.rides[rideId];
@@ -1661,7 +1744,50 @@ export class Engine {
 
   private pushTo(userId: string, kind: PushKind, r: RideRow, params: PushParams): void {
     if (!this.isMember(userId)) return;
-    this.effects.push.push({ userId, kind, rideId: r.id, params: { at: r.scheduledFor ?? null, ...params } });
+    this.deliver({ userId, kind, rideId: r.id, params: { at: r.scheduledFor ?? null, ...params } });
+  }
+
+  /** A notification out (push) and kept for the bell (2.9, V73); the bell refreshes live. */
+  private deliver(ev: PushEvent): void {
+    this.effects.push.push(ev);
+    const all = (this.db.notifications ??= []);
+    all.push({
+      id: this.nextId("n"),
+      userId: ev.userId,
+      kind: ev.kind,
+      params: ev.params,
+      rideId: ev.rideId,
+      appointmentId: ev.appointmentId ?? null,
+      createdAt: this.now,
+      readAt: null
+    });
+    const mine = all.filter((n) => n.userId === ev.userId);
+    if (mine.length > NOTIF_MAX) {
+      const drop = new Set(mine.slice(0, mine.length - NOTIF_MAX));
+      this.db.notifications = all.filter((n) => !drop.has(n));
+    }
+    this.effects.notify.add(ev.userId);
+  }
+
+  /** 2.9 (FR-312): my notifications, newest first (the last 60 days, at most 50), and how many are unread. */
+  notifications(uid: string): { items: NotificationItem[]; unread: number } {
+    this.requireUser(uid);
+    const mine = (this.db.notifications ?? []).filter((n) => n.userId === uid && n.createdAt > this.now - NOTIF_KEEP_MS);
+    return {
+      items: mine
+        .slice()
+        .reverse()
+        .slice(0, NOTIF_LIST)
+        .map((n) => ({ id: n.id, kind: n.kind, params: n.params, rideId: n.rideId, appointmentId: n.appointmentId, createdAt: n.createdAt, read: n.readAt !== null })),
+      unread: mine.filter((n) => n.readAt === null).length
+    };
+  }
+
+  /** 2.9 (FR-312): opening the bell marks everything read. */
+  readNotifications(uid: string): void {
+    this.requireUser(uid);
+    for (const n of this.db.notifications ?? []) if (n.userId === uid && n.readAt === null) n.readAt = this.now;
+    this.effects.notify.add(uid);
   }
 
   /** When an open request expires; a booked one waits at least until 15 min after its time. */
@@ -2784,7 +2910,7 @@ export class Engine {
     // An open request has no provider to tell (2.1).
     if (!userId || !this.isMember(userId)) return;
     const lang = this.db.users[userId]?.language ?? "en";
-    this.effects.push.push({
+    this.deliver({
       userId,
       kind,
       rideId: null,
@@ -2908,6 +3034,8 @@ export class Engine {
       contractId: candidate ? null : a.contractId ?? null,
       actualMin: a.actualMin ?? null,
       cost: candidate ? null : this.costOf(a),
+      // 2.9 (FR-314): the tip — the parties and their families see it.
+      tip: !candidate && a.tip != null ? { amount: a.tip, by: this.nick(a.tipBy ?? null), at: a.tipAt ?? a.endedAt ?? a.startsAt } : null,
       family: family ? { side: kinSide, member: this.nick(kinSide === "client" ? a.clientId : a.providerId) } : null,
       series: s
         ? {
@@ -2955,7 +3083,7 @@ export class Engine {
         ? this.familyPeople(fid).map((m) => ({ ...this.publicParty(m, true), me: m === uid, joinedAt: this.db.familyMembers![m].joinedAt }))
         : [],
       invites: fid ? pending.filter((i) => i.familyId === fid).map(invite) : [],
-      incoming: pending.filter((i) => i.toUser === uid).map(invite)
+      incoming: pending.filter((i) => this.samePerson(i.toUser, uid)).map(invite)
     };
   }
 
@@ -2978,12 +3106,14 @@ export class Engine {
     let fid = this.familyOf(uid);
     if (fid && this.familyPeople(fid).length >= FAMILY_MAX) throw new ServerError("family_full");
     const invites = (this.db.familyInvites ??= []);
-    if (fid && invites.some((i) => i.familyId === fid && i.toUser === to && i.status === "pending")) return this.family(uid);
+    if (fid && invites.some((i) => i.familyId === fid && this.samePerson(i.toUser, to) && i.status === "pending")) return this.family(uid);
     fid ??= this.newFamily(uid);
     invites.push({ id: this.nextId("fi"), familyId: fid, fromUser: uid, toUser: to, status: "pending", createdAt: this.now, answeredAt: null });
-    this.pushPlain(to, "family_invite", { sender: this.nick(uid) });
+    for (const p of this.personAccounts(to)) {
+      this.pushPlain(p, "family_invite", { sender: this.nick(uid) });
+      this.effects.notify.add(p);
+    }
     this.notifyHousehold(uid);
-    this.effects.notify.add(to);
     return this.family(uid);
   }
 
@@ -2992,7 +3122,7 @@ export class Engine {
     this.requireUser(uid);
     if (decision !== "join" && decision !== "decline") throw new ServerError("bad_input");
     this.sweep();
-    const inv = (this.db.familyInvites ?? []).find((i) => i.id === id && i.toUser === uid);
+    const inv = (this.db.familyInvites ?? []).find((i) => i.id === id && this.samePerson(i.toUser, uid));
     if (!inv) throw new ServerError("not_found");
     if (inv.status !== "pending" || !this.db.families?.[inv.familyId]) throw new ServerError("illegal_transition");
     if (decision === "decline") {
@@ -3013,8 +3143,10 @@ export class Engine {
       for (const c of Object.values(this.db.contracts ?? {})) {
         if (c.familyId !== mine) continue;
         const clash =
-          people.includes(c.providerId) ||
-          Object.values(this.db.contracts ?? {}).some((x) => x.familyId === inv.familyId && x.providerId === c.providerId && (x.status === "active" || x.status === "proposed"));
+          people.some((p) => this.samePerson(p, c.providerId)) ||
+          Object.values(this.db.contracts ?? {}).some(
+            (x) => x.familyId === inv.familyId && this.samePerson(x.providerId, c.providerId) && (x.status === "active" || x.status === "proposed")
+          );
         if (clash && (c.status === "active" || c.status === "proposed")) this.closeContract(c, c.status === "active" ? "ended" : "withdrawn", null);
         c.familyId = inv.familyId;
       }
@@ -3023,12 +3155,13 @@ export class Engine {
     }
     // I join: a contract the new family has with me as its provider ends.
     for (const c of Object.values(this.db.contracts ?? {}))
-      if (c.familyId === inv.familyId && c.providerId === uid && (c.status === "active" || c.status === "proposed")) this.closeContract(c, c.status === "active" ? "ended" : "withdrawn", null);
+      if (c.familyId === inv.familyId && this.samePerson(c.providerId, uid) && (c.status === "active" || c.status === "proposed"))
+        this.closeContract(c, c.status === "active" ? "ended" : "withdrawn", null);
     (this.db.familyMembers ??= {})[uid] = { familyId: inv.familyId, joinedAt: this.now };
     inv.status = "joined";
     inv.answeredAt = this.now;
     // Other invitations to me lapse: I am in a family now.
-    for (const i of this.db.familyInvites ?? []) if (i.toUser === uid && i.status === "pending") i.status = "declined";
+    for (const i of this.db.familyInvites ?? []) if (this.samePerson(i.toUser, uid) && i.status === "pending") i.status = "declined";
     for (const m of people) this.pushPlain(m, "family_joined", { sender: this.nick(uid) });
     this.notifyHousehold(uid);
     return this.family(uid);
@@ -3058,7 +3191,7 @@ export class Engine {
 
   /** 2.6: invitations to me and contract proposals my side should answer (S1 notice). */
   private familyPending(uid: string): number {
-    const invites = (this.db.familyInvites ?? []).filter((i) => i.toUser === uid && i.status === "pending" && this.now < i.createdAt + INVITE_MS).length;
+    const invites = (this.db.familyInvites ?? []).filter((i) => this.samePerson(i.toUser, uid) && i.status === "pending" && this.now < i.createdAt + INVITE_MS).length;
     const contracts = Object.values(this.db.contracts ?? {}).filter((c) => c.status === "proposed" && this.answers(uid, c)).length;
     return invites + contracts;
   }
@@ -3143,21 +3276,25 @@ export class Engine {
       if (c.familyId === fid && (c.status === "active" || c.status === "proposed")) {
         const was = c.status;
         this.closeContract(c, was === "active" ? "ended" : "withdrawn", uid);
-        if (was === "active") this.pushPlain(c.providerId, "contract_ended", { sender: this.nick(uid) });
+        if (was === "active") for (const p of this.personAccounts(c.providerId)) this.pushPlain(p, "contract_ended", { sender: this.nick(uid) });
       }
     delete this.db.families?.[fid];
   }
 
   /** A deleted (or replaced) profile: out of its family, its contracts as a provider end, its invitations go. */
   private dropFromFamilies(uid: string): void {
+    // 2.9 (V72): another phone of the same master profile takes over what was addressed to this one.
+    const sibling = this.personAccounts(uid).find((p) => p !== uid) ?? null;
     for (const i of this.db.familyInvites ?? [])
-      if (i.status === "pending" && (i.toUser === uid || i.fromUser === uid)) {
+      if (i.status === "pending" && i.toUser === uid && sibling) i.toUser = sibling;
+      else if (i.status === "pending" && (i.toUser === uid || i.fromUser === uid)) {
         i.status = i.toUser === uid ? "declined" : "withdrawn";
         i.answeredAt = this.now;
         this.effects.notify.add(i.toUser);
       }
     for (const c of Object.values(this.db.contracts ?? {}))
-      if (c.providerId === uid && (c.status === "active" || c.status === "proposed")) {
+      if (c.providerId === uid && sibling) c.providerId = sibling;
+      else if (c.providerId === uid && (c.status === "active" || c.status === "proposed")) {
         const was = c.status;
         this.closeContract(c, was === "active" ? "ended" : "withdrawn", uid);
         if (was === "active") for (const m of this.familyPeople(c.familyId)) this.pushPlain(m, "contract_ended", { sender: this.nick(uid) });
@@ -3168,7 +3305,7 @@ export class Engine {
   /** A notification about the family or a contract (no ride, no appointment; opens the Family panel). */
   private pushPlain(userId: string | null, kind: PushKind, params: Partial<PushParams>): void {
     if (!userId || !this.isMember(userId)) return;
-    this.effects.push.push({ userId, kind, rideId: null, appointmentId: null, params: params as PushParams });
+    this.deliver({ userId, kind, rideId: null, appointmentId: null, params: params as PushParams });
   }
 
   // ---------- 2.6: contracts (FR-260–264, V61, V62) ----------
@@ -3177,7 +3314,7 @@ export class Engine {
   contracts(uid: string): ContractView[] {
     this.requireUser(uid);
     const fid = this.familyOf(uid);
-    const mine = Object.values(this.db.contracts ?? {}).filter((c) => c.providerId === uid || (fid !== null && c.familyId === fid));
+    const mine = Object.values(this.db.contracts ?? {}).filter((c) => this.samePerson(c.providerId, uid) || (fid !== null && c.familyId === fid));
     const live = mine.filter((c) => c.status === "proposed" || c.status === "active").sort((x, y) => (x.status === y.status ? y.createdAt - x.createdAt : x.status === "proposed" ? -1 : 1));
     const past = mine
       .filter((c) => c.status !== "proposed" && c.status !== "active")
@@ -3201,8 +3338,8 @@ export class Engine {
     const rates = this.cleanRates(input.rates);
     const fid = this.familyOf(client) ?? this.newFamily(client);
     const all = (this.db.contracts ??= {});
-    for (const c of Object.values(all)) if (c.familyId === fid && c.providerId === providerId && c.status === "proposed") this.closeContract(c, "withdrawn", uid);
-    const version = Math.max(0, ...Object.values(all).filter((c) => c.familyId === fid && c.providerId === providerId).map((c) => c.version)) + 1;
+    for (const c of Object.values(all)) if (c.familyId === fid && this.samePerson(c.providerId, providerId) && c.status === "proposed") this.closeContract(c, "withdrawn", uid);
+    const version = Math.max(0, ...Object.values(all).filter((c) => c.familyId === fid && this.samePerson(c.providerId, providerId)).map((c) => c.version)) + 1;
     const c: ContractRow = {
       id: this.nextId("c"),
       familyId: fid,
@@ -3234,7 +3371,7 @@ export class Engine {
     if (!this.answers(uid, c)) throw new ServerError("forbidden");
     if (decision === "accept") {
       for (const x of Object.values(this.db.contracts ?? {}))
-        if (x !== c && x.familyId === c.familyId && x.providerId === c.providerId && x.status === "active") this.closeContract(x, "replaced", uid);
+        if (x !== c && x.familyId === c.familyId && this.samePerson(x.providerId, c.providerId) && x.status === "active") this.closeContract(x, "replaced", uid);
       c.status = "active";
     } else c.status = "declined";
     c.answeredAt = this.now;
@@ -3259,7 +3396,7 @@ export class Engine {
     const c = this.contractFor(uid, id);
     if (c.status !== "active") throw new ServerError("illegal_transition");
     this.closeContract(c, "ended", uid);
-    const others = c.providerId === uid ? this.familyPeople(c.familyId) : [c.providerId];
+    const others = this.samePerson(c.providerId, uid) ? this.familyPeople(c.familyId) : this.personAccounts(c.providerId);
     for (const m of others) this.pushPlain(m, "contract_ended", { sender: this.nick(uid) });
     this.notifyContract(c);
   }
@@ -3267,21 +3404,21 @@ export class Engine {
   /** A contract one of whose sides I am on (not_found otherwise). */
   private contractFor(uid: string, id: string): ContractRow {
     const c = this.db.contracts?.[id];
-    if (!c || (c.providerId !== uid && c.familyId !== this.familyOf(uid))) throw new ServerError("not_found");
+    if (!c || (!this.samePerson(c.providerId, uid) && c.familyId !== this.familyOf(uid))) throw new ServerError("not_found");
     return c;
   }
 
   /** I am on the side that answers this proposal. */
   private answers(uid: string, c: ContractRow): boolean {
-    return c.proposedSide === "family" ? c.providerId === uid : c.familyId === this.familyOf(uid) && c.providerId !== uid;
+    return c.proposedSide === "family" ? this.samePerson(c.providerId, uid) : c.familyId === this.familyOf(uid) && !this.samePerson(c.providerId, uid);
   }
 
   private proposingSide(c: ContractRow): string[] {
-    return c.proposedSide === "family" ? this.familyPeople(c.familyId) : [c.providerId];
+    return c.proposedSide === "family" ? this.familyPeople(c.familyId) : this.personAccounts(c.providerId);
   }
 
   private otherSide(c: ContractRow): string[] {
-    return c.proposedSide === "family" ? [c.providerId] : this.familyPeople(c.familyId);
+    return c.proposedSide === "family" ? this.personAccounts(c.providerId) : this.familyPeople(c.familyId);
   }
 
   private closeContract(c: ContractRow, status: ContractStatus, by: string | null): void {
@@ -3291,7 +3428,7 @@ export class Engine {
   }
 
   private notifyContract(c: ContractRow): void {
-    this.effects.notify.add(c.providerId);
+    for (const p of this.personAccounts(c.providerId)) this.effects.notify.add(p);
     for (const m of this.familyPeople(c.familyId)) this.effects.notify.add(m);
   }
 
@@ -3313,7 +3450,7 @@ export class Engine {
   }
 
   private contractView(c: ContractRow, viewer: string): ContractView {
-    const side = c.providerId === viewer ? "provider" : "family";
+    const side = this.samePerson(c.providerId, viewer) ? "provider" : "family";
     return {
       id: c.id,
       version: c.version,
@@ -3340,7 +3477,7 @@ export class Engine {
   private contractRate(client: string, provider: string | null, serviceId: string): { contractId: string; perHour: number } | null {
     const fid = this.familyOf(client);
     if (!fid || !provider) return null;
-    const c = Object.values(this.db.contracts ?? {}).find((x) => x.familyId === fid && x.providerId === provider && x.status === "active");
+    const c = Object.values(this.db.contracts ?? {}).find((x) => x.familyId === fid && this.samePerson(x.providerId, provider) && x.status === "active");
     const base = this.service(serviceId)?.base ?? null;
     const line = c?.rates.find((r) => r.serviceId === serviceId) ?? (base ? c?.rates.find((r) => r.serviceId === base) : undefined);
     return c && line ? { contractId: c.id, perHour: line.perHour } : null;
@@ -3388,6 +3525,27 @@ export class Engine {
   }
 
   /** The provider corrects the time within 24 h after the end (FR-272); the booked time clears it. */
+  /**
+   * 2.9 (FR-314, V74): the client — or someone in the client's family — thanks the provider with a
+   * tip after a done appointment: once, within 7 days of its end.
+   */
+  tipAppointment(uid: string, id: string, amount: number): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || !(a.clientId === uid || this.sameFamily(uid, a.clientId)) || a.providerId === uid) throw new ServerError("not_found");
+    if (a.status !== "done" || !a.providerId) throw new ServerError("illegal_transition");
+    if (this.now > (a.endedAt ?? this.endOf(a)) + TIP_APPT_MS) throw new ServerError("window_closed");
+    const v = tipAmount(amount, TIP_APPT_MAX);
+    if (a.tip != null) throw new ServerError("already_tipped");
+    a.tip = v;
+    a.tipBy = uid;
+    a.tipAt = this.now;
+    this.pushAppt(a.providerId, "appt_tip", a, { sender: this.nick(uid), total: v, currency: a.currency });
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
   setActualTime(uid: string, id: string, minutes: number): AppointmentView {
     this.requireUser(uid);
     this.sweep();
@@ -3453,7 +3611,9 @@ export class Engine {
       const servicesTotal = round2(services.reduce((s, l) => s + l.total, 0));
       const rs = rides.filter(rideMine);
       const ridesTotal = round2(rs.reduce((s, r) => s + r.fare, 0));
-      return { total: round2(servicesTotal + ridesTotal), services, servicesTotal, rides: { count: rs.length, total: ridesTotal } };
+      // 2.9 (FR-316): tips count in the week of their appointment or ride.
+      const tips = round2(appts.filter(mine).reduce((s, a) => s + (a.tip ?? 0), 0) + rs.reduce((s, r) => s + (r.tip ?? 0), 0));
+      return { total: round2(servicesTotal + ridesTotal + tips), services, servicesTotal, rides: { count: rs.length, total: ridesTotal }, tips };
     };
     const spent = side((a) => who.has(a.clientId), (a) => a.providerId, (r) => who.has(r.riderId));
     const earned = side((a) => !!a.providerId && who.has(a.providerId), (a) => a.clientId, (r) => !!r.driverId && who.has(r.driverId));
@@ -3729,6 +3889,8 @@ export class Engine {
       // 2.3: the room opens with a driver (FR-220); nothing for anyone but the two parties.
       unread: r.driverId && isParty ? this.unreadIn(`ride:${r.id}`, viewer) : 0,
       myRating: mine ? mine.stars : null,
+      // 2.9 (FR-315): the tip, for the two parties.
+      tip: isParty ? r.tip ?? null : null,
       // The appointment and leg are the rider's business only (FR-114).
       appointmentId: role === "rider" ? r.appointmentId ?? null : null,
       leg: role === "rider" ? r.leg ?? null : null,

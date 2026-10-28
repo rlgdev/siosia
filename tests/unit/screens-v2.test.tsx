@@ -260,6 +260,7 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     contractId: null,
     actualMin: null,
     cost: null,
+    tip: null,
     family: null,
     ...over
   };
@@ -601,6 +602,7 @@ const MY: MyState = {
   openRequests: 0,
   unreadChats: 0,
   familyPending: 0,
+  unreadNotifications: 0,
   planned: 1,
   nextPlanned: null
 };

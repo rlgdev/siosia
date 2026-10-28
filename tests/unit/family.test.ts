@@ -430,7 +430,7 @@ describe("weekly report (FR-280–283, V64, V65)", () => {
     const week = "2026-10-19";
     const me = at((e) => e.report("dad", week, "me"));
     expect(me).toMatchObject({ week, scope: "me", hasFamily: true, currency: "PLN", net: -120, members: null });
-    expect(me.spent).toEqual({ total: 120, servicesTotal: 120, services: [{ who: "Toria", serviceId: "childcare", count: 1, minutes: 180, total: 120 }], rides: { count: 0, total: 0 } });
+    expect(me.spent).toEqual({ total: 120, servicesTotal: 120, services: [{ who: "Toria", serviceId: "childcare", count: 1, minutes: 180, total: 120 }], rides: { count: 0, total: 0 }, tips: 0 });
     expect(me.earned.total).toBe(0);
     const fam = at((e) => e.report("mum", "2026-10-22", "family"));
     expect(fam.week).toBe(week);

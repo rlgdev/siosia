@@ -23,6 +23,7 @@ import { AttachedKidCards, KidPicker, RateKidBox, useMyKids } from "../component
 import { PlaceInput } from "../components/PlaceInput";
 import { Avatar } from "../components/ProfileIcon";
 import { ComingHomeBox, ComingLine, SessionFeedSection } from "../components/SessionFeed";
+import { TipBox } from "../components/Tip";
 import { rangeTimes, timeText, whenText } from "../components/when";
 import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui";
 import { computeFare } from "../core/fare";
@@ -34,7 +35,7 @@ import type { MessageKey } from "../i18n/en";
 import { navigationUrl } from "../services/device";
 import { getRoute } from "../services/routing";
 import { useApp, useListsKey, useStore } from "../state/store";
-import { durationText, EntryIcon, localText } from "./Catalog";
+import { durationText, EventIcon, localText } from "./Catalog";
 
 export function AppointmentPanel() {
   const { t } = useI18n();
@@ -127,7 +128,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
       <section className="card stack">
         <div className="row spread">
           <strong className="appt-title">
-            <EntryIcon icon={a.service?.icon ?? "📅"} /> {localText(a.service?.name, lang) || a.serviceId}
+            <EventIcon icon={a.service?.icon ?? "📅"} serviceId={a.serviceId} /> {localText(a.service?.name, lang) || a.serviceId}
           </strong>
           <span className={`chip chip-${chip.kind}`} data-testid="appt-status">
             {chip.text}
@@ -203,6 +204,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
       {a.cost && <CostSection a={a} reload={reload} />}
+      <TipSection a={a} reload={reload} />
 
       {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
       {a.role !== "candidate" && (a.updateCount > 0 || a.feedOpen) && <SessionFeedSection a={a} />}
@@ -325,6 +327,38 @@ const money = (amount: number, currency: string, locale: string) => {
  * 2.6 (FR-270, FR-272): the Summary of a done appointment — the time counted, the rate and where it
  * came from, the total — and, for the provider within 24 h after the end, Correct the time.
  */
+/**
+ * 2.9 (FR-314): after a done appointment the client side may leave a tip — once, within 7 days; the
+ * provider side sees it (who gave it, how much).
+ */
+function TipSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
+  const { t, locale } = useI18n();
+  const store = useStore();
+  if (a.status !== "done" || !a.provider || a.role === "candidate") return null;
+  const clientSide = a.role === "client" || (a.role === "family" && a.family?.side === "client");
+  if (!clientSide)
+    return a.tip ? (
+      <p className="notice notice-ok" data-testid="appt-tip">
+        <Icon name="sparkles" className="ico-inline" /> {t("tip.givenBy", { who: a.tip.by || a.client.nickname, amount: money(a.tip.amount, a.currency, locale) })}
+      </p>
+    ) : null;
+  if (!a.tip && store.serverNow() > (a.endedAt ?? a.endsAt) + 7 * 24 * 3600_000) return null;
+  return (
+    <section className="card" data-testid="appt-tip">
+      <TipBox
+        currency={a.currency}
+        max={1000}
+        suggested={[10, 20, 50]}
+        tip={a.tip?.amount ?? null}
+        onTip={async (n) => {
+          await store.api.tipAppointment(a.id, n);
+          reload();
+        }}
+      />
+    </section>
+  );
+}
+
 function CostSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
   const { t, locale } = useI18n();
   const store = useStore();
