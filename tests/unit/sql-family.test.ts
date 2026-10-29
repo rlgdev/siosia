@@ -446,7 +446,7 @@ describe("weekly report (FR-280–283, V64, V65)", () => {
     await sweep();
     const me = await call<Json>("dad", "siosia_report", [LAST, "me"]);
     expect(me).toMatchObject({ week: LAST, scope: "me", hasFamily: true, currency: "PLN", net: -120, members: null });
-    expect(me.spent).toEqual({ total: 120, servicesTotal: 120, services: [{ who: "Toria", serviceId: "childcare", count: 1, minutes: 180, total: 120 }], rides: { count: 0, total: 0 }, tips: 0 });
+    expect(me.spent).toEqual({ total: 120, servicesTotal: 120, services: [{ who: "Toria", serviceId: "childcare", count: 1, minutes: 180, total: 120, due: 120 }], rides: { count: 0, total: 0, due: 0 }, tips: 0 });
     expect((me.earned as Json).total).toBe(0);
     const fam = await call<Json>("mum", "siosia_report", [addDays(LAST, 3), "family"]);
     expect(fam.week).toBe(LAST);
@@ -454,7 +454,7 @@ describe("weekly report (FR-280–283, V64, V65)", () => {
       ["Toria", "childcare", 120],
       ["Toria", "learning", 90]
     ]);
-    expect((fam.earned as Json).services).toEqual([{ who: "Ewa", serviceId: "learning", count: 1, minutes: 60, total: 0 }]);
+    expect((fam.earned as Json).services).toEqual([{ who: "Ewa", serviceId: "learning", count: 1, minutes: 60, total: 0, due: 0 }]);
     expect(fam.members).toEqual([
       { nickname: "Roman", spent: 120, earned: 0 },
       { nickname: "Anna", spent: 90, earned: 0 }

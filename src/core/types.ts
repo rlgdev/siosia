@@ -350,13 +350,15 @@ export interface ReportLine {
   count: number;
   minutes: number;
   total: number;
+  /** 2.11 (FR-321): the part of it not paid yet (between different sides only). */
+  due: number;
 }
 
 export interface ReportSide {
   total: number;
   services: ReportLine[];
   servicesTotal: number;
-  rides: { count: number; total: number };
+  rides: { count: number; total: number; due: number };
   /** 2.9 (FR-316): tips given (spent) or received (earned) — part of the total. */
   tips: number;
 }
@@ -376,6 +378,54 @@ export interface WeeklyReport {
   net: number;
   /** Family scope: one line per current member. */
   members: { nickname: string; spent: number; earned: number }[] | null;
+  /** 2.11 (FR-321): what is still to pay between my side and each other side — of every week shown. */
+  due: DueLine[];
+  /** 2.11 (FR-324): my side's settlements of the last 90 days, newest first (10 at most). */
+  settlements: SettlementView[];
+}
+
+/** 2.11: money one way between two sides — for services (with their tips) and for rides (with theirs). */
+export interface DueSplit {
+  services: number;
+  rides: number;
+}
+
+/**
+ * 2.11 (FR-321, V78): between my side (my family, else me on all my phones) and another side — the
+ * unpaid done appointments and completed rides from the oldest week a report shows.
+ */
+export interface DueLine {
+  /** A public id on that side: the reminder and dobry Pancio go there. */
+  party: string;
+  /** That side's names ("Roman, Anna" for a family). */
+  who: string;
+  theyOwe: DueSplit;
+  weOwe: DueSplit;
+  /** What they owe us minus what we owe them: above 0 they pay, below 0 we pay. */
+  net: number;
+  count: number;
+  /** The oldest unpaid one (ms). */
+  since: number;
+  /** My side's last reminder to them (ms), if any. */
+  remindedAt: number | null;
+}
+
+/** 2.11 (FR-323, FR-324): one dobry Pancio, as my side sees it. */
+export interface SettlementView {
+  id: string;
+  at: number;
+  /** Who pressed it; whether that was my side. */
+  by: string;
+  mine: boolean;
+  /** The other side's names. */
+  who: string;
+  /** "in": they paid us; "out": we paid them; "even": the two ways cancelled out. */
+  direction: "in" | "out" | "even";
+  amount: number;
+  count: number;
+  comment: { text: string; by: string; at: number } | null;
+  /** The side that got the notification may comment once, within 30 days. */
+  canComment: boolean;
 }
 
 export interface RepeatInput {

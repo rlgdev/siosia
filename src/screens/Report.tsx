@@ -2,6 +2,8 @@
 // Spent (services as a client, rides as a passenger), Earned (services as a provider, rides as a
 // driver), the balance; ‹ › steps a week (52 back at most); a member of a family switches to Family
 // (the sums of all its members, one line each). Opened from H1 and from ./?open=report&week=.
+// 2.11 (FR-321–325): what is still to pay between my side and the others, a reminder to pay and
+// dobry Pancio (SettleUp), and each week's lines say how much of them is still to pay.
 
 import { useCallback, useEffect, useState } from "react";
 import { InfoTip } from "../components/InfoTip";
@@ -12,6 +14,7 @@ import type { ReportSide, WeeklyReport } from "../core/types";
 import { useI18n } from "../i18n";
 import { useApp, useListsKey, useStore } from "../state/store";
 import { durationText, EntryIcon, localText } from "./Catalog";
+import { DueSection } from "./SettleUp";
 
 const WEEKS_BACK = 52;
 
@@ -100,6 +103,7 @@ export function ReportPanel() {
               </strong>
             </div>
           </div>
+          <DueSection report={shown} onChanged={() => void load()} />
           {!hasAny(shown.spent) && !hasAny(shown.earned) ? (
             <p className="muted" data-testid="report-empty">
               {t("report.empty")}
@@ -141,9 +145,17 @@ const money = (amount: number, currency: string, locale: string) => {
 
 /** One side's lines: per other person and service (count, time, total), then the rides. */
 function Side({ title, side, currency, testId }: { title: string; side: ReportSide; currency: string; testId: string }) {
-  const { t, lang } = useI18n();
+  const { t, lang, locale } = useI18n();
   const app = useApp();
   if (!hasAny(side)) return null;
+  // 2.11 (FR-321): the part still to pay; nothing once it is paid
+  const due = (amount: number) =>
+    amount > 0 && (
+      <span className="due-mark" data-testid="report-due">
+        {" · "}
+        {t("report.due", { amount: money(amount, currency, locale) })}
+      </span>
+    );
   const services = app.deployment?.services ?? [];
   return (
     <section className="card stack" data-testid={testId}>
@@ -158,7 +170,10 @@ function Side({ title, side, currency, testId }: { title: string; side: ReportSi
             <span>
               {e && <EntryIcon icon={e.icon} />} {localText(e?.name, lang) || l.serviceId} · {l.who}
               <br />
-              <small className="muted">{t("report.line", { count: l.count, time: durationText(l.minutes, t) })}</small>
+              <small className="muted">
+                {t("report.line", { count: l.count, time: durationText(l.minutes, t) })}
+                {due(l.due)}
+              </small>
             </span>
             <Money amount={l.total} currency={currency} />
           </div>
@@ -168,6 +183,7 @@ function Side({ title, side, currency, testId }: { title: string; side: ReportSi
         <div className="row spread report-line" data-testid="report-rides">
           <span>
             <Icon name="car" className="ico-inline" /> {t("report.rides")} · {t("report.ridesCount", { n: side.rides.count })}
+            <small className="muted">{due(side.rides.due)}</small>
           </span>
           <Money amount={side.rides.total} currency={currency} />
         </div>

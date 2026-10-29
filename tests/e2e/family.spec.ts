@@ -176,3 +176,59 @@ test("2.10: an active contract applied to a past appointment from a chosen day (
   await roman.getByTestId("start-history").click();
   await expect(roman.getByTestId("history-appointment").getByTestId("history-cost")).toContainText("120.00", { timeout: 10_000 });
 });
+
+test("2.11: what is due on the weekly report; dobry Pancio after a confirmation settles it (FR-321–323)", async ({ context }) => {
+  await isolate(context);
+  const roman = await context.newPage();
+  await roman.clock.install({ time: Date.now() });
+  await onboard(roman, "Roman", "?robots=0"); // the robot Siosia runs in Roman's tab
+
+  // A contract with Siosia (childcare at 40 an hour), then 3 h of childcare.
+  await roman.getByTestId("home-profile").click();
+  await roman.getByTestId("profile-family").click();
+  await roman.getByTestId("contract-new").click();
+  await roman.getByTestId("contract-to").selectOption({ label: "Siosia" });
+  await roman.getByTestId("contract-pick-childcare").check();
+  await roman.getByTestId("contract-rate-childcare").fill("40");
+  await roman.getByTestId("contract-send").click();
+  await expect(roman.getByTestId("contract-active")).toBeVisible({ timeout: 10_000 });
+  await back(roman);
+  await back(roman);
+  await roman.getByTestId("start-siosia").click();
+  await roman.getByTestId("catalog-childcare").click();
+  const start = Math.ceil((Date.now() + 31 * 60_000) / 900_000) * 900_000;
+  await roman.getByTestId("request-start").fill(localInput(start));
+  await roman.getByTestId("request-place-here").click();
+  await expect(roman.getByTestId("request-place-value")).not.toHaveText("—");
+  await roman.getByTestId("request-send").click();
+  await expect(roman.getByTestId("planned-appointment").getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 10_000 });
+
+  // Once it is over, the weekly report of its week: 120 to pay to Siosia, also on the week's line.
+  await roman.clock.fastForward(start + 4 * 3600_000 - Date.now());
+  await roman.getByTestId("page-back").click();
+  await roman.getByTestId("start-history").click();
+  await roman.getByTestId("history-report").click();
+  const due = roman.getByTestId("due");
+  await expect(due.getByTestId("due-line")).toHaveCount(1, { timeout: 10_000 });
+  await expect(due.getByTestId("due-line")).toContainText("Siosia");
+  await expect(due.getByTestId("due-net")).toHaveText("You owe PLN 120.00");
+  await expect(due.getByTestId("due-remind")).toHaveCount(0); // we owe: nothing to ask for
+  await expect(roman.getByTestId("report-due").first()).toContainText("120.00");
+
+  // dobry Pancio asks first; "No" changes nothing.
+  await due.getByTestId("due-settle").click();
+  const ask = roman.getByRole("alertdialog");
+  await expect(ask).toContainText("Mark PLN 120.00");
+  await expect(ask).toContainText("as paid");
+  await ask.getByRole("button", { name: "No" }).click();
+  await expect(due.getByTestId("due-line")).toHaveCount(1);
+  await due.getByTestId("due-settle").click();
+  await roman.getByRole("alertdialog").getByRole("button", { name: "dobry Pancio" }).click();
+  await expect(due.getByTestId("due-note")).toHaveText("Settled. Siosia got a notification.");
+  await expect(due.getByTestId("due-none")).toBeVisible();
+  await expect(roman.getByTestId("report-due")).toHaveCount(0);
+  const done = due.getByTestId("settlement");
+  await expect(done).toContainText("To Siosia: PLN 120.00");
+  await expect(done).toContainText("dobry Pancio from Roman");
+  await expect(done.getByTestId("settlement-comment-input")).toHaveCount(0); // the side that pressed it does not comment
+});

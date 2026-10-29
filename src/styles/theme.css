@@ -2604,3 +2604,46 @@ html[data-launch] .mode-card:nth-child(4) {
   width: 32px;
   height: 32px;
 }
+
+/* ---------- 2.11: settling up on the weekly report (FR-321–325) ---------- */
+.due-title .ico {
+  color: var(--accent);
+}
+.due-item {
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.due-net {
+  font-weight: 700;
+  white-space: nowrap;
+}
+.due-in {
+  color: var(--ok-ink);
+}
+.due-out {
+  color: var(--warn-ink);
+}
+.due-part {
+  gap: 12px;
+}
+.due-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.due-actions .btn {
+  min-height: 44px;
+}
+.due-history {
+  margin: 6px 0 0;
+  font-size: 1rem;
+}
+.due-comment {
+  margin: 0;
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.due-mark {
+  color: var(--warn-ink);
+}

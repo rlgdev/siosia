@@ -38,6 +38,8 @@ import {
   type FamilyView,
   type ReportLine,
   type ReportSide,
+  type DueLine,
+  type SettlementView,
   type WeeklyReport,
   type ChatRoom,
   type ChatThread,
@@ -189,6 +191,9 @@ export interface RideRow {
   /** 2.9 (FR-315): the rider's tip to the driver, and when. */
   tip?: number | null;
   tipAt?: number | null;
+  /** 2.11 (FR-323): paid by a dobry Pancio — when, and which. */
+  settledAt?: number | null;
+  settlementId?: string | null;
 }
 
 /** 2.0: an appointment (one occurrence of a series, or a single one). */
@@ -227,6 +232,9 @@ export interface ApptRow {
   tip?: number | null;
   tipBy?: string | null;
   tipAt?: number | null;
+  /** 2.11 (FR-323): paid by a dobry Pancio — when, and which. */
+  settledAt?: number | null;
+  settlementId?: string | null;
 }
 
 export interface StoredTemplate {
@@ -411,6 +419,41 @@ export interface DbState {
   memberInvites?: Record<string, MemberInviteRow>;
   /** 2.9 (V73): every notification a member got (but chat messages), for the bell. */
   notifications?: NotificationRow[];
+  /** 2.11 (FR-322–324): reminders to pay and dobry Pancios (Supabase: settlements). */
+  settlements?: SettlementRow[];
+}
+
+/**
+ * 2.11 (FR-322–324, V78–V80): a reminder to pay ("remind") or a dobry Pancio ("settle") from one side
+ * to another. Sides are keys: "f:<family>" or "p:<master profile, else the user>". `amount` is the
+ * net as the presser's side saw it (above 0: the other side owed them); `withUser` is the person on
+ * the other side it went to.
+ */
+export interface SettlementRow {
+  id: string;
+  kind: "remind" | "settle";
+  byUser: string;
+  withUser: string;
+  fromParty: string;
+  toParty: string;
+  amount: number;
+  itemCount: number;
+  createdAt: number;
+  comment: string | null;
+  commentBy: string | null;
+  commentAt: number | null;
+}
+
+/** 2.11: one unpaid appointment or ride, seen from my side (V78). */
+interface Owing {
+  /** The person on the other side, and their side's key. */
+  other: string;
+  side: string;
+  theyOwe: boolean;
+  rides: boolean;
+  amount: number;
+  at: number;
+  item: ApptRow | RideRow;
 }
 
 /** 2.9 (FR-311): a kept notification (Supabase: notifications). */
@@ -567,6 +610,13 @@ const NOTIF_KEEP_MS = 60 * 86_400_000;
 const NOTIF_MAX = 200;
 const NOTIF_LIST = 50;
 const REPORT_HOUR = 8;
+/** 2.11 (V79, V80): one reminder per side and 12 hours; settlements listed for 90 days, 10 at most;
+ *  a comment once, 1–280 characters, within 30 days. */
+const REMIND_MS = 12 * 3600_000;
+const SETTLE_LIST_MS = 90 * 86_400_000;
+const SETTLE_LIST = 10;
+const COMMENT_MAX = 280;
+const COMMENT_MS = 30 * 86_400_000;
 /** Money to the cent (twin of round(x::numeric, 2)). */
 const round2 = (x: number) => Math.round(x * 100) / 100;
 /** 2.9 (V74): a tip is 1–1000 after an appointment (within 7 days of its end), 1–500 after a ride. */
@@ -794,6 +844,14 @@ export class Engine {
       if (c.providerId === old) c.providerId = uid;
       if (c.proposedBy === old) c.proposedBy = uid;
       if (c.endedBy === old) c.endedBy = uid;
+    }
+    // 2.11: the settlements follow the account (a person's side is keyed by the user without a master)
+    for (const s of this.db.settlements ?? []) {
+      if (s.byUser === old) s.byUser = uid;
+      if (s.withUser === old) s.withUser = uid;
+      if (s.commentBy === old) s.commentBy = uid;
+      if (s.fromParty === `p:${old}`) s.fromParty = `p:${uid}`;
+      if (s.toParty === `p:${old}`) s.toParty = `p:${uid}`;
     }
     const pres = this.db.chatPresence;
     if (pres?.[old]) {
@@ -3618,11 +3676,13 @@ export class Engine {
       members: scope === "family" && hasFamily ? people.map((m) => {
         const one = this.weekReport([m], monday);
         return { nickname: this.nick(m), spent: one.spent.total, earned: one.earned.total };
-      }) : null
+      }) : null,
+      due: this.dueLines(uid),
+      settlements: this.settlementViews(uid)
     };
   }
 
-  private weekReport(people: string[], monday: string): Omit<WeeklyReport, "scope" | "hasFamily" | "members"> {
+  private weekReport(people: string[], monday: string): Omit<WeeklyReport, "scope" | "hasFamily" | "members" | "due" | "settlements"> {
     const tz = this.cfg.timezone;
     const start = localMidnight(monday, tz);
     const end = localMidnight(addDays(monday, 7), tz);
@@ -3635,11 +3695,13 @@ export class Engine {
       for (const a of appts.filter(mine)) {
         const name = this.nick(other(a)) || "Deleted user";
         const key = `${name}\u0000${a.serviceId}`;
-        const l = lines.get(key) ?? { who: name, serviceId: a.serviceId, count: 0, minutes: 0, total: 0 };
+        const l = lines.get(key) ?? { who: name, serviceId: a.serviceId, count: 0, minutes: 0, total: 0, due: 0 };
         const cost = this.costOf(a)!;
         l.count++;
         l.minutes += cost.minutes;
         l.total = round2(l.total + (cost.total ?? 0));
+        // 2.11 (FR-321): what of it is still to pay
+        if (this.apptOwing(a)) l.due = round2(l.due + (cost.total ?? 0));
         lines.set(key, l);
       }
       const services = [...lines.values()].sort((x, y) => y.total - x.total || x.who.localeCompare(y.who) || (x.serviceId < y.serviceId ? -1 : 1));
@@ -3648,11 +3710,225 @@ export class Engine {
       const ridesTotal = round2(rs.reduce((s, r) => s + r.fare, 0));
       // 2.9 (FR-316): tips count in the week of their appointment or ride.
       const tips = round2(appts.filter(mine).reduce((s, a) => s + (a.tip ?? 0), 0) + rs.reduce((s, r) => s + (r.tip ?? 0), 0));
-      return { total: round2(servicesTotal + ridesTotal + tips), services, servicesTotal, rides: { count: rs.length, total: ridesTotal }, tips };
+      const ridesDue = round2(rs.filter((r) => this.rideOwing(r)).reduce((s, r) => s + r.fare, 0));
+      return { total: round2(servicesTotal + ridesTotal + tips), services, servicesTotal, rides: { count: rs.length, total: ridesTotal, due: ridesDue }, tips };
     };
     const spent = side((a) => who.has(a.clientId), (a) => a.providerId, (r) => who.has(r.riderId));
     const earned = side((a) => !!a.providerId && who.has(a.providerId), (a) => a.clientId, (r) => !!r.driverId && who.has(r.driverId));
     return { week: monday, weekStart: start, weekEnd: end, currency: this.cfg.tariff.currency, spent, earned, net: round2(earned.total - spent.total) };
+  }
+
+  // ---------- 2.11: settling up (FR-321–325, V78–V80) ----------
+
+  /** 2.11 (V78): who pays and gets paid — a family, else one person (every phone of a master profile). */
+  private partyOf(uid: string): string {
+    const fid = this.familyOf(uid);
+    return fid ? `f:${fid}` : `p:${this.linkedMaster(uid) ?? uid}`;
+  }
+
+  /** Everyone on someone's side: their family, else all their phones. */
+  private partyPeople(uid: string): string[] {
+    const fid = this.familyOf(uid);
+    return fid ? this.familyPeople(fid) : this.personAccounts(uid);
+  }
+
+  /** A side's names: a family's members, else the person's nickname. */
+  private partyName(uid: string): string {
+    const fid = this.familyOf(uid);
+    const names = (fid ? this.familyPeople(fid) : [uid]).map((m) => this.nick(m)).filter(Boolean);
+    return names.join(", ") || "Deleted user";
+  }
+
+  /** What may still be due starts with the oldest week a report shows (V78). */
+  private dueFrom(): number {
+    const tz = this.cfg.timezone;
+    return localMidnight(addDays(weekOf(this.now, tz), -7 * REPORT_WEEKS), tz);
+  }
+
+  /** Both people still here, on different sides. */
+  private apart(a: string | null, b: string | null): boolean {
+    const live = (u: string | null): u is string => !!u && !!this.db.users[u] && !this.db.users[u].deleted;
+    return live(a) && live(b) && this.partyOf(a) !== this.partyOf(b);
+  }
+
+  /** A done appointment's cost and tip. */
+  private apptAmount(a: ApptRow): number {
+    return round2((this.costOf(a)?.total ?? 0) + (a.tip ?? 0));
+  }
+
+  /** A done appointment still to pay (V78): something to pay, between two sides, not settled. */
+  private apptOwing(a: ApptRow): boolean {
+    return a.status === "done" && a.startsAt >= this.dueFrom() && a.settledAt == null && this.apptAmount(a) > 0 && this.apart(a.clientId, a.providerId);
+  }
+
+  /** A completed ride still to pay (V78): fare and tip, nobody marked it paid or collected, not settled. */
+  private rideOwing(r: RideRow): boolean {
+    return (
+      r.status === "completed" && r.endedAt !== null && r.endedAt >= this.dueFrom() && r.settledAt == null && !r.paid && !r.collected &&
+      round2(r.fare + (r.tip ?? 0)) > 0 && this.apart(r.riderId, r.driverId)
+    );
+  }
+
+  /** Everything still to pay between my side and another (`them`, a side key; null: every other side). */
+  private owingWith(uid: string, them: string | null): Owing[] {
+    const me = this.partyOf(uid);
+    const out: Owing[] = [];
+    const add = (debtor: string, creditor: string, item: Owing["item"], rides: boolean, amount: number, at: number) => {
+      const d = this.partyOf(debtor);
+      const c = this.partyOf(creditor);
+      if (d !== me && c !== me) return;
+      const side = d === me ? c : d;
+      if (them === null || side === them) out.push({ other: d === me ? creditor : debtor, side, theyOwe: c === me, rides, amount, at, item });
+    };
+    for (const a of Object.values(this.db.appointments ?? {}))
+      if (this.apptOwing(a)) add(a.clientId, a.providerId!, a, false, this.apptAmount(a), a.startsAt);
+    for (const r of Object.values(this.db.rides))
+      if (this.rideOwing(r)) add(r.riderId, r.driverId!, r, true, round2(r.fare + (r.tip ?? 0)), r.endedAt!);
+    return out;
+  }
+
+  /** 2.11 (FR-321): one line per other side — who, both ways, the net, since when, my last reminder. */
+  private dueLines(uid: string): DueLine[] {
+    const me = this.partyOf(uid);
+    const groups = new Map<string, Owing[]>();
+    for (const it of this.owingWith(uid, null)) groups.set(it.side, [...(groups.get(it.side) ?? []), it]);
+    const lines: DueLine[] = [];
+    for (const [side, items] of groups) {
+      // The newest one's other person stands for that side.
+      const newest = items.reduce((x, y) => (y.at > x.at ? y : x));
+      const sum = (they: boolean, rides: boolean) => round2(items.filter((i) => i.theyOwe === they && i.rides === rides).reduce((s, i) => s + i.amount, 0));
+      const theyOwe = { services: sum(true, false), rides: sum(true, true) };
+      const weOwe = { services: sum(false, false), rides: sum(false, true) };
+      const reminded = (this.db.settlements ?? []).filter((s) => s.kind === "remind" && s.fromParty === me && s.toParty === side).map((s) => s.createdAt);
+      lines.push({
+        party: this.publicIdOf(newest.other) ?? "",
+        who: this.partyName(newest.other),
+        theyOwe,
+        weOwe,
+        net: round2(theyOwe.services + theyOwe.rides - weOwe.services - weOwe.rides),
+        count: items.length,
+        since: Math.min(...items.map((i) => i.at)),
+        remindedAt: reminded.length ? Math.max(...reminded) : null
+      });
+    }
+    return lines.sort((x, y) => x.since - y.since || (x.party < y.party ? -1 : 1));
+  }
+
+  /** The other side, from a public id there: a member of my realm on another side (not_found / forbidden). */
+  private otherParty(uid: string, party: string): string {
+    const other = this.userByPublicId(party);
+    if (!other || !this.sameRealm(uid, other)) throw new ServerError("not_found");
+    if (this.partyOf(other) === this.partyOf(uid)) throw new ServerError("forbidden");
+    return other;
+  }
+
+  private newSettlement(kind: SettlementRow["kind"], uid: string, other: string, amount: number, itemCount: number): SettlementRow {
+    const s: SettlementRow = {
+      id: this.nextId("s"),
+      kind,
+      byUser: uid,
+      withUser: other,
+      fromParty: this.partyOf(uid),
+      toParty: this.partyOf(other),
+      amount,
+      itemCount,
+      createdAt: this.now,
+      comment: null,
+      commentBy: null,
+      commentAt: null
+    };
+    (this.db.settlements ??= []).push(s);
+    return s;
+  }
+
+  /** 2.11 (FR-322, V79): ask the other side to pay what they owe us, net — once per 12 hours. */
+  remindPayment(uid: string, party: string): { net: number } {
+    this.requireUser(uid);
+    this.sweep();
+    const other = this.otherParty(uid, party);
+    const me = this.partyOf(uid);
+    const them = this.partyOf(other);
+    const items = this.owingWith(uid, them);
+    const net = round2(items.reduce((s, i) => s + (i.theyOwe ? i.amount : -i.amount), 0));
+    if (net <= 0) throw new ServerError("illegal_transition");
+    if ((this.db.settlements ?? []).some((s) => s.kind === "remind" && s.fromParty === me && s.toParty === them && this.now < s.createdAt + REMIND_MS))
+      throw new ServerError("rate_limited");
+    this.newSettlement("remind", uid, other, net, items.length);
+    const since = localDate(Math.min(...items.map((i) => i.at)), this.cfg.timezone);
+    for (const m of this.partyPeople(other)) this.pushPlain(m, "pay_remind", { sender: this.nick(uid), total: net, currency: this.cfg.tariff.currency, since });
+    for (const m of this.partyPeople(uid)) this.effects.notify.add(m);
+    return { net };
+  }
+
+  /**
+   * 2.11 (FR-323, V79): dobry Pancio — everything still to pay between my side and theirs, both ways,
+   * is paid now, so the balance is zero. Either side may press it; the other side hears it.
+   */
+  settleUp(uid: string, party: string): { count: number; net: number } {
+    this.requireUser(uid);
+    this.sweep();
+    const other = this.otherParty(uid, party);
+    const items = this.owingWith(uid, this.partyOf(other));
+    if (!items.length) throw new ServerError("illegal_transition");
+    const net = round2(items.reduce((s, i) => s + (i.theyOwe ? i.amount : -i.amount), 0));
+    const s = this.newSettlement("settle", uid, other, net, items.length);
+    for (const { item } of items) {
+      item.settledAt = this.now;
+      item.settlementId = s.id;
+      if ("riderId" in item) this.notifyRide(item);
+      else this.notifyAppt(item);
+    }
+    const status = net > 0 ? "received" : net < 0 ? "paid" : "even";
+    for (const m of this.partyPeople(other))
+      this.pushPlain(m, "pay_settled", { sender: this.nick(uid), total: Math.abs(net), currency: this.cfg.tariff.currency, count: items.length, status });
+    for (const m of this.partyPeople(uid)) this.effects.notify.add(m);
+    return { count: items.length, net };
+  }
+
+  /** 2.11 (FR-324, V80): the side that got a dobry Pancio answers it — once, 1–280 characters, 30 days. */
+  commentSettlement(uid: string, id: string, text: string): SettlementView {
+    this.requireUser(uid);
+    this.sweep();
+    const s = (this.db.settlements ?? []).find((x) => x.id === id && x.kind === "settle" && x.toParty === this.partyOf(uid));
+    if (!s) throw new ServerError("not_found");
+    if (s.comment !== null) throw new ServerError("illegal_transition");
+    if (this.now >= s.createdAt + COMMENT_MS) throw new ServerError("window_closed");
+    const clean = trimWs(String(text ?? ""));
+    if (!clean || clean.length > COMMENT_MAX) throw new ServerError("bad_input");
+    s.comment = clean;
+    s.commentBy = uid;
+    s.commentAt = this.now;
+    if (this.db.users[s.byUser] && !this.db.users[s.byUser].deleted)
+      for (const m of this.partyPeople(s.byUser)) this.pushPlain(m, "pay_comment", { sender: this.nick(uid), text: clean });
+    for (const m of this.partyPeople(uid)) this.effects.notify.add(m);
+    return this.settlementView(s, uid);
+  }
+
+  private settlementView(s: SettlementRow, uid: string): SettlementView {
+    const mine = s.fromParty === this.partyOf(uid);
+    const signed = mine ? s.amount : -s.amount;
+    return {
+      id: s.id,
+      at: s.createdAt,
+      by: this.nick(s.byUser) || "Deleted user",
+      mine,
+      who: this.partyName(mine ? s.withUser : s.byUser),
+      direction: signed > 0 ? "in" : signed < 0 ? "out" : "even",
+      amount: Math.abs(s.amount),
+      count: s.itemCount,
+      comment: s.comment !== null ? { text: s.comment, by: this.nick(s.commentBy) || "Deleted user", at: s.commentAt ?? s.createdAt } : null,
+      canComment: !mine && s.comment === null && this.now < s.createdAt + COMMENT_MS
+    };
+  }
+
+  /** My side's dobry Pancios of the last 90 days, newest first. */
+  private settlementViews(uid: string): SettlementView[] {
+    const me = this.partyOf(uid);
+    return (this.db.settlements ?? [])
+      .filter((s) => s.kind === "settle" && (s.fromParty === me || s.toParty === me) && s.createdAt >= this.now - SETTLE_LIST_MS)
+      .sort((x, y) => y.createdAt - x.createdAt || (x.id < y.id ? 1 : -1))
+      .slice(0, SETTLE_LIST)
+      .map((s) => this.settlementView(s, uid));
   }
 
   /** Monday from 08:00: last week's report to everyone who had anything in it, once (V65). */

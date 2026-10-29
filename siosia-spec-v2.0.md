@@ -1005,3 +1005,27 @@ the left edge.
   services without a rate stay as they are.
 - **FR-320**: The notifications list always fits the screen: 12 px from both edges at most, just
   under the bell, whatever header the bell sits in.
+
+## Amendment 2.11 (2026-10-29): settling up on the weekly report — dobry Pancio
+
+Operator request of 2026-10-29: on the weekly report one should be able to ask the other party to
+pay, and mark a payment as done, after which it is no longer due; a driver too, for the rides they
+gave the nanny. The button is labelled **dobry Pancio**, asks for a confirmation, then brings the
+balance with the other side to zero and notifies them, who may answer with a comment.
+
+- **FR-321**: The weekly report shows **To settle**: for each other side, what is still unpaid
+  between it and mine — services (cost and tip of done appointments) and rides (fare and tip of
+  completed rides nobody marked paid or collected on the receipt), both ways, and the net; from
+  every week the report can show (52 weeks back). A *side* is a family, else one person (all the
+  phones of a master profile). Each week's lines also say how much of them is still to pay.
+- **FR-322**: When the other side owes mine (net above zero), **Ask to pay** notifies all of them
+  (`pay_remind`, with the amount and since when) — once per 12 hours per pair of sides.
+- **FR-323**: **dobry Pancio** — either side, after a confirmation naming the amount — marks
+  everything still unpaid between the two sides as paid (both ways): the balance drops to zero for
+  both, the weekly lines stop showing it as due, and the other side is notified (`pay_settled`:
+  received, paid, or settled both ways). What happens afterwards is due again.
+- **FR-324**: The report lists the dobry Pancios of the last 90 days (10 at most) to both sides; the
+  side that got one MAY answer it with a comment (1–280 characters, once, within 30 days), which
+  notifies the side that pressed it (`pay_comment`). The notifications open the weekly report.
+- **FR-325**: Siosia moves no money: these are marks both sides agree on, like the rest of the
+  report.

@@ -216,4 +216,8 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 318 | Same event icon tile for every party; new version picked up on start / foreground | browser check (P1/H1/C3); main.tsx update check |
 | 319 | An active contract applied to past appointments from a day (≤ 1 year), the other side notified | contract-past + sqlcp "prices the done appointments since the date…"; e2e family "2.10…" |
 | 320 | The notifications list always on the screen (320 px and up, any header) | e2e family "2.10…" (320 px, under the Planned header); browser check iPhone SE / 13 mini |
-
+| 321 | To settle on the weekly report: per other side (family or person), both ways and net; week lines show what is still due | settle + sql-settle "counts both ways per side…"; settle-ui; e2e family "2.11…" |
+| 322 | Ask to pay: the side that owes is notified, once per 12 h | settle + sql-settle (rate_limited, pay_remind to every person on that side); settle-ui |
+| 323 | dobry Pancio after a confirmation: everything between the two sides paid, balance zero, the other side notified | settle + sql-settle; settle-ui (No changes nothing); e2e family "2.11…" |
+| 324 | Recent dobry Pancios; the receiving side comments once (≤ 280, 30 days), the other side notified | settle + sql-settle (comment rules, pay_comment); settle-ui |
+| 325 | Siosia moves no money — marks only | guide; no payment code |

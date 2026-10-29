@@ -613,6 +613,11 @@ alter table public.appointments add column if not exists tip_by uuid;
 alter table public.appointments add column if not exists tip_at timestamptz;
 alter table public.rides add column if not exists tip numeric(10, 2);
 alter table public.rides add column if not exists tip_at timestamptz;
+-- 2.11 (FR-323, V79): a done appointment or a completed ride paid by a dobry Pancio — when, and which.
+alter table public.appointments add column if not exists settled_at timestamptz;
+alter table public.appointments add column if not exists settlement_id uuid;
+alter table public.rides add column if not exists settled_at timestamptz;
+alter table public.rides add column if not exists settlement_id uuid;
 -- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
 create table if not exists public.member_invites (
   token_hash  text primary key,
@@ -641,6 +646,26 @@ create table if not exists public.notifications (
   read_at        timestamptz
 );
 create index if not exists notifications_user_idx on public.notifications (user_id, id desc);
+
+-- 2.11 (FR-322–324, V78–V80): reminders to pay ('remind') and dobry Pancios ('settle') from one side
+-- to another — sides are keys, "f:<family>" or "p:<master profile, else the user>"; amount is the net
+-- as the presser's side saw it (above 0: the other side owed them); with_user is who it went to.
+create table if not exists public.settlements (
+  id          uuid primary key default gen_random_uuid(),
+  kind        text not null check (kind in ('remind', 'settle')),
+  by_user     uuid references auth.users (id) on delete set null,
+  with_user   uuid references auth.users (id) on delete set null,
+  from_party  text not null,
+  to_party    text not null,
+  amount      numeric(10, 2) not null,
+  item_count  int not null default 0,
+  created_at  timestamptz not null default now(),
+  comment     text,
+  comment_by  uuid references auth.users (id) on delete set null,
+  comment_at  timestamptz
+);
+create index if not exists settlements_from_idx on public.settlements (from_party, created_at desc);
+create index if not exists settlements_to_idx on public.settlements (to_party, created_at desc);
 
 -- ---------------------------------------------------------------------------------------------
 -- Row level security: clients may only READ their own rows; all writes go through functions.
@@ -674,6 +699,7 @@ alter table public.family_invites enable row level security;
 alter table public.contracts enable row level security;
 alter table public.member_invites enable row level security;
 alter table public.notifications enable row level security;
+alter table public.settlements enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -686,7 +712,7 @@ revoke all on public.app_config, public.app_secrets, public.profiles, public.veh
               public.kids, public.appointment_kids, public.kid_ratings, public.messages, public.chat_presence,
               public.appointment_updates,
               public.families, public.family_members, public.family_invites, public.contracts,
-              public.member_invites, public.notifications
+              public.member_invites, public.notifications, public.settlements
   from anon, authenticated;
 -- The sender (Edge Function, service role) reads the queue and the subscriptions.
 do $$
@@ -2148,6 +2174,12 @@ begin
   update member_invites set used_by = v_uid where used_by = v_old;
   delete from notifications where user_id = v_uid; -- 2.9: the bell follows the account
   update notifications set user_id = v_uid where user_id = v_old;
+  -- 2.11: the settlements follow the account (a person's side is keyed by the user without a master)
+  update settlements set by_user = v_uid where by_user = v_old;
+  update settlements set with_user = v_uid where with_user = v_old;
+  update settlements set comment_by = v_uid where comment_by = v_old;
+  update settlements set from_party = 'p:' || v_uid::text where from_party = 'p:' || v_old::text;
+  update settlements set to_party = 'p:' || v_uid::text where to_party = 'p:' || v_old::text;
   delete from chat_presence o using chat_presence n where o.user_id = v_old and n.user_id = v_uid and n.room = o.room;
   update chat_presence set user_id = v_uid where user_id = v_old;
   -- The replaced profile's row goes, and with it its photo: that object is dropped from the bucket.
@@ -5111,13 +5143,142 @@ begin
   return siosia_ok(siosia_appointment_json(a, v_uid));
 end $$;
 
+-- 2.11 (V78): who pays and gets paid — a family ("f:<id>"), else one person ("p:<master profile>",
+-- every phone of it; else "p:<user>"); everyone on that side; its names ("Roman, Anna").
+create or replace function public.siosia_side(p_user uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce('f:' || (select family_id::text from family_members where user_id = p_user),
+                  'p:' || coalesce((select master_id from profiles where user_id = p_user and not deleted), p_user::text));
+$$;
+
+create or replace function public.siosia_side_people(p_user uuid)
+returns uuid[] language sql stable security definer set search_path = public as $$
+  select case when siosia_family_of(p_user) is not null then siosia_household(p_user) else siosia_person_accounts(p_user) end;
+$$;
+
+create or replace function public.siosia_side_name(p_user uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce(nullif((select string_agg(n, ', ' order by o) from unnest(
+                           case when siosia_family_of(p_user) is not null then siosia_household(p_user) else array[p_user] end)
+                           with ordinality as u(m, o) cross join lateral (select nullif(siosia_nick(u.m), '') as n) x
+                          where n is not null), ''), 'Deleted user');
+$$;
+
+-- What may still be due starts with the oldest week a report shows (52 weeks before this one).
+create or replace function public.siosia_due_from()
+returns timestamptz language sql stable security definer set search_path = public as $$
+  select (date_trunc('week', now() at time zone c.timezone)::date - 7 * 52)::timestamp at time zone c.timezone
+    from app_config c where c.id = 1;
+$$;
+
+-- Both people still here, on different sides.
+create or replace function public.siosia_apart(p_a uuid, p_b uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(exists (select 1 from profiles where user_id = p_a and not deleted)
+                  and exists (select 1 from profiles where user_id = p_b and not deleted)
+                  and siosia_side(p_a) <> siosia_side(p_b), false);
+$$;
+
+-- A done appointment still to pay (V78): its cost and tip, between two sides, not settled; a
+-- completed ride: fare and tip, nobody marked it paid or collected, not settled.
+create or replace function public.siosia_appt_amount(a public.appointments)
+returns numeric language sql immutable as $$
+  select round(coalesce((siosia_cost_json(a) ->> 'total')::numeric, 0) + coalesce(a.tip, 0), 2);
+$$;
+
+create or replace function public.siosia_appt_owing(a public.appointments)
+returns boolean language sql stable security definer set search_path = public as $$
+  select a.status = 'done' and a.provider_id is not null and a.settled_at is null and a.starts_at >= siosia_due_from()
+         and siosia_appt_amount(a) > 0 and siosia_apart(a.client_id, a.provider_id);
+$$;
+
+create or replace function public.siosia_ride_owing(r public.rides)
+returns boolean language sql stable security definer set search_path = public as $$
+  select r.status = 'completed' and r.driver_id is not null and r.ended_at is not null and r.ended_at >= siosia_due_from()
+         and r.settled_at is null and not r.paid and not r.collected and round(r.fare + coalesce(r.tip, 0), 2) > 0
+         and siosia_apart(r.rider_id, r.driver_id);
+$$;
+
+-- Everything still to pay between p_user's side and another (p_them, a side key; null: every other
+-- side): the person on the other side, their side, which way, services or rides, how much, when.
+create or replace function public.siosia_owing(p_user uuid, p_them text)
+returns table (other uuid, side text, they_owe boolean, rides boolean, amount numeric, at timestamptz, appt_id uuid, ride_id uuid)
+language sql stable security definer set search_path = public as $$
+  with me as (select siosia_side(p_user) as p),
+  items as (
+    select a.client_id as debtor, a.provider_id as creditor, false as rides, siosia_appt_amount(a) as amount, a.starts_at as at,
+           a.id as appt_id, null::uuid as ride_id
+      from appointments a where a.status = 'done' and a.settled_at is null and siosia_appt_owing(a)
+    union all
+    select r.rider_id, r.driver_id, true, round(r.fare + coalesce(r.tip, 0), 2), r.ended_at, null::uuid, r.id
+      from rides r where r.status = 'completed' and r.settled_at is null and siosia_ride_owing(r)),
+  x as (select i.*, siosia_side(i.debtor) as dp, siosia_side(i.creditor) as cp from items i)
+  select case when x.dp = me.p then x.creditor else x.debtor end,
+         case when x.dp = me.p then x.cp else x.dp end,
+         x.cp = me.p, x.rides, x.amount, x.at, x.appt_id, x.ride_id
+    from x, me
+   where (x.dp = me.p or x.cp = me.p)
+     and (p_them is null or (case when x.dp = me.p then x.cp else x.dp end) = p_them);
+$$;
+
+-- 2.11 (FR-321): one line per other side (DueLine) — who, both ways, the net, since when, my side's
+-- last reminder; the newest one's other person stands for that side.
+create or replace function public.siosia_due_json(p_user uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  with o as (select * from siosia_owing(p_user, null)),
+  g as (
+    select o.side, (array_agg(o.other order by o.at desc))[1] as rep,
+           round(coalesce(sum(o.amount) filter (where o.they_owe and not o.rides), 0), 2) as ts,
+           round(coalesce(sum(o.amount) filter (where o.they_owe and o.rides), 0), 2) as tr,
+           round(coalesce(sum(o.amount) filter (where not o.they_owe and not o.rides), 0), 2) as ws,
+           round(coalesce(sum(o.amount) filter (where not o.they_owe and o.rides), 0), 2) as wr,
+           count(*)::int as n, min(o.at) as since
+      from o group by o.side),
+  l as (select g.*, coalesce((select public_id from profiles where user_id = g.rep), '') as party from g)
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'party', l.party, 'who', siosia_side_name(l.rep),
+           'theyOwe', jsonb_build_object('services', l.ts, 'rides', l.tr),
+           'weOwe', jsonb_build_object('services', l.ws, 'rides', l.wr),
+           'net', round(l.ts + l.tr - l.ws - l.wr, 2), 'count', l.n, 'since', siosia_ms(l.since),
+           'remindedAt', (select siosia_ms(max(s.created_at)) from settlements s
+                           where s.kind = 'remind' and s.from_party = siosia_side(p_user) and s.to_party = l.side))
+         order by l.since, l.party collate "C"), '[]'::jsonb)
+    from l;
+$$;
+
+-- 2.11 (FR-323, FR-324): a dobry Pancio as p_user's side sees it (SettlementView).
+create or replace function public.siosia_settlement_json(s public.settlements, p_user uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', s.id, 'at', siosia_ms(s.created_at), 'by', coalesce(nullif(siosia_nick(s.by_user), ''), 'Deleted user'),
+    'mine', v.mine, 'who', siosia_side_name(case when v.mine then s.with_user else s.by_user end),
+    'direction', case when v.signed > 0 then 'in' when v.signed < 0 then 'out' else 'even' end,
+    'amount', abs(s.amount), 'count', s.item_count,
+    'comment', case when s.comment is not null then jsonb_build_object(
+                 'text', s.comment, 'by', coalesce(nullif(siosia_nick(s.comment_by), ''), 'Deleted user'),
+                 'at', siosia_ms(coalesce(s.comment_at, s.created_at))) end,
+    'canComment', not v.mine and s.comment is null and now() < s.created_at + interval '30 days')
+  from (select s.from_party = siosia_side(p_user) as mine,
+               case when s.from_party = siosia_side(p_user) then s.amount else -s.amount end as signed) v;
+$$;
+
+-- My side's dobry Pancios of the last 90 days, newest first, 10 at most.
+create or replace function public.siosia_settlements_json(p_user uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(siosia_settlement_json(s, p_user) order by s.created_at desc, s.id desc), '[]'::jsonb)
+    from (select * from settlements x
+           where x.kind = 'settle' and (x.from_party = siosia_side(p_user) or x.to_party = siosia_side(p_user))
+             and x.created_at >= now() - interval '90 days'
+           order by x.created_at desc, x.id desc limit 10) s;
+$$;
+
 -- One side of a week (ReportSide, V64): done appointments by their start — as the client (spent) or
 -- the provider (earned) — grouped by the other side's nickname and the service; completed rides by
 -- their end — as the rider or the driver.
 create or replace function public.siosia_report_side(p_people uuid[], p_start timestamptz, p_end timestamptz, p_earned boolean)
 returns jsonb language sql stable security definer set search_path = public as $$
   with ap as (
-    select a.service_id, siosia_cost_json(a) as cost,
+    select a.service_id, siosia_cost_json(a) as cost, siosia_appt_owing(a) as owing,
            coalesce(nullif((select p.nickname from profiles p
                              where p.user_id = case when p_earned then a.client_id else a.provider_id end), ''), 'Deleted user') as who
       from appointments a
@@ -5125,10 +5286,13 @@ returns jsonb language sql stable security definer set search_path = public as $
        and case when p_earned then a.provider_id = any (p_people) else a.client_id = any (p_people) end),
   lines as (
     select who, service_id, count(*)::int as n, sum((cost ->> 'minutes')::int)::int as minutes,
-           round(sum(coalesce((cost ->> 'total')::numeric, 0)), 2) as total
+           round(sum(coalesce((cost ->> 'total')::numeric, 0)), 2) as total,
+           -- 2.11 (FR-321): what of it is still to pay
+           round(sum(case when owing then coalesce((cost ->> 'total')::numeric, 0) else 0 end), 2) as due
       from ap group by who, service_id),
   rd as (
-    select count(*)::int as n, round(coalesce(sum(r.fare), 0), 2) as total, coalesce(sum(r.tip), 0) as tips from rides r
+    select count(*)::int as n, round(coalesce(sum(r.fare), 0), 2) as total, coalesce(sum(r.tip), 0) as tips,
+           round(coalesce(sum(r.fare) filter (where siosia_ride_owing(r)), 0), 2) as due from rides r
      where r.status = 'completed' and r.ended_at >= p_start and r.ended_at < p_end
        and case when p_earned then r.driver_id = any (p_people) else r.rider_id = any (p_people) end),
   -- 2.9 (FR-316): tips count in the week of their appointment or ride.
@@ -5141,10 +5305,10 @@ returns jsonb language sql stable security definer set search_path = public as $
     'total', round(coalesce((select sum(total) from lines), 0) + (select total from rd) + (select total from tp), 2),
     'tips', (select total from tp),
     'services', coalesce((select jsonb_agg(jsonb_build_object('who', who, 'serviceId', service_id, 'count', n,
-                                                              'minutes', minutes, 'total', total)
+                                                              'minutes', minutes, 'total', total, 'due', due)
                                            order by total desc, who, service_id) from lines), '[]'::jsonb),
     'servicesTotal', round(coalesce((select sum(total) from lines), 0), 2),
-    'rides', (select jsonb_build_object('count', n, 'total', total) from rd));
+    'rides', (select jsonb_build_object('count', n, 'total', total, 'due', due) from rd));
 $$;
 
 -- A week (Monday p_monday, local) for these people: its bounds, spent, earned and the net.
@@ -5186,6 +5350,8 @@ begin
   v_people := case when v_on then siosia_household(v_uid) else array[v_uid] end;
   return siosia_ok(siosia_week_json(v_people, v_mon, c.timezone, c.currency) || jsonb_build_object(
     'scope', case when v_on then 'family' else 'me' end,
+    'due', siosia_due_json(v_uid),
+    'settlements', siosia_settlements_json(v_uid),
     'hasFamily', v_family,
     'members', case when v_on then (
       select jsonb_agg(jsonb_build_object('nickname', siosia_nick(m),
@@ -5193,6 +5359,106 @@ begin
                        order by o)
         from unnest(v_people) with ordinality as u(m, o)
         cross join lateral (select siosia_week_json(array[u.m], v_mon, c.timezone, c.currency) as w) q) end));
+end $$;
+
+-- 2.11 (FR-322–324, V79, V80): the other side from a public id there — a member of my realm on
+-- another side; null with the error code otherwise.
+create or replace function public.siosia_other_party(p_user uuid, p_party text, out other uuid, out err text)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  select user_id into other from profiles where public_id = p_party and not deleted;
+  if other is null or not siosia_member_ok(other) or not siosia_same_realm(p_user, other) then
+    other := null; err := 'not_found';
+  elsif siosia_side(other) = siosia_side(p_user) then
+    other := null; err := 'forbidden';
+  end if;
+end $$;
+
+-- 2.11 (FR-322, V79): ask the other side to pay what they owe my side, net — once per 12 hours.
+create or replace function public.siosia_remind_payment(p_party text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_other uuid; v_me text; v_them text;
+  v_net numeric; v_n int; v_since timestamptz; c app_config; m uuid;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select x.other, x.err into v_other, v_err from siosia_other_party(v_uid, p_party) x;
+  if v_err is not null then return siosia_err(v_err); end if;
+  v_me := siosia_side(v_uid);
+  v_them := siosia_side(v_other);
+  perform pg_advisory_xact_lock(hashtext('settle:' || least(v_me, v_them) || '|' || greatest(v_me, v_them)));
+  select round(coalesce(sum(case when o.they_owe then o.amount else -o.amount end), 0), 2), count(*)::int, min(o.at)
+    into v_net, v_n, v_since from siosia_owing(v_uid, v_them) o;
+  if v_net <= 0 then return siosia_err('illegal_transition'); end if;
+  if exists (select 1 from settlements where kind = 'remind' and from_party = v_me and to_party = v_them
+                                          and now() < created_at + interval '12 hours') then
+    return siosia_err('rate_limited');
+  end if;
+  insert into settlements (kind, by_user, with_user, from_party, to_party, amount, item_count)
+  values ('remind', v_uid, v_other, v_me, v_them, v_net, v_n);
+  select * into c from app_config where id = 1;
+  foreach m in array siosia_side_people(v_other) loop
+    perform siosia_push(m, 'pay_remind', null, jsonb_build_object('sender', siosia_nick(v_uid), 'total', v_net, 'currency', c.currency,
+                                                                  'since', to_char(v_since at time zone c.timezone, 'YYYY-MM-DD')));
+  end loop;
+  foreach m in array siosia_side_people(v_uid) loop perform siosia_notify(m); end loop;
+  return siosia_ok(jsonb_build_object('net', v_net));
+end $$;
+
+-- 2.11 (FR-323, V79): dobry Pancio — everything still to pay between my side and theirs, both ways,
+-- is paid now, so the balance is zero. Either side may press it; the other side hears it.
+create or replace function public.siosia_settle_up(p_party text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); v_other uuid; v_me text; v_them text;
+  v_net numeric; v_n int; v_appts uuid[]; v_rides uuid[]; v_id uuid; c app_config; m uuid;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select x.other, x.err into v_other, v_err from siosia_other_party(v_uid, p_party) x;
+  if v_err is not null then return siosia_err(v_err); end if;
+  v_me := siosia_side(v_uid);
+  v_them := siosia_side(v_other);
+  perform pg_advisory_xact_lock(hashtext('settle:' || least(v_me, v_them) || '|' || greatest(v_me, v_them)));
+  select round(coalesce(sum(case when o.they_owe then o.amount else -o.amount end), 0), 2), count(*)::int,
+         array_agg(o.appt_id) filter (where o.appt_id is not null), array_agg(o.ride_id) filter (where o.ride_id is not null)
+    into v_net, v_n, v_appts, v_rides from siosia_owing(v_uid, v_them) o;
+  if v_n = 0 then return siosia_err('illegal_transition'); end if;
+  insert into settlements (kind, by_user, with_user, from_party, to_party, amount, item_count)
+  values ('settle', v_uid, v_other, v_me, v_them, v_net, v_n) returning id into v_id;
+  update appointments set settled_at = now(), settlement_id = v_id where id = any (coalesce(v_appts, '{}'));
+  update rides set settled_at = now(), settlement_id = v_id where id = any (coalesce(v_rides, '{}'));
+  select * into c from app_config where id = 1;
+  foreach m in array siosia_side_people(v_other) loop
+    perform siosia_push(m, 'pay_settled', null, jsonb_build_object(
+      'sender', siosia_nick(v_uid), 'total', abs(v_net), 'currency', c.currency, 'count', v_n,
+      'status', case when v_net > 0 then 'received' when v_net < 0 then 'paid' else 'even' end));
+  end loop;
+  foreach m in array siosia_side_people(v_uid) || siosia_side_people(v_other) loop perform siosia_notify(m); end loop;
+  return siosia_ok(jsonb_build_object('count', v_n, 'net', v_net));
+end $$;
+
+-- 2.11 (FR-324, V80): the side that got a dobry Pancio answers it — once, 1–280 characters, 30 days;
+-- the side that pressed it hears the words.
+create or replace function public.siosia_comment_settlement(p_id uuid, p_text text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); s settlements; m uuid;
+  v_text text := btrim(coalesce(p_text, ''), E' \t\n\r\f' || chr(11));
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into s from settlements where id = p_id and kind = 'settle' and to_party = siosia_side(v_uid) for update;
+  if s.id is null then return siosia_err('not_found'); end if;
+  if s.comment is not null then return siosia_err('illegal_transition'); end if;
+  if now() >= s.created_at + interval '30 days' then return siosia_err('window_closed'); end if;
+  if char_length(v_text) not between 1 and 280 then return siosia_err('bad_input'); end if;
+  update settlements set comment = v_text, comment_by = v_uid, comment_at = now() where id = s.id returning * into s;
+  if exists (select 1 from profiles where user_id = s.by_user and not deleted) then
+    foreach m in array siosia_side_people(s.by_user) loop
+      perform siosia_push(m, 'pay_comment', null, jsonb_build_object('sender', siosia_nick(v_uid), 'text', v_text));
+    end loop;
+  end if;
+  foreach m in array siosia_side_people(v_uid) loop perform siosia_notify(m); end loop;
+  return siosia_ok(siosia_settlement_json(s, v_uid));
 end $$;
 
 -- The sweep's family step (V58, V65): lapsed invitations expire; Monday from 08:00 (local) last week's
@@ -5438,6 +5704,10 @@ grant execute on function public.siosia_notifications() to authenticated;
 grant execute on function public.siosia_read_notifications() to authenticated;
 -- 2.10
 grant execute on function public.siosia_contract_apply_past(uuid, text) to authenticated;
+-- 2.11
+grant execute on function public.siosia_remind_payment(text) to authenticated;
+grant execute on function public.siosia_settle_up(text) to authenticated;
+grant execute on function public.siosia_comment_settlement(uuid, text) to authenticated;
 -- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
 -- 2-argument rules stay the server's: revoked above with everything else)
 grant execute on function public.siosia_can_see_photo(text) to authenticated;

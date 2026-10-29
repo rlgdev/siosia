@@ -47,7 +47,11 @@ export type PushKind =
   | "weekly_report"
   // 2.9 (FR-314, FR-315): a tip after an appointment (opens C3) and after a ride (opens History)
   | "appt_tip"
-  | "ride_tip";
+  | "ride_tip"
+  // 2.11 (FR-322–324): a reminder to pay, a dobry Pancio, a comment on it (open the weekly report)
+  | "pay_remind"
+  | "pay_settled"
+  | "pay_comment";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -283,6 +287,9 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     appt_summary: ["Summary: {service} {when}", "{duration} · {total}{corrected}"],
     weekly_report: ["Your week in Siosia", "Last week: spent {spent} · earned {earned}."],
     appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
+    pay_remind: ["{sender} asks you to settle up", "{total} to pay since {since}. Once paid, tap “dobry Pancio” on the weekly report."],
+    pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
+    pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
     ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
   },
   pl: {
@@ -320,6 +327,9 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     appt_summary: ["Podsumowanie: {service} {when}", "{duration} · {total}{corrected}"],
     weekly_report: ["Twój tydzień w Siosi", "Ostatni tydzień: wydane {spent} · zarobione {earned}."],
     appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dziękujemy!"],
+    pay_remind: ["{sender} prosi o rozliczenie", "Do zapłaty {total} od {since}. Po zapłacie stuknij „dobry Pancio” w raporcie tygodnia."],
+    pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby dodać komentarz."],
+    pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
     ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dziękujemy!"]
   }
 };
@@ -362,6 +372,20 @@ const WITH_KIDS: Record<Lang, (kids: string) => string> = { en: (k) => `, with $
 const OPEN_TEXTS: Record<Lang, Partial<Record<PushKind, [string, string]>>> = {
   en: { appt_expired: ["Nobody took it", "Nobody took your request: {service} {range}."] },
   pl: { appt_expired: ["Nikt się nie zgłosił", "Nikt nie przyjął Twojej prośby: {service} {range}."] }
+};
+
+/** 2.11 (FR-323): what a dobry Pancio did, for the side that did not press it. */
+const SETTLED: Record<Lang, Record<"received" | "paid" | "even", (total: string) => string>> = {
+  en: {
+    received: (t) => `Your ${t} is marked received — you’re square.`,
+    paid: (t) => `${t} to you is marked paid — you’re square.`,
+    even: () => "Everything between you is marked settled — you’re square."
+  },
+  pl: {
+    received: (t) => `Twoja wpłata ${t} odnotowana — jesteście kwita.`,
+    paid: (t) => `Zapłata ${t} dla Ciebie odnotowana — jesteście kwita.`,
+    even: () => "Wszystko między Wami rozliczone — jesteście kwita."
+  }
 };
 
 /** A party with no nickname in a text (never an empty name or a placeholder). */
@@ -432,6 +456,8 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
       : "",
     since: params.since ? dayMonth(Date.parse(`${params.since}T12:00:00Z`), l, tz) : "",
     count: params.count === undefined || params.count === null ? "" : String(params.count),
+    // 2.11 (FR-323): a dobry Pancio, as its receiver reads it — they paid, they got paid, or both ways
+    settled: SETTLED[l][params.status === "received" || params.status === "paid" ? params.status : "even"](moneyText(params.total, params.currency, l)),
     remaining:
       params.left !== undefined && params.from !== undefined
         ? l === "pl"
@@ -442,7 +468,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   // A chat body (and an update's, 2.5) is the sender's own words: substituted and trimmed, but never
   // tidied like a template (their "..." or a leading "." stay as typed).
   const tidy = (s: string) =>
-    kind === "chat_message" || kind === "session_update"
+    kind === "chat_message" || kind === "session_update" || kind === "pay_comment"
       ? s
       : s
           .replace(/\s+([.,])/g, "$1")
@@ -492,5 +518,7 @@ export function pushUrl(kind: PushKind, params?: PushParams, appointmentId?: str
   if (kind === "ride_tip") return "./?open=history";
   if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
+  // 2.11 (FR-322–324): what is due, the dobry Pancios and their comments are on the weekly report.
+  if (kind.startsWith("pay_")) return "./?open=report";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }

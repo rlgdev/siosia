@@ -128,6 +128,9 @@ var TEXTS = {
     appt_summary: ["Summary: {service} {when}", "{duration} \xB7 {total}{corrected}"],
     weekly_report: ["Your week in Siosia", "Last week: spent {spent} \xB7 earned {earned}."],
     appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
+    pay_remind: ["{sender} asks you to settle up", "{total} to pay since {since}. Once paid, tap \u201Cdobry Pancio\u201D on the weekly report."],
+    pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
+    pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
     ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
   },
   pl: {
@@ -165,6 +168,9 @@ var TEXTS = {
     appt_summary: ["Podsumowanie: {service} {when}", "{duration} \xB7 {total}{corrected}"],
     weekly_report: ["Tw\xF3j tydzie\u0144 w Siosi", "Ostatni tydzie\u0144: wydane {spent} \xB7 zarobione {earned}."],
     appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dzi\u0119kujemy!"],
+    pay_remind: ["{sender} prosi o rozliczenie", "Do zap\u0142aty {total} od {since}. Po zap\u0142acie stuknij \u201Edobry Pancio\u201D w raporcie tygodnia."],
+    pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby doda\u0107 komentarz."],
+    pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
     ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dzi\u0119kujemy!"]
   }
 };
@@ -193,6 +199,18 @@ var WITH_KIDS = { en: (k) => `, with ${k}`, pl: (k) => `, z: ${k}` };
 var OPEN_TEXTS = {
   en: { appt_expired: ["Nobody took it", "Nobody took your request: {service} {range}."] },
   pl: { appt_expired: ["Nikt si\u0119 nie zg\u0142osi\u0142", "Nikt nie przyj\u0105\u0142 Twojej pro\u015Bby: {service} {range}."] }
+};
+var SETTLED = {
+  en: {
+    received: (t) => `Your ${t} is marked received \u2014 you\u2019re square.`,
+    paid: (t) => `${t} to you is marked paid \u2014 you\u2019re square.`,
+    even: () => "Everything between you is marked settled \u2014 you\u2019re square."
+  },
+  pl: {
+    received: (t) => `Twoja wp\u0142ata ${t} odnotowana \u2014 jeste\u015Bcie kwita.`,
+    paid: (t) => `Zap\u0142ata ${t} dla Ciebie odnotowana \u2014 jeste\u015Bcie kwita.`,
+    even: () => "Wszystko mi\u0119dzy Wami rozliczone \u2014 jeste\u015Bcie kwita."
+  }
 };
 var SOMEONE = { en: "Someone", pl: "Kto\u015B" };
 var WITH = { en: (o) => `With ${o}`, pl: (o) => `Z ${o}` };
@@ -246,9 +264,11 @@ function pushText(kind, params, lang, tz, id) {
     clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
     since: params.since ? dayMonth(Date.parse(`${params.since}T12:00:00Z`), l, tz) : "",
     count: params.count === void 0 || params.count === null ? "" : String(params.count),
+    // 2.11 (FR-323): a dobry Pancio, as its receiver reads it — they paid, they got paid, or both ways
+    settled: SETTLED[l][params.status === "received" || params.status === "paid" ? params.status : "even"](moneyText(params.total, params.currency, l)),
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const tidy = (s) => kind === "chat_message" || kind === "session_update" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
+  const tidy = (s) => kind === "chat_message" || kind === "session_update" || kind === "pay_comment" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
   const fill = (s) => tidy(
     s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
   );
@@ -262,6 +282,7 @@ function pushUrl(kind, params, appointmentId) {
   if (kind === "ride_tip") return "./?open=history";
   if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
+  if (kind.startsWith("pay_")) return "./?open=report";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }
 

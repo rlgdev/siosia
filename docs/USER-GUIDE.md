@@ -290,6 +290,15 @@ day (today or up to a year back): every finished appointment from then on betwee
 that person, for a service the contract has a rate for, gets the contract's rate — the summary and
 the weekly reports follow, and the other side gets a notification with how many changed.
 
+**Settling up — dobry Pancio.** At the top of the weekly report, **To settle** lists everything
+not paid yet between your side (your family, or just you) and each other person or family:
+services and rides, both ways, and what is left once they cancel out — so a driver who took the
+nanny somewhere sees those rides next to the childcare. If they owe you, **Ask to pay** sends them
+a reminder (once every 12 hours). Once the money has changed hands, tap **dobry Pancio** and
+confirm: everything between you is marked paid, the balance drops to zero, the week's lines stop
+showing it as due, and the other side gets a notification — from which they can open the report
+and answer with a comment. Siosia moves no money; these are marks you both see.
+
 ## The round *i*
 
 Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
@@ -617,6 +626,16 @@ więc oboje widzicie te same ekrany.
 (dziś albo do roku wstecz): każdy zakończony od tego dnia termin między tą rodziną a tą osobą, dla
 usługi ze stawką w umowie, dostaje stawkę z umowy — podsumowanie i raporty tygodniowe też, a druga
 strona dostaje powiadomienie, ile się zmieniło.
+
+**Rozliczenie — dobry Pancio.** Na górze raportu tygodniowego **Do rozliczenia** pokazuje wszystko,
+czego jeszcze nie zapłacono między Twoją stroną (Twoją rodziną albo tylko Tobą) a każdą inną osobą
+lub rodziną: usługi i przejazdy, w obie strony, i to, co zostaje po ich zbilansowaniu — więc
+kierowca, który woził nianię, widzi te przejazdy obok opieki. Jeśli ktoś jest Ci winien,
+**Poproś o zapłatę** wysyła mu przypomnienie (raz na 12 godzin). Gdy pieniądze przejdą z rąk do
+rąk, stuknij **dobry Pancio** i potwierdź: wszystko między Wami zostaje oznaczone jako zapłacone,
+saldo spada do zera, linie tygodnia przestają pokazywać to jako do zapłaty, a druga strona dostaje
+powiadomienie — z niego otworzy raport i może odpowiedzieć komentarzem. Siosia nie przesyła
+pieniędzy; to znaczniki widoczne dla obu stron.
 
 ## Okrągłe *i*
 

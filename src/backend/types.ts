@@ -27,6 +27,7 @@ import type {
   SessionUpdate,
   UpdateInput,
   WeeklyReport,
+  SettlementView,
   DeploymentConfig,
   HistoryItem,
   Leg,
@@ -240,6 +241,12 @@ export interface Backend {
   setActualTime(appointmentId: string, minutes: number): Promise<AppointmentView>;
   /** One week's spent and earned (`week` = any day "YYYY-MM-DD", null = this week). */
   report(week: string | null, scope: "me" | "family"): Promise<WeeklyReport>;
+  /** 2.11 (FR-322): ask the side of this public id to pay what they owe my side (once per 12 h). */
+  remindPayment(party: string): Promise<{ net: number }>;
+  /** 2.11 (FR-323): dobry Pancio — everything still to pay between my side and theirs is paid. */
+  settleUp(party: string): Promise<{ count: number; net: number }>;
+  /** 2.11 (FR-324): the side that got a dobry Pancio comments on it, once. */
+  commentSettlement(id: string, text: string): Promise<SettlementView>;
   /** 2.9 (FR-312): my recent notifications (the bell), newest first, and how many are unread. */
   notifications(): Promise<{ items: NotificationItem[]; unread: number }>;
   /** Opening the bell marks them all read. */

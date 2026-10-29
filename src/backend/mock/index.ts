@@ -349,6 +349,15 @@ export class MockBackend implements Backend {
   applyContractToPast(id: string, from: string) {
     return this.call((e) => e.applyContractToPast(this.uid, id, from));
   }
+  remindPayment(party: string) {
+    return this.call((e) => e.remindPayment(this.uid, party));
+  }
+  settleUp(party: string) {
+    return this.call((e) => e.settleUp(this.uid, party));
+  }
+  commentSettlement(id: string, text: string) {
+    return this.call((e) => e.commentSettlement(this.uid, id, text));
+  }
   setActualTime(appointmentId: string, minutes: number) {
     return this.call((e) => e.setActualTime(this.uid, appointmentId, minutes));
   }

@@ -23,6 +23,7 @@ import {
   type FamilyView,
   type PublicProvider,
   type WeeklyReport,
+  type SettlementView,
   type NotificationItem,
   type HistoryItem,
   type Kid,
@@ -636,8 +637,22 @@ export class SupabaseBackend implements Backend {
   }
   async endContract(id: string) {
     await this.rpc("siosia_end_contract", { p_id: id });
-  }  applyContractToPast(id: string, from: string) {
+  }
+
+  applyContractToPast(id: string, from: string) {
     return this.rpc<{ count: number }>("siosia_contract_apply_past", { p_id: id, p_from: from });
+  }
+
+  remindPayment(party: string) {
+    return this.rpc<{ net: number }>("siosia_remind_payment", { p_party: party });
+  }
+
+  settleUp(party: string) {
+    return this.rpc<{ count: number; net: number }>("siosia_settle_up", { p_party: party });
+  }
+
+  commentSettlement(id: string, text: string) {
+    return this.rpc<SettlementView>("siosia_comment_settlement", { p_id: id, p_text: text });
   }
 
   async setActualTime(appointmentId: string, minutes: number) {
