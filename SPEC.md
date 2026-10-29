@@ -199,7 +199,7 @@ T48|x|2.9 S1 My profile card, event icon tiles for both parties, SW update check
 T49|x|release 2.9: live migration, push-dispatch bundle, main, live checks|§15,V72–V75
 T50|x|2.10 bell list on the screen (portal, fixed, under the bell); small-iPhone check|V77
 T51|x|2.10 apply an active contract to past appointments: engine + SQL twins, push contract_applied, adapters, Contract card (date, apply, result), i18n, tests|V76,V19
-T52|.|release 2.10: live migration, push-dispatch bundle, main, live check|§15,V76,V77
+T52|x|release 2.10: live migration, push-dispatch bundle, main, live check|§15,V76,V77
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
