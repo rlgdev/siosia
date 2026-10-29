@@ -636,7 +636,10 @@ export class SupabaseBackend implements Backend {
   }
   async endContract(id: string) {
     await this.rpc("siosia_end_contract", { p_id: id });
+  }  applyContractToPast(id: string, from: string) {
+    return this.rpc<{ count: number }>("siosia_contract_apply_past", { p_id: id, p_from: from });
   }
+
   async setActualTime(appointmentId: string, minutes: number) {
     return withOpen(await this.rpc<AppointmentView>("siosia_set_actual", { p_id: appointmentId, p_minutes: minutes }));
   }

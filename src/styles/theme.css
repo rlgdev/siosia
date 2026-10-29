@@ -2437,12 +2437,11 @@ html[data-launch] .mode-card:nth-child(4) {
   box-shadow: 0 0 0 2px var(--surface-solid);
 }
 .bell-drop {
-  position: absolute;
-  z-index: 1300;
-  top: calc(100% + 8px);
-  right: 0;
+  position: fixed; /* on the screen, under the bell (top set from it): never off an edge */
+  z-index: 2400;
+  right: max(12px, var(--safe-right, 0px));
   width: min(380px, calc(100vw - 24px));
-  max-height: min(70vh, 560px);
+  max-height: min(70vh, calc(100dvh - 120px));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 8px;

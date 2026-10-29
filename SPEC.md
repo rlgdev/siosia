@@ -142,6 +142,8 @@ V72: one person, many phones (FR-310): accounts of one master profile = one pers
 V73: notifications feed (FR-311–313): every notification a member gets (∀ kind but chat_message) is kept (subscribed or not) with read_at; feed newest first ≤ 50, unread count in MyState; opening the bell marks all read; tap → pushUrl (C3, P1, Family, report…); 60 d / 200 per user retention; ⊥ other users' rows (RLS + fn)
 V74: tips (FR-314–316): client (or the client's family) tips a done appointment once within 7 d, amount 1–1000 to the cent; rider tips a completed ride once within 24 h, 1–500; push appt_tip | ride_tip to the provider | driver; tip shown apart from the cost; weekly report: spent / earned include tips (side.tips); both twins
 V75: S1 + icons (FR-317–318): S1 has a 4th card "My profile" (gear) opening S2, language + guide below it (⊥ profile button in the bar); event items (P1, H1, C3) show the event icon in its tile, the same for every party; party rows: photo, else the party's icon in its paint (FR-170), else their initial — never empty on one side only; the app checks for a new version on start and on return to the foreground (≥ 5 min apart)
+V76: contract to past (FR-319): applyContractToPast(id, from "YYYY-MM-DD") → {count}; contract active (else illegal_transition), caller on either side (else not_found); from valid, ≤ today, ≥ today − 365 d (deployment tz; else bad_input); targets = appointments status done, starts_at ∈ [local midnight of from, now), client ∈ the contract's family now, provider same person as the contract's, a rate line for the service or its base; each → rate = line, contract_id = contract, price = rate × duration / 60 (cost, report follow); count = rows whose rate or contract changed; count > 0 → push contract_applied {sender, count, since} to the other side (all its phones / members); both twins
+V77: bell list (FR-320): rendered on the screen (portal, fixed), top = bell's bottom + 8, right 12 px, width min(380 px, 100vw − 24 px): ∀ header, ∀ width ≥ 320 → fully on screen
 V65: weekly push (FR-282): sweep now ≥ Mon 08:00 local & app report_week < this Mon → ∀ member w/ ≥ 1 item last week: 1 weekly_report {spent, earned, week}; report_week = this Mon in same step; per-row errors isolated (V30)
 
 ## §T tasks
@@ -195,6 +197,9 @@ T46|x|2.9 notifications feed: table + writes in every push path, fns, MyState co
 T47|x|2.9 tips: appointments + rides columns, fns, push kinds + texts EN/PL, views, report tips, C3 + receipt UI, engine twin, tests|V74
 T48|x|2.9 S1 My profile card, event icon tiles for both parties, SW update checks; e2e|V75
 T49|x|release 2.9: live migration, push-dispatch bundle, main, live checks|§15,V72–V75
+T50|x|2.10 bell list on the screen (portal, fixed, under the bell); small-iPhone check|V77
+T51|x|2.10 apply an active contract to past appointments: engine + SQL twins, push contract_applied, adapters, Contract card (date, apply, result), i18n, tests|V76,V19
+T52|.|release 2.10: live migration, push-dispatch bundle, main, live check|§15,V76,V77
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs

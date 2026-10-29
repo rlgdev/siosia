@@ -234,6 +234,8 @@ export interface Backend {
   answerContract(id: string, decision: "accept" | "decline"): Promise<ContractView>;
   withdrawContract(id: string): Promise<void>;
   endContract(id: string): Promise<void>;
+  /** 2.10 (FR-319): an active contract prices the done appointments since `from` ("YYYY-MM-DD"). */
+  applyContractToPast(id: string, from: string): Promise<{ count: number }>;
   /** The provider corrects the time of a done appointment within 24 h (FR-272). */
   setActualTime(appointmentId: string, minutes: number): Promise<AppointmentView>;
   /** One week's spent and earned (`week` = any day "YYYY-MM-DD", null = this week). */

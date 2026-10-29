@@ -124,6 +124,7 @@ var TEXTS = {
     contract_accepted: ["{sender} accepted the contract", "The rates apply to new requests."],
     contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
     contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
+    contract_applied: ["{sender} applied the contract to past appointments", "Since {since}: {count} now at the contract's rates."],
     appt_summary: ["Summary: {service} {when}", "{duration} \xB7 {total}{corrected}"],
     weekly_report: ["Your week in Siosia", "Last week: spent {spent} \xB7 earned {earned}."],
     appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
@@ -160,6 +161,7 @@ var TEXTS = {
     contract_accepted: ["{sender} akceptuje umow\u0119", "Stawki obowi\u0105zuj\u0105 dla nowych pr\xF3\u015Bb."],
     contract_declined: ["{sender} odrzuca umow\u0119", "Nic si\u0119 nie zmienia; mo\u017Cesz zaproponowa\u0107 inne stawki."],
     contract_ended: ["{sender} ko\u0144czy umow\u0119", "Nowe pro\u015Bby zn\xF3w wed\u0142ug cennika."],
+    contract_applied: ["{sender} stosuje umow\u0119 do minionych termin\xF3w", "Od {since}: {count} \u2014 teraz wed\u0142ug stawek z umowy."],
     appt_summary: ["Podsumowanie: {service} {when}", "{duration} \xB7 {total}{corrected}"],
     weekly_report: ["Tw\xF3j tydzie\u0144 w Siosi", "Ostatni tydzie\u0144: wydane {spent} \xB7 zarobione {earned}."],
     appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dzi\u0119kujemy!"],
@@ -242,6 +244,8 @@ function pushText(kind, params, lang, tz, id) {
     status: apptStatusText(status, params.provider, l),
     rides: (params.rides ?? []).length ? ` ${(params.rides ?? []).map((r) => rideLineText(r, l)).join(" \xB7 ")}` : "",
     clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
+    since: params.since ? dayMonth(Date.parse(`${params.since}T12:00:00Z`), l, tz) : "",
+    count: params.count === void 0 || params.count === null ? "" : String(params.count),
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
   const tidy = (s) => kind === "chat_message" || kind === "session_update" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");

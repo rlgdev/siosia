@@ -122,3 +122,57 @@ test("family and contracts: invite → join; a contract with Siosia; childcare a
   await expect(anna.getByTestId("report-spent")).toContainText("140.00", { timeout: 10_000 });
   await expect(anna.getByTestId("report-members")).toContainText("Roman");
 });
+
+test("2.10: an active contract applied to a past appointment from a chosen day (FR-319)", async ({ context }) => {
+  await isolate(context);
+  const roman = await context.newPage();
+  await roman.clock.install({ time: Date.now() });
+  await onboard(roman, "Roman", "?robots=0"); // the robot Siosia runs in Roman's tab
+
+  // Childcare with Siosia before any contract: the price list has no price for it.
+  await roman.getByTestId("start-siosia").click();
+  await roman.getByTestId("catalog-childcare").click();
+  const start = Math.ceil((Date.now() + 31 * 60_000) / 900_000) * 900_000;
+  await roman.getByTestId("request-start").fill(localInput(start));
+  await roman.getByTestId("request-place-here").click();
+  await expect(roman.getByTestId("request-place-value")).not.toHaveText("—");
+  await roman.getByTestId("request-send").click();
+  await expect(roman.getByTestId("planned-appointment").getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 10_000 });
+
+  // FR-320: on a small iPhone the notifications list stays on the screen, also under a page header.
+  const size = roman.viewportSize()!;
+  await roman.setViewportSize({ width: 320, height: 568 });
+  await roman.getByTestId("bell").click();
+  const box = (await roman.getByTestId("bell-list").boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(8);
+  expect(box.x + box.width).toBeLessThanOrEqual(320 - 8);
+  await roman.keyboard.press("Escape");
+  await roman.setViewportSize(size);
+
+  // A day later it is long over; then a contract with Siosia: childcare at 40 an hour.
+  await roman.clock.fastForward(start + 24 * 3600_000 - Date.now());
+  await roman.getByTestId("page-back").click();
+  await roman.getByTestId("home-profile").click();
+  await roman.getByTestId("profile-family").click();
+  await roman.getByTestId("contract-new").click();
+  await roman.getByTestId("contract-to").selectOption({ label: "Siosia" });
+  await roman.getByTestId("contract-pick-childcare").check();
+  await roman.getByTestId("contract-rate-childcare").fill("40");
+  await roman.getByTestId("contract-send").click();
+  const active = roman.getByTestId("contract-active");
+  await expect(active).toBeVisible({ timeout: 10_000 });
+
+  // Apply it from the appointment's day: 3 h × 40 = 120.
+  await active.getByTestId("contract-past").click();
+  const d = new Date(start);
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  await active.getByTestId("contract-past-from").fill(day);
+  await active.getByTestId("contract-past-apply").click();
+  await expect(active.getByTestId("contract-past-result")).toHaveText("Applied to 1 past appointment(s).");
+  await active.getByTestId("contract-past-apply").click();
+  await expect(active.getByTestId("contract-past-result")).toHaveText("Nothing to change since then.");
+  await back(roman);
+  await back(roman);
+  await roman.getByTestId("start-history").click();
+  await expect(roman.getByTestId("history-appointment").getByTestId("history-cost")).toContainText("120.00", { timeout: 10_000 });
+});

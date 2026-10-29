@@ -990,3 +990,18 @@ both parties.
   new version of the app on start and whenever it is brought back to the front (at most every
   5 minutes), so both parties run the same version.
 
+## Amendment 2.10 (2026-10-29): a contract for past appointments; the bell on small phones
+
+Operator request of 2026-10-29: an existing, accepted contract should also price the appointments
+already behind us, from a date the user picks; on smaller iPhones the notifications list slid off
+the left edge.
+
+- **FR-319**: On an active contract either side MAY *Apply to past appointments* from a date
+  (today or up to 12 months back): every done appointment from that day until now between that
+  family (its current members as clients) and that provider (any of their phones), for a service
+  the contract has a rate for (or, for a YOLO event, its base), takes the contract's rate — its
+  price, cost summary and the weekly reports follow. The result says how many changed; the other
+  side is notified (`contract_applied`). Appointments not done (open, waiting, cancelled) and
+  services without a rate stay as they are.
+- **FR-320**: The notifications list always fits the screen: 12 px from both edges at most, just
+  under the bell, whatever header the bell sits in.

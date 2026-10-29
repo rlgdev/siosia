@@ -4997,6 +4997,55 @@ begin
   return siosia_ok('true'::jsonb);
 end $$;
 
+-- 2.10 (FR-319, V76): an active contract also prices the done appointments since p_from (today or
+-- up to a year back, deployment time zone) between its family and its provider, for the services it
+-- has a rate for (or their base). Either side may; the other side hears how many changed.
+create or replace function public.siosia_contract_apply_past(p_id uuid, p_from text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); k contracts; c app_config;
+  v_from date; v_today date; v_start timestamptz; v_count int := 0; a appointments; v_rate numeric; m uuid;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into k from contracts where id = p_id and (siosia_same_person(provider_id, v_uid) or family_id = siosia_family_of(v_uid)) for update;
+  if k.id is null then return siosia_err('not_found'); end if;
+  if k.status <> 'active' then return siosia_err('illegal_transition'); end if;
+  select * into c from app_config where id = 1;
+  if p_from is null or p_from !~ '^\d{4}-\d{2}-\d{2}$' then return siosia_err('bad_input'); end if;
+  begin
+    v_from := p_from::date;
+  exception when others then
+    return siosia_err('bad_input');
+  end;
+  if to_char(v_from, 'YYYY-MM-DD') <> p_from then return siosia_err('bad_input'); end if;
+  v_today := (now() at time zone c.timezone)::date;
+  if v_from > v_today or v_from < v_today - 365 then return siosia_err('bad_input'); end if;
+  v_start := v_from::timestamp at time zone c.timezone;
+  for a in select * from appointments x
+            where x.status = 'done' and x.starts_at >= v_start and x.starts_at < now()
+              and siosia_family_of(x.client_id) = k.family_id and siosia_same_person(x.provider_id, k.provider_id)
+            for update loop
+    select (r ->> 'perHour')::numeric into v_rate from jsonb_array_elements(k.rates) r
+     where r ->> 'serviceId' = a.service_id or r ->> 'serviceId' = siosia_service(a.service_id) ->> 'base'
+     order by (r ->> 'serviceId' = a.service_id) desc limit 1;
+    continue when v_rate is null;
+    if a.rate is distinct from v_rate or a.contract_id is distinct from k.id then v_count := v_count + 1; end if;
+    update appointments set rate = v_rate, contract_id = k.id, price = round(v_rate * duration_min / 60.0, 2) where id = a.id;
+    perform siosia_notify_household(a.client_id);
+    perform siosia_notify_household(a.provider_id);
+  end loop;
+  if v_count > 0 then
+    for m in select x from unnest(case when siosia_same_person(k.provider_id, v_uid)
+                                       then (select array_agg(user_id) from family_members where family_id = k.family_id)
+                                       else siosia_person_accounts(k.provider_id) end) x loop
+      perform siosia_push(m, 'contract_applied', null,
+        jsonb_build_object('sender', siosia_nick(v_uid), 'count', v_count, 'since', p_from));
+    end loop;
+  end if;
+  perform siosia_notify_contract(k);
+  return siosia_ok(jsonb_build_object('count', v_count));
+end $$;
+
 -- The summary notification (FR-271, FR-272): with a total, once when done — to the client, their
 -- family and the provider — and again on a correction (the client's side only).
 create or replace function public.siosia_announce_cost(a public.appointments, p_corrected boolean)
@@ -5387,6 +5436,8 @@ grant execute on function public.siosia_tip_ride(uuid, numeric) to authenticated
 grant execute on function public.siosia_tip_appointment(uuid, numeric) to authenticated;
 grant execute on function public.siosia_notifications() to authenticated;
 grant execute on function public.siosia_read_notifications() to authenticated;
+-- 2.10
+grant execute on function public.siosia_contract_apply_past(uuid, text) to authenticated;
 -- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
 -- 2-argument rules stay the server's: revoked above with everything else)
 grant execute on function public.siosia_can_see_photo(text) to authenticated;

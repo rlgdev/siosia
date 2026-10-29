@@ -214,4 +214,6 @@ Test files: `appt` = `tests/unit/appointments.test.ts` (engine), `sql2` = `tests
 | 314–316 | Tips: appointment (client side, 7 d, 1–1000), ride (rider, 24 h, 1–500), once, notified, in the weekly report | notify-tips + sqlnt "tips (FR-314–316, V74)"; bell-tips "the tip box"; e2e family (C3 tip, report 140), ride-loop (receipt tip) |
 | 317 | S1 4th card My profile; language + guide below | bell-tips "S1: My profile is a card…"; e2e v28 |
 | 318 | Same event icon tile for every party; new version picked up on start / foreground | browser check (P1/H1/C3); main.tsx update check |
+| 319 | An active contract applied to past appointments from a day (≤ 1 year), the other side notified | contract-past + sqlcp "prices the done appointments since the date…"; e2e family "2.10…" |
+| 320 | The notifications list always on the screen (320 px and up, any header) | e2e family "2.10…" (320 px, under the Planned header); browser check iPhone SE / 13 mini |
 

@@ -41,6 +41,8 @@ export type PushKind =
   | "contract_accepted"
   | "contract_declined"
   | "contract_ended"
+  // 2.10 (FR-319): an active contract applied to past appointments (opens the Family panel)
+  | "contract_applied"
   | "appt_summary"
   | "weekly_report"
   // 2.9 (FR-314, FR-315): a tip after an appointment (opens C3) and after a ride (opens History)
@@ -107,6 +109,8 @@ export interface PushParams {
   rides?: RideLine[];
   rule?: "weekly" | "biweekly";
   count?: number;
+  /** 2.10: the first day ("YYYY-MM-DD") a contract was applied from. */
+  since?: string;
   first?: Moment;
   last?: Moment;
   /** Series answers: how many occurrences were confirmed, and the declined dates. */
@@ -275,6 +279,7 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     contract_accepted: ["{sender} accepted the contract", "The rates apply to new requests."],
     contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
     contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
+    contract_applied: ["{sender} applied the contract to past appointments", "Since {since}: {count} now at the contract's rates."],
     appt_summary: ["Summary: {service} {when}", "{duration} · {total}{corrected}"],
     weekly_report: ["Your week in Siosia", "Last week: spent {spent} · earned {earned}."],
     appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
@@ -311,6 +316,7 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     contract_accepted: ["{sender} akceptuje umowę", "Stawki obowiązują dla nowych próśb."],
     contract_declined: ["{sender} odrzuca umowę", "Nic się nie zmienia; możesz zaproponować inne stawki."],
     contract_ended: ["{sender} kończy umowę", "Nowe prośby znów według cennika."],
+    contract_applied: ["{sender} stosuje umowę do minionych terminów", "Od {since}: {count} — teraz według stawek z umowy."],
     appt_summary: ["Podsumowanie: {service} {when}", "{duration} · {total}{corrected}"],
     weekly_report: ["Twój tydzień w Siosi", "Ostatni tydzień: wydane {spent} · zarobione {earned}."],
     appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dziękujemy!"],
@@ -424,6 +430,8 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
         ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}`
         : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}`
       : "",
+    since: params.since ? dayMonth(Date.parse(`${params.since}T12:00:00Z`), l, tz) : "",
+    count: params.count === undefined || params.count === null ? "" : String(params.count),
     remaining:
       params.left !== undefined && params.from !== undefined
         ? l === "pl"

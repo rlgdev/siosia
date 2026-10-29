@@ -8,6 +8,7 @@ import { Icon } from "../components/Icon";
 import { InfoTip } from "../components/InfoTip";
 import { Avatar, Initial } from "../components/ProfileIcon";
 import { Confirm, Money, Panel, useBusy } from "../components/ui";
+import { addDays, localDate } from "../core/time";
 import type { ContractRate, ContractView, FamilyView, PublicProvider } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
@@ -338,6 +339,81 @@ function ContractsSection({ contracts, kin, reload }: { contracts: ContractView[
   );
 }
 
+/**
+ * 2.10 (FR-319): an active contract also prices the finished appointments from a chosen day (today
+ * or up to a year back); the result says how many changed.
+ */
+function ApplyToPast({ c, reload }: { c: ContractView; reload: () => Promise<void> }) {
+  const { t } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  const [busy, run, error] = useBusy();
+  const tz = app.deployment?.timezone ?? "Europe/Warsaw";
+  const today = localDate(store.serverNow(), tz);
+  const [open, setOpen] = useState(false);
+  const [from, setFrom] = useState(() => addDays(today, -30));
+  const [done, setDone] = useState<number | null>(null);
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(from) && from <= today && from >= addDays(today, -365);
+  if (!open)
+    return (
+      <button type="button" className="btn btn-link btn-small" onClick={() => setOpen(true)} data-testid="contract-past">
+        <Icon name="history" className="ico-inline" /> {t("contract.applyPast")}
+      </button>
+    );
+  return (
+    <div className="stack contract-past" data-testid="contract-past-form">
+      <strong>{t("contract.applyPast")}</strong>
+      <small className="muted">{t("contract.pastHint")}</small>
+      <div className="row wrap">
+        <label className="field grow">
+          <span>{t("contract.pastFrom")}</span>
+          <input
+            type="date"
+            value={from}
+            min={addDays(today, -365)}
+            max={today}
+            onChange={(e) => {
+              setFrom(e.target.value);
+              setDone(null);
+            }}
+            data-testid="contract-past-from"
+          />
+        </label>
+      </div>
+      <div className="row">
+        <button
+          type="button"
+          className="btn btn-primary grow"
+          disabled={busy || !valid}
+          onClick={() =>
+            void run(async () => {
+              const r = await store.api.applyContractToPast(c.id, from);
+              setDone(r.count);
+              await reload();
+            })
+          }
+          data-testid="contract-past-apply"
+        >
+          {t("contract.pastApply")}
+        </button>
+        <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => (setOpen(false), setDone(null))}>
+          {t("common.close")}
+        </button>
+      </div>
+      {done !== null && (
+        <p className={`notice ${done > 0 ? "notice-ok" : "notice-info"}`} role="status" data-testid="contract-past-result">
+          {done > 0 ? t("contract.pastDone", { n: done }) : t("contract.pastNone")}
+        </p>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ContractCard({ c, reload, onChange }: { c: ContractView; reload: () => Promise<void>; onChange?: () => void }) {
   const { t, lang, locale } = useI18n();
   const app = useApp();
@@ -409,6 +485,7 @@ function ContractCard({ c, reload, onChange }: { c: ContractView; reload: () => 
           </button>
         </div>
       )}
+      {c.status === "active" && <ApplyToPast c={c} reload={reload} />}
       {error && (
         <p className="form-error" role="alert">
           {error}

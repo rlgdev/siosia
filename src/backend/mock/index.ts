@@ -346,6 +346,9 @@ export class MockBackend implements Backend {
   async endContract(id: string) {
     await this.call((e) => e.endContract(this.uid, id));
   }
+  applyContractToPast(id: string, from: string) {
+    return this.call((e) => e.applyContractToPast(this.uid, id, from));
+  }
   setActualTime(appointmentId: string, minutes: number) {
     return this.call((e) => e.setActualTime(this.uid, appointmentId, minutes));
   }

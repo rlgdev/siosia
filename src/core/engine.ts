@@ -3401,6 +3401,41 @@ export class Engine {
     this.notifyContract(c);
   }
 
+  /**
+   * 2.10 (FR-319, V76): an active contract also prices the done appointments since `from` (today or
+   * up to a year back) between its family and its provider, for the services it has a rate for (or
+   * their base). Either side may; the other side hears how many changed.
+   */
+  applyContractToPast(uid: string, id: string, from: string): { count: number } {
+    this.requireUser(uid);
+    this.sweep();
+    const c = this.contractFor(uid, id);
+    if (c.status !== "active") throw new ServerError("illegal_transition");
+    const tz = this.cfg.timezone;
+    const today = localDate(this.now, tz);
+    if (typeof from !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(from) || localDate(localMidnight(from, tz) + 12 * 3600_000, tz) !== from) throw new ServerError("bad_input");
+    if (from > today || from < addDays(today, -365)) throw new ServerError("bad_input");
+    const start = localMidnight(from, tz);
+    let count = 0;
+    for (const a of Object.values(this.db.appointments ?? {})) {
+      if (a.status !== "done" || a.startsAt < start || a.startsAt >= this.now) continue;
+      if (this.familyOf(a.clientId) !== c.familyId || !this.samePerson(a.providerId, c.providerId)) continue;
+      const base = this.service(a.serviceId)?.base ?? null;
+      const line = c.rates.find((r) => r.serviceId === a.serviceId) ?? (base ? c.rates.find((r) => r.serviceId === base) : undefined);
+      if (!line) continue;
+      if (a.rate !== line.perHour || a.contractId !== c.id) count++;
+      a.rate = line.perHour;
+      a.contractId = c.id;
+      a.price = round2((line.perHour * a.durationMin) / 60);
+      this.notifyAppt(a);
+    }
+    if (count > 0)
+      for (const m of this.samePerson(c.providerId, uid) ? this.familyPeople(c.familyId) : this.personAccounts(c.providerId))
+        this.pushPlain(m, "contract_applied", { sender: this.nick(uid), count, since: from });
+    this.notifyContract(c);
+    return { count };
+  }
+
   /** A contract one of whose sides I am on (not_found otherwise). */
   private contractFor(uid: string, id: string): ContractRow {
     const c = this.db.contracts?.[id];

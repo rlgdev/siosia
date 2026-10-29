@@ -285,6 +285,11 @@ it. Several phones of one profile are one person: a contract proposal or a famil
 all of them and any of them can answer. An installed app checks for a new version when you open it,
 so both of you see the same screens.
 
+**A contract for past appointments.** On an active contract, *Apply to past appointments* takes a
+day (today or up to a year back): every finished appointment from then on between that family and
+that person, for a service the contract has a rate for, gets the contract's rate — the summary and
+the weekly reports follow, and the other side gets a notification with how many changed.
+
 ## The round *i*
 
 Where a screen used to explain itself in a paragraph, there is now a small round **i** next to the
@@ -607,6 +612,11 @@ tak jak resztę, a pojawia się w raportach obu stron.
 telefonów jednego profilu to jedna osoba: propozycja umowy czy zaproszenie do rodziny trafia na
 wszystkie i każdy może odpowiedzieć. Zainstalowana aplikacja sprawdza nową wersję przy otwarciu,
 więc oboje widzicie te same ekrany.
+
+**Umowa dla minionych terminów.** W aktywnej umowie *Zastosuj do minionych terminów* bierze dzień
+(dziś albo do roku wstecz): każdy zakończony od tego dnia termin między tą rodziną a tą osobą, dla
+usługi ze stawką w umowie, dostaje stawkę z umowy — podsumowanie i raporty tygodniowe też, a druga
+strona dostaje powiadomienie, ile się zmieniło.
 
 ## Okrągłe *i*
 
