@@ -11,10 +11,11 @@ const U = {
   dad: "00000000-0000-4000-8000-000000000501",
   mum: "00000000-0000-4000-8000-000000000502",
   nanny: "00000000-0000-4000-8000-000000000503",
-  other: "00000000-0000-4000-8000-000000000504"
+  other: "00000000-0000-4000-8000-000000000504",
+  dad2: "00000000-0000-4000-8000-000000000505"
 };
 type Who = keyof typeof U;
-const NAMES: Record<Who, string> = { dad: "Roman", mum: "Anna", nanny: "Toria", other: "Ewa" };
+const NAMES: Record<Who, string> = { dad: "Roman", mum: "Anna", nanny: "Toria", other: "Ewa", dad2: "Roman" };
 const HOME = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
 const MIN = 60_000;
 const at = (min: number) => new Date(Date.now() + min * MIN).toISOString();
@@ -170,5 +171,48 @@ describe("settling up between two sides (FR-321–325, V78–V80)", () => {
     expect(await errorOf(call("dad", "siosia_comment_settlement", [later.id, "late"]))).toBe("window_closed");
     await h.admin("update public.settlements set created_at = now() - interval '91 days'");
     expect(await settlements("dad")).toEqual([]);
-  });
+  }, 60_000);
+
+  it("late changes are due again; a test account or a split phone makes no stuck or second side; a comment reaches the side that pressed it", async () => {
+    const a1 = await done("dad", 200); // 120
+    expect(await call("dad", "siosia_settle_up", [pub.nanny])).toEqual({ count: 1, net: -120 });
+    // A tip after the dobry Pancio is due again, on its own; the week's line shows it.
+    await call("mum", "siosia_tip_appointment", [a1.id, 15]);
+    expect(await due("nanny")).toEqual([expect.objectContaining({ theyOwe: { services: 15, rides: 0 }, net: 15, count: 1 })]);
+    const week = await report("dad", await localDay(a1.id));
+    expect(((week.spent as Json).services as Json[]).find((l) => l.who === "Toria")!.due).toBe(15);
+    expect(await call("nanny", "siosia_settle_up", [pub.dad])).toEqual({ count: 1, net: 15 });
+    expect(Number(((await h.admin("select settled_amount from public.appointments where id = $1", [a1.id])).rows[0] as Json).settled_amount)).toBe(135);
+    // A shorter time afterwards: the nanny owes the difference back.
+    await call("nanny", "siosia_set_actual", [a1.id, 120]);
+    expect(await due("dad")).toEqual([expect.objectContaining({ party: pub.nanny, weOwe: { services: -40, rides: 0 }, net: 40 })]);
+    await clearOutbox();
+    expect(await call("nanny", "siosia_settle_up", [pub.dad])).toEqual({ count: 1, net: -40 });
+    expect((await outbox())[0].params).toMatchObject({ total: 40, status: "paid" });
+    expect(await due("dad")).toEqual([]);
+
+    // A test account (V66): what is between it and a real member is never due — it could not be settled.
+    await done("dad", 100);
+    await h.admin("update public.memberships set sandbox = true where user_id = $1", [U.nanny]);
+    expect(await due("dad")).toEqual([]);
+    await h.admin("update public.memberships set sandbox = false where user_id = $1", [U.nanny]);
+    // The newest one is with Anna, no member any more: the line stands for Roman, who can be reached.
+    await done("mum", 50);
+    await h.db.exec(`create temp table mb_save as select * from public.memberships where user_id = '${U.mum}'; delete from public.memberships where user_id = '${U.mum}';`);
+    expect(await due("nanny")).toEqual([expect.objectContaining({ party: pub.dad, count: 2, net: 240 })]);
+    await h.db.exec("insert into public.memberships select * from mb_save; drop table mb_save;");
+    // Roman's second phone (same master profile, outside the family) is the same side.
+    await h.admin("select public.siosia_set_master('rm', 'rm-token-0123456789abcdef', 'Roman', null, null, 'rider', null, null, null, null)");
+    await h.admin("update public.profiles set master_id = 'rm' where user_id = any ($1)", [[U.dad, U.dad2]]);
+    expect(await due("dad2")).toEqual(await due("dad"));
+    expect(await due("nanny")).toHaveLength(1);
+
+    // Roman settles, then leaves the family: Toria's comment goes to the side that got paid by — Anna.
+    expect(await call("dad", "siosia_settle_up", [pub.nanny])).toEqual({ count: 2, net: -240 });
+    const s = (await settlements("nanny"))[0];
+    await call("dad", "siosia_family_leave");
+    await clearOutbox();
+    await call("nanny", "siosia_comment_settlement", [s.id, "OK"]);
+    expect(await sent()).toEqual(["pay_comment>mum"]);
+  }, 60_000);
 });

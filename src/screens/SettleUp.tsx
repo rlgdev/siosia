@@ -83,7 +83,7 @@ function DueItem({ line, currency, onNote, onChanged }: { line: DueLine; currenc
         </span>
       </div>
       {parts
-        .filter((p) => p.v > 0)
+        .filter((p) => p.v !== 0) // below 0: a correction after a dobry Pancio, owed back
         .map((p) => (
           <div key={`${p.key}-${p.what}`} className="row spread due-part">
             <small className="muted">{t(p.key, { what: t(p.what) })}</small>

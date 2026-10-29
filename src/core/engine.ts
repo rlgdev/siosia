@@ -191,9 +191,10 @@ export interface RideRow {
   /** 2.9 (FR-315): the rider's tip to the driver, and when. */
   tip?: number | null;
   tipAt?: number | null;
-  /** 2.11 (FR-323): paid by a dobry Pancio — when, and which. */
+  /** 2.11 (FR-323): paid by a dobry Pancio — when, which, and how much it came to then. */
   settledAt?: number | null;
   settlementId?: string | null;
+  settledAmount?: number | null;
 }
 
 /** 2.0: an appointment (one occurrence of a series, or a single one). */
@@ -232,9 +233,10 @@ export interface ApptRow {
   tip?: number | null;
   tipBy?: string | null;
   tipAt?: number | null;
-  /** 2.11 (FR-323): paid by a dobry Pancio — when, and which. */
+  /** 2.11 (FR-323): paid by a dobry Pancio — when, which, and how much it came to then. */
   settledAt?: number | null;
   settlementId?: string | null;
+  settledAmount?: number | null;
 }
 
 export interface StoredTemplate {
@@ -3701,7 +3703,7 @@ export class Engine {
         l.minutes += cost.minutes;
         l.total = round2(l.total + (cost.total ?? 0));
         // 2.11 (FR-321): what of it is still to pay
-        if (this.apptOwing(a)) l.due = round2(l.due + (cost.total ?? 0));
+        if (this.apptOwing(a)) l.due = round2(l.due + Math.max(0, Math.min(this.apptDue(a), cost.total ?? 0)));
         lines.set(key, l);
       }
       const services = [...lines.values()].sort((x, y) => y.total - x.total || x.who.localeCompare(y.who) || (x.serviceId < y.serviceId ? -1 : 1));
@@ -3710,7 +3712,7 @@ export class Engine {
       const ridesTotal = round2(rs.reduce((s, r) => s + r.fare, 0));
       // 2.9 (FR-316): tips count in the week of their appointment or ride.
       const tips = round2(appts.filter(mine).reduce((s, a) => s + (a.tip ?? 0), 0) + rs.reduce((s, r) => s + (r.tip ?? 0), 0));
-      const ridesDue = round2(rs.filter((r) => this.rideOwing(r)).reduce((s, r) => s + r.fare, 0));
+      const ridesDue = round2(rs.filter((r) => this.rideOwing(r)).reduce((s, r) => s + Math.max(0, Math.min(this.rideDue(r), r.fare)), 0));
       return { total: round2(servicesTotal + ridesTotal + tips), services, servicesTotal, rides: { count: rs.length, total: ridesTotal, due: ridesDue }, tips };
     };
     const spent = side((a) => who.has(a.clientId), (a) => a.providerId, (r) => who.has(r.riderId));
@@ -3720,23 +3722,37 @@ export class Engine {
 
   // ---------- 2.11: settling up (FR-321–325, V78–V80) ----------
 
+  /**
+   * 2.11 (V78): the family of a person — this phone's, else the one another phone of the same master
+   * profile is in (joined first), so one person's phones are always one side.
+   */
+  private partyFamily(uid: string): string | null {
+    const own = this.familyOf(uid);
+    if (own) return own;
+    const fm = this.db.familyMembers ?? {};
+    const best = this.personAccounts(uid)
+      .filter((p) => fm[p])
+      .sort((a, b) => fm[a].joinedAt - fm[b].joinedAt || (a < b ? -1 : 1))[0];
+    return best ? fm[best].familyId : null;
+  }
+
   /** 2.11 (V78): who pays and gets paid — a family, else one person (every phone of a master profile). */
   private partyOf(uid: string): string {
-    const fid = this.familyOf(uid);
+    const fid = this.partyFamily(uid);
     return fid ? `f:${fid}` : `p:${this.linkedMaster(uid) ?? uid}`;
   }
 
-  /** Everyone on someone's side: their family, else all their phones. */
+  /** Everyone on someone's side: their family's people with all their phones, else all their phones. */
   private partyPeople(uid: string): string[] {
-    const fid = this.familyOf(uid);
-    return fid ? this.familyPeople(fid) : this.personAccounts(uid);
+    const fid = this.partyFamily(uid);
+    return fid ? [...new Set(this.familyPeople(fid).flatMap((m) => this.personAccounts(m)))] : this.personAccounts(uid);
   }
 
   /** A side's names: a family's members, else the person's nickname. */
   private partyName(uid: string): string {
-    const fid = this.familyOf(uid);
+    const fid = this.partyFamily(uid);
     const names = (fid ? this.familyPeople(fid) : [uid]).map((m) => this.nick(m)).filter(Boolean);
-    return names.join(", ") || "Deleted user";
+    return [...new Set(names)].join(", ") || "Deleted user";
   }
 
   /** What may still be due starts with the oldest week a report shows (V78). */
@@ -3745,10 +3761,10 @@ export class Engine {
     return localMidnight(addDays(weekOf(this.now, tz), -7 * REPORT_WEEKS), tz);
   }
 
-  /** Both people still here, on different sides. */
+  /** Both people still here, in one realm (V66), on different sides. */
   private apart(a: string | null, b: string | null): boolean {
     const live = (u: string | null): u is string => !!u && !!this.db.users[u] && !this.db.users[u].deleted;
-    return live(a) && live(b) && this.partyOf(a) !== this.partyOf(b);
+    return live(a) && live(b) && this.sameRealm(a, b) && this.partyOf(a) !== this.partyOf(b);
   }
 
   /** A done appointment's cost and tip. */
@@ -3756,16 +3772,30 @@ export class Engine {
     return round2((this.costOf(a)?.total ?? 0) + (a.tip ?? 0));
   }
 
-  /** A done appointment still to pay (V78): something to pay, between two sides, not settled. */
-  private apptOwing(a: ApptRow): boolean {
-    return a.status === "done" && a.startsAt >= this.dueFrom() && a.settledAt == null && this.apptAmount(a) > 0 && this.apart(a.clientId, a.providerId);
+  /** What of it is still to pay: all of it, or what changed since a dobry Pancio (a later tip, a
+   *  corrected time, a contract applied — below 0 when it went down). */
+  private apptDue(a: ApptRow): number {
+    return round2(this.apptAmount(a) - (a.settledAmount ?? 0));
   }
 
-  /** A completed ride still to pay (V78): fare and tip, nobody marked it paid or collected, not settled. */
+  private rideAmount(r: RideRow): number {
+    return round2(r.fare + (r.tip ?? 0));
+  }
+
+  private rideDue(r: RideRow): number {
+    return round2(this.rideAmount(r) - (r.settledAmount ?? 0));
+  }
+
+  /** A done appointment still to pay (V78): something left to pay, between two sides. */
+  private apptOwing(a: ApptRow): boolean {
+    return a.status === "done" && a.startsAt >= this.dueFrom() && this.apptDue(a) !== 0 && this.apart(a.clientId, a.providerId);
+  }
+
+  /** A completed ride still to pay (V78): fare and tip, nobody marked it paid or collected, something left. */
   private rideOwing(r: RideRow): boolean {
     return (
-      r.status === "completed" && r.endedAt !== null && r.endedAt >= this.dueFrom() && r.settledAt == null && !r.paid && !r.collected &&
-      round2(r.fare + (r.tip ?? 0)) > 0 && this.apart(r.riderId, r.driverId)
+      r.status === "completed" && r.endedAt !== null && r.endedAt >= this.dueFrom() && !r.paid && !r.collected && this.rideDue(r) !== 0 &&
+      this.apart(r.riderId, r.driverId)
     );
   }
 
@@ -3781,9 +3811,9 @@ export class Engine {
       if (them === null || side === them) out.push({ other: d === me ? creditor : debtor, side, theyOwe: c === me, rides, amount, at, item });
     };
     for (const a of Object.values(this.db.appointments ?? {}))
-      if (this.apptOwing(a)) add(a.clientId, a.providerId!, a, false, this.apptAmount(a), a.startsAt);
+      if (this.apptOwing(a)) add(a.clientId, a.providerId!, a, false, this.apptDue(a), a.startsAt);
     for (const r of Object.values(this.db.rides))
-      if (this.rideOwing(r)) add(r.riderId, r.driverId!, r, true, round2(r.fare + (r.tip ?? 0)), r.endedAt!);
+      if (this.rideOwing(r)) add(r.riderId, r.driverId!, r, true, this.rideDue(r), r.endedAt!);
     return out;
   }
 
@@ -3794,15 +3824,20 @@ export class Engine {
     for (const it of this.owingWith(uid, null)) groups.set(it.side, [...(groups.get(it.side) ?? []), it]);
     const lines: DueLine[] = [];
     for (const [side, items] of groups) {
-      // The newest one's other person stands for that side.
+      // The newest one's other person stands for that side — someone a reminder and dobry Pancio
+      // reach (a member in my realm): else another of that side; none, no line.
       const newest = items.reduce((x, y) => (y.at > x.at ? y : x));
+      const reach = (u: string) => this.isMember(u) && this.sameRealm(uid, u) && !this.db.users[u]?.deleted;
+      const byAge = [...items].sort((x, y) => y.at - x.at);
+      const rep = byAge.find((i) => reach(i.other))?.other ?? this.partyPeople(newest.other).filter(reach).sort()[0];
+      if (!rep) continue;
       const sum = (they: boolean, rides: boolean) => round2(items.filter((i) => i.theyOwe === they && i.rides === rides).reduce((s, i) => s + i.amount, 0));
       const theyOwe = { services: sum(true, false), rides: sum(true, true) };
       const weOwe = { services: sum(false, false), rides: sum(false, true) };
       const reminded = (this.db.settlements ?? []).filter((s) => s.kind === "remind" && s.fromParty === me && s.toParty === side).map((s) => s.createdAt);
       lines.push({
-        party: this.publicIdOf(newest.other) ?? "",
-        who: this.partyName(newest.other),
+        party: this.publicIdOf(rep) ?? "",
+        who: this.partyName(rep),
         theyOwe,
         weOwe,
         net: round2(theyOwe.services + theyOwe.rides - weOwe.services - weOwe.rides),
@@ -3875,8 +3910,13 @@ export class Engine {
     for (const { item } of items) {
       item.settledAt = this.now;
       item.settlementId = s.id;
-      if ("riderId" in item) this.notifyRide(item);
-      else this.notifyAppt(item);
+      if ("riderId" in item) {
+        item.settledAmount = this.rideAmount(item);
+        this.notifyRide(item);
+      } else {
+        item.settledAmount = this.apptAmount(item);
+        this.notifyAppt(item);
+      }
     }
     const status = net > 0 ? "received" : net < 0 ? "paid" : "even";
     for (const m of this.partyPeople(other))
@@ -3898,8 +3938,9 @@ export class Engine {
     s.comment = clean;
     s.commentBy = uid;
     s.commentAt = this.now;
-    if (this.db.users[s.byUser] && !this.db.users[s.byUser].deleted)
-      for (const m of this.partyPeople(s.byUser)) this.pushPlain(m, "pay_comment", { sender: this.nick(uid), text: clean });
+    // The side that pressed it, as it was then (not where its presser is now).
+    for (const u of Object.values(this.db.users))
+      if (!u.deleted && this.partyOf(u.id) === s.fromParty) this.pushPlain(u.id, "pay_comment", { sender: this.nick(uid), text: clean });
     for (const m of this.partyPeople(uid)) this.effects.notify.add(m);
     return this.settlementView(s, uid);
   }

@@ -1023,7 +1023,10 @@ balance with the other side to zero and notifies them, who may answer with a com
 - **FR-323**: **dobry Pancio** — either side, after a confirmation naming the amount — marks
   everything still unpaid between the two sides as paid (both ways): the balance drops to zero for
   both, the weekly lines stop showing it as due, and the other side is notified (`pay_settled`:
-  received, paid, or settled both ways). What happens afterwards is due again.
+  received, paid, or settled both ways). What happens afterwards is due again — also a later
+  change to a settled item (a tip, a corrected time, a contract applied): only the difference,
+  which is owed back when the amount went down. Test accounts never owe real members (V66), and
+  every phone of one person is on one side.
 - **FR-324**: The report lists the dobry Pancios of the last 90 days (10 at most) to both sides; the
   side that got one MAY answer it with a comment (1–280 characters, once, within 30 days), which
   notifies the side that pressed it (`pay_comment`). The notifications open the weekly report.

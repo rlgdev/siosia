@@ -180,4 +180,49 @@ describe("settling up between two sides (FR-321–325, V78–V80)", () => {
     now += 61 * DAY; // listed for 90 days
     expect(report("dad").settlements).toEqual([]);
   });
+
+  it("late changes are due again; a test account or a split phone makes no stuck or second side; a comment reaches the side that pressed it", () => {
+    const a1 = done("dad", "nanny"); // 120
+    expect(at((e) => e.settleUp("dad", pub("nanny")))).toEqual({ count: 1, net: -120 });
+    // A tip after the dobry Pancio is due again, on its own; the week's line shows it.
+    at((e) => e.tipAppointment("mum", a1.id, 15));
+    expect(report("nanny").due).toEqual([expect.objectContaining({ theyOwe: { services: 15, rides: 0 }, net: 15, count: 1 })]);
+    expect(report("dad").spent.services[0]).toMatchObject({ total: 120, due: 15 });
+    expect(at((e) => e.settleUp("nanny", pub("dad")))).toEqual({ count: 1, net: 15 });
+    expect(db.appointments![a1.id].settledAmount).toBe(135);
+    // A shorter time afterwards: the nanny owes the difference back.
+    at((e) => e.setActualTime("nanny", a1.id, 120));
+    expect(report("dad").due).toEqual([expect.objectContaining({ party: pub("nanny"), weOwe: { services: -40, rides: 0 }, net: 40 })]);
+    expect(report("dad").spent.services[0].due).toBe(0);
+    pushes = [];
+    expect(at((e) => e.settleUp("nanny", pub("dad")))).toEqual({ count: 1, net: -40 });
+    expect(pushes[0].params).toMatchObject({ total: 40, status: "paid" });
+    expect(report("dad").due).toEqual([]);
+
+    // A test account (V66): what is between it and a real member is never due — it could not be settled.
+    done("dad", "nanny");
+    db.sandbox = { nanny: true };
+    expect(report("dad").due).toEqual([]);
+    db.sandbox = {};
+    // The newest one is with Anna, no member any more: the line stands for Roman, who can be reached.
+    done("mum", "nanny");
+    const devices = db.members.mum;
+    delete db.members.mum;
+    expect(report("nanny").due).toEqual([expect.objectContaining({ party: pub("dad"), count: 2, net: 240 })]);
+    db.members.mum = devices;
+    // Roman's second phone (same master profile, outside the family) is the same side.
+    user("dad2", "Roman");
+    db.users.dad.masterId = "rm";
+    db.users.dad2.masterId = "rm";
+    expect(report("dad2").due).toEqual(report("dad").due);
+    expect(report("nanny").due).toHaveLength(1);
+
+    // Roman settles, then leaves the family: Toria's comment goes to the side that got paid by — Anna.
+    expect(at((e) => e.settleUp("dad", pub("nanny")))).toEqual({ count: 2, net: -240 });
+    const s = report("nanny").settlements[0];
+    at((e) => e.leaveFamily("dad"));
+    pushes = [];
+    at((e) => e.commentSettlement("nanny", s.id, "OK"));
+    expect(sent()).toEqual(["pay_comment>mum"]);
+  });
 });

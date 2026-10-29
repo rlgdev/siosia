@@ -618,6 +618,9 @@ alter table public.appointments add column if not exists settled_at timestamptz;
 alter table public.appointments add column if not exists settlement_id uuid;
 alter table public.rides add column if not exists settled_at timestamptz;
 alter table public.rides add column if not exists settlement_id uuid;
+-- … and how much it came to then: a later tip, corrected time or contract makes the difference due.
+alter table public.appointments add column if not exists settled_amount numeric(10, 2);
+alter table public.rides add column if not exists settled_amount numeric(10, 2);
 -- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
 create table if not exists public.member_invites (
   token_hash  text primary key,
@@ -5144,24 +5147,45 @@ begin
 end $$;
 
 -- 2.11 (V78): who pays and gets paid — a family ("f:<id>"), else one person ("p:<master profile>",
--- every phone of it; else "p:<user>"); everyone on that side; its names ("Roman, Anna").
+-- every phone of it; else "p:<user>"); everyone on that side; its names ("Roman, Anna"). A person's
+-- family is this phone's, else the one another phone of the same master profile is in (joined
+-- first), so one person's phones are always one side.
+create or replace function public.siosia_side_family(p_user uuid)
+returns uuid language sql stable security definer set search_path = public as $$
+  select family_id from family_members where user_id = any (siosia_person_accounts(p_user))
+   order by (user_id = p_user) desc, joined_at, user_id limit 1;
+$$;
+
 create or replace function public.siosia_side(p_user uuid)
 returns text language sql stable security definer set search_path = public as $$
-  select coalesce('f:' || (select family_id::text from family_members where user_id = p_user),
+  select coalesce('f:' || siosia_side_family(p_user)::text,
                   'p:' || coalesce((select master_id from profiles where user_id = p_user and not deleted), p_user::text));
 $$;
 
 create or replace function public.siosia_side_people(p_user uuid)
 returns uuid[] language sql stable security definer set search_path = public as $$
-  select case when siosia_family_of(p_user) is not null then siosia_household(p_user) else siosia_person_accounts(p_user) end;
+  select case when f is null then siosia_person_accounts(p_user)
+              else array(select distinct x from family_members m cross join lateral unnest(siosia_person_accounts(m.user_id)) x
+                          where m.family_id = f) end
+    from (select siosia_side_family(p_user) as f) v;
 $$;
 
 create or replace function public.siosia_side_name(p_user uuid)
 returns text language sql stable security definer set search_path = public as $$
-  select coalesce(nullif((select string_agg(n, ', ' order by o) from unnest(
-                           case when siosia_family_of(p_user) is not null then siosia_household(p_user) else array[p_user] end)
-                           with ordinality as u(m, o) cross join lateral (select nullif(siosia_nick(u.m), '') as n) x
-                          where n is not null), ''), 'Deleted user');
+  with v as (select siosia_side_family(p_user) as f),
+  people as (
+    select m.user_id as u, row_number() over (order by m.joined_at, m.user_id) as o from family_members m, v where m.family_id = v.f
+    union all
+    select p_user, 1 from v where v.f is null),
+  names as (select n, min(o) as o from people cross join lateral (select nullif(siosia_nick(u), '') as n) x where n is not null group by n)
+  select coalesce(nullif((select string_agg(n, ', ' order by o) from names), ''), 'Deleted user');
+$$;
+
+-- A person a reminder and dobry Pancio reach from p_viewer: a member, not deleted, in the same realm.
+create or replace function public.siosia_reachable(p_viewer uuid, p_user uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce(exists (select 1 from profiles where user_id = p_user and not deleted)
+                  and siosia_member_ok(p_user) and siosia_same_realm(p_viewer, p_user), false);
 $$;
 
 -- What may still be due starts with the oldest week a report shows (52 weeks before this one).
@@ -5171,31 +5195,49 @@ returns timestamptz language sql stable security definer set search_path = publi
     from app_config c where c.id = 1;
 $$;
 
--- Both people still here, on different sides.
+-- Both people still here, in one realm (V66), on different sides.
 create or replace function public.siosia_apart(p_a uuid, p_b uuid)
 returns boolean language sql stable security definer set search_path = public as $$
   select coalesce(exists (select 1 from profiles where user_id = p_a and not deleted)
                   and exists (select 1 from profiles where user_id = p_b and not deleted)
+                  and siosia_same_realm(p_a, p_b)
                   and siosia_side(p_a) <> siosia_side(p_b), false);
 $$;
 
--- A done appointment still to pay (V78): its cost and tip, between two sides, not settled; a
--- completed ride: fare and tip, nobody marked it paid or collected, not settled.
+-- A done appointment's cost and tip, a completed ride's fare and tip; what of it is still to pay —
+-- all of it, or what changed since a dobry Pancio (below 0 when it went down).
 create or replace function public.siosia_appt_amount(a public.appointments)
 returns numeric language sql immutable as $$
   select round(coalesce((siosia_cost_json(a) ->> 'total')::numeric, 0) + coalesce(a.tip, 0), 2);
 $$;
 
+create or replace function public.siosia_appt_due(a public.appointments)
+returns numeric language sql immutable as $$
+  select round(siosia_appt_amount(a) - coalesce(a.settled_amount, 0), 2);
+$$;
+
+create or replace function public.siosia_ride_amount(r public.rides)
+returns numeric language sql immutable as $$
+  select round(r.fare + coalesce(r.tip, 0), 2);
+$$;
+
+create or replace function public.siosia_ride_due(r public.rides)
+returns numeric language sql immutable as $$
+  select round(siosia_ride_amount(r) - coalesce(r.settled_amount, 0), 2);
+$$;
+
+-- A done appointment still to pay (V78): something left to pay, between two sides; a completed
+-- ride: nobody marked it paid or collected, something left, between two sides.
 create or replace function public.siosia_appt_owing(a public.appointments)
 returns boolean language sql stable security definer set search_path = public as $$
-  select a.status = 'done' and a.provider_id is not null and a.settled_at is null and a.starts_at >= siosia_due_from()
-         and siosia_appt_amount(a) > 0 and siosia_apart(a.client_id, a.provider_id);
+  select a.status = 'done' and a.provider_id is not null and a.starts_at >= siosia_due_from()
+         and siosia_appt_due(a) <> 0 and siosia_apart(a.client_id, a.provider_id);
 $$;
 
 create or replace function public.siosia_ride_owing(r public.rides)
 returns boolean language sql stable security definer set search_path = public as $$
   select r.status = 'completed' and r.driver_id is not null and r.ended_at is not null and r.ended_at >= siosia_due_from()
-         and r.settled_at is null and not r.paid and not r.collected and round(r.fare + coalesce(r.tip, 0), 2) > 0
+         and not r.paid and not r.collected and siosia_ride_due(r) <> 0
          and siosia_apart(r.rider_id, r.driver_id);
 $$;
 
@@ -5206,12 +5248,12 @@ returns table (other uuid, side text, they_owe boolean, rides boolean, amount nu
 language sql stable security definer set search_path = public as $$
   with me as (select siosia_side(p_user) as p),
   items as (
-    select a.client_id as debtor, a.provider_id as creditor, false as rides, siosia_appt_amount(a) as amount, a.starts_at as at,
+    select a.client_id as debtor, a.provider_id as creditor, false as rides, siosia_appt_due(a) as amount, a.starts_at as at,
            a.id as appt_id, null::uuid as ride_id
-      from appointments a where a.status = 'done' and a.settled_at is null and siosia_appt_owing(a)
+      from appointments a where a.status = 'done' and siosia_appt_owing(a)
     union all
-    select r.rider_id, r.driver_id, true, round(r.fare + coalesce(r.tip, 0), 2), r.ended_at, null::uuid, r.id
-      from rides r where r.status = 'completed' and r.settled_at is null and siosia_ride_owing(r)),
+    select r.rider_id, r.driver_id, true, siosia_ride_due(r), r.ended_at, null::uuid, r.id
+      from rides r where r.status = 'completed' and siosia_ride_owing(r)),
   x as (select i.*, siosia_side(i.debtor) as dp, siosia_side(i.creditor) as cp from items i)
   select case when x.dp = me.p then x.creditor else x.debtor end,
          case when x.dp = me.p then x.cp else x.dp end,
@@ -5222,19 +5264,26 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- 2.11 (FR-321): one line per other side (DueLine) — who, both ways, the net, since when, my side's
--- last reminder; the newest one's other person stands for that side.
+-- last reminder; the newest one's other person stands for that side — someone a reminder and dobry
+-- Pancio reach (siosia_reachable), else another of that side; none, no line.
 create or replace function public.siosia_due_json(p_user uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
   with o as (select * from siosia_owing(p_user, null)),
-  g as (
-    select o.side, (array_agg(o.other order by o.at desc))[1] as rep,
+  g0 as (
+    select o.side,
+           (array_agg(o.other order by o.at desc) filter (where siosia_reachable(p_user, o.other)))[1] as near,
+           (array_agg(o.other order by o.at desc))[1] as newest,
            round(coalesce(sum(o.amount) filter (where o.they_owe and not o.rides), 0), 2) as ts,
            round(coalesce(sum(o.amount) filter (where o.they_owe and o.rides), 0), 2) as tr,
            round(coalesce(sum(o.amount) filter (where not o.they_owe and not o.rides), 0), 2) as ws,
            round(coalesce(sum(o.amount) filter (where not o.they_owe and o.rides), 0), 2) as wr,
            count(*)::int as n, min(o.at) as since
       from o group by o.side),
-  l as (select g.*, coalesce((select public_id from profiles where user_id = g.rep), '') as party from g)
+  g as (
+    select g0.*, coalesce(g0.near, (select x from unnest(siosia_side_people(g0.newest)) x
+                                     where siosia_reachable(p_user, x) order by x::text limit 1)) as rep
+      from g0),
+  l as (select g.*, coalesce((select public_id from profiles where user_id = g.rep), '') as party from g where g.rep is not null)
   select coalesce(jsonb_agg(jsonb_build_object(
            'party', l.party, 'who', siosia_side_name(l.rep),
            'theyOwe', jsonb_build_object('services', l.ts, 'rides', l.tr),
@@ -5278,7 +5327,7 @@ $$;
 create or replace function public.siosia_report_side(p_people uuid[], p_start timestamptz, p_end timestamptz, p_earned boolean)
 returns jsonb language sql stable security definer set search_path = public as $$
   with ap as (
-    select a.service_id, siosia_cost_json(a) as cost, siosia_appt_owing(a) as owing,
+    select a.service_id, siosia_cost_json(a) as cost, siosia_appt_owing(a) as owing, siosia_appt_due(a) as due_amount,
            coalesce(nullif((select p.nickname from profiles p
                              where p.user_id = case when p_earned then a.client_id else a.provider_id end), ''), 'Deleted user') as who
       from appointments a
@@ -5288,11 +5337,11 @@ returns jsonb language sql stable security definer set search_path = public as $
     select who, service_id, count(*)::int as n, sum((cost ->> 'minutes')::int)::int as minutes,
            round(sum(coalesce((cost ->> 'total')::numeric, 0)), 2) as total,
            -- 2.11 (FR-321): what of it is still to pay
-           round(sum(case when owing then coalesce((cost ->> 'total')::numeric, 0) else 0 end), 2) as due
+           round(sum(case when owing then greatest(0, least(due_amount, coalesce((cost ->> 'total')::numeric, 0))) else 0 end), 2) as due
       from ap group by who, service_id),
   rd as (
     select count(*)::int as n, round(coalesce(sum(r.fare), 0), 2) as total, coalesce(sum(r.tip), 0) as tips,
-           round(coalesce(sum(r.fare) filter (where siosia_ride_owing(r)), 0), 2) as due from rides r
+           round(coalesce(sum(greatest(0, least(siosia_ride_due(r), r.fare))) filter (where siosia_ride_owing(r)), 0), 2) as due from rides r
      where r.status = 'completed' and r.ended_at >= p_start and r.ended_at < p_end
        and case when p_earned then r.driver_id = any (p_people) else r.rider_id = any (p_people) end),
   -- 2.9 (FR-316): tips count in the week of their appointment or ride.
@@ -5425,8 +5474,8 @@ begin
   if v_n = 0 then return siosia_err('illegal_transition'); end if;
   insert into settlements (kind, by_user, with_user, from_party, to_party, amount, item_count)
   values ('settle', v_uid, v_other, v_me, v_them, v_net, v_n) returning id into v_id;
-  update appointments set settled_at = now(), settlement_id = v_id where id = any (coalesce(v_appts, '{}'));
-  update rides set settled_at = now(), settlement_id = v_id where id = any (coalesce(v_rides, '{}'));
+  update appointments x set settled_at = now(), settlement_id = v_id, settled_amount = siosia_appt_amount(x) where x.id = any (coalesce(v_appts, '{}'));
+  update rides x set settled_at = now(), settlement_id = v_id, settled_amount = siosia_ride_amount(x) where x.id = any (coalesce(v_rides, '{}'));
   select * into c from app_config where id = 1;
   foreach m in array siosia_side_people(v_other) loop
     perform siosia_push(m, 'pay_settled', null, jsonb_build_object(
@@ -5438,7 +5487,7 @@ begin
 end $$;
 
 -- 2.11 (FR-324, V80): the side that got a dobry Pancio answers it — once, 1–280 characters, 30 days;
--- the side that pressed it hears the words.
+-- the side that pressed it (as it was then) hears the words.
 create or replace function public.siosia_comment_settlement(p_id uuid, p_text text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); s settlements; m uuid;
@@ -5452,11 +5501,10 @@ begin
   if now() >= s.created_at + interval '30 days' then return siosia_err('window_closed'); end if;
   if char_length(v_text) not between 1 and 280 then return siosia_err('bad_input'); end if;
   update settlements set comment = v_text, comment_by = v_uid, comment_at = now() where id = s.id returning * into s;
-  if exists (select 1 from profiles where user_id = s.by_user and not deleted) then
-    foreach m in array siosia_side_people(s.by_user) loop
-      perform siosia_push(m, 'pay_comment', null, jsonb_build_object('sender', siosia_nick(v_uid), 'text', v_text));
-    end loop;
-  end if;
+  -- The side that pressed it, as it was then (not where its presser is now).
+  for m in select p.user_id from profiles p where not p.deleted and siosia_side(p.user_id) = s.from_party loop
+    perform siosia_push(m, 'pay_comment', null, jsonb_build_object('sender', siosia_nick(v_uid), 'text', v_text));
+  end loop;
   foreach m in array siosia_side_people(v_uid) loop perform siosia_notify(m); end loop;
   return siosia_ok(siosia_settlement_json(s, v_uid));
 end $$;
