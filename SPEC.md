@@ -205,7 +205,7 @@ T51|x|2.10 apply an active contract to past appointments: engine + SQL twins, pu
 T52|x|release 2.10: live migration, push-dispatch bundle, main, live check|§15,V76,V77
 T53|x|2.11 settling up: settled_at/settlement_id on appointments + rides, settlements table, side helpers, due in the report (+ line due), remind / settle / comment fns, push kinds pay_remind / pay_settled / pay_comment (texts EN/PL, url, bundle), engine twin, adapters, account move; tests engine + sql + upgrade rehearsal from 2.10|V78,V79,V80,V19
 T54|x|2.11 UI: report To settle section (both ways, net, Ask to pay, dobry Pancio + confirmation, recent settlements, comment form), week lines' due mark, wallet icon + bell icon, i18n EN/PL, component + e2e tests, docs|V78,V79,V80,V53
-T55| |release 2.11: live migration, push-dispatch bundle, main, live check|§15,V78–V80
+T55|x|release 2.11: live migration, push-dispatch bundle, main, live check (test accounts: ride → remind → dobry Pancio → comment, bells)|§15,V78–V80
 T37|x|release 2.6: review, live DB migration, push-dispatch bundle, main, live check|§15,V58–V65
 
 ## §B bugs
