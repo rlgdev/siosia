@@ -107,8 +107,12 @@ export function ProfilePanel() {
       {p && !p.offersPreset && <ServicesIOffer />}
       {p && <MyKids />}
       {p && (
-        <button type="button" className="card row spread profile-family" onClick={() => store.openPanel("family")} data-testid="profile-family">
-          <strong>{t("family.title")}</strong>
+        // 2.9: a card like the others — the app's font and colour, the heading's size, the family icon.
+        <button type="button" className="card row spread profile-link" onClick={() => store.openPanel("family")} data-testid="profile-family">
+          <span className="profile-link-title">
+            <Icon name="family" size={22} />
+            {t("family.title")}
+          </span>
           <Icon name="chevron" />
         </button>
       )}

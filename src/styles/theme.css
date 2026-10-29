@@ -2548,6 +2548,30 @@ html[data-launch] .mode-card:nth-child(4) {
   height: 28px;
 }
 
+/* ---------- 2.9: S2 rows that open a panel (Family & contracts): a card like the others ---------- */
+.profile-link {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.profile-link-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.05rem; /* the cards' h3 */
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+.profile-link-title .ico {
+  color: var(--accent);
+}
+.profile-link > .ico {
+  color: var(--muted);
+}
+
 /* ---------- 2.9: tips ---------- */
 .tip-chips {
   display: flex;

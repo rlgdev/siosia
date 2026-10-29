@@ -47,9 +47,21 @@ export type IconName =
   | "gear"
   | "volume"
   | "volumeOff"
-  | "link";
+  | "link"
+  // 2.9: Family & contracts (two grown-ups and a kid)
+  | "family";
 
 const GLYPHS: Record<IconName, ReactNode> = {
+  family: (
+    <>
+      <circle cx="7" cy="7.5" r="2.5" />
+      <circle cx="17" cy="7.5" r="2.5" />
+      <path d="M3 19.5v-2.5a4 4 0 0 1 6.6-3" />
+      <path d="M21 19.5v-2.5a4 4 0 0 0-6.6-3" />
+      <circle cx="12" cy="12.5" r="1.9" />
+      <path d="M8.8 20.5a3.2 3.2 0 0 1 6.4 0" />
+    </>
+  ),
   users: (
     <>
       <circle cx="9" cy="8" r="3.5" />
