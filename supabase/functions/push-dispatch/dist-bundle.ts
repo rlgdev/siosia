@@ -131,6 +131,7 @@ var TEXTS = {
     pay_remind: ["{sender} asks you to settle up", "{total} to pay since {since}. Once paid, tap \u201Cdobry Pancio\u201D on the weekly report."],
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
     pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
+    sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
     ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
   },
   pl: {
@@ -171,6 +172,7 @@ var TEXTS = {
     pay_remind: ["{sender} prosi o rozliczenie", "Do zap\u0142aty {total} od {since}. Po zap\u0142acie stuknij \u201Edobry Pancio\u201D w raporcie tygodnia."],
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby doda\u0107 komentarz."],
     pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
+    sign_in: ["Zachowaj swoje konto w Siosi", "Stuknij, aby si\u0119 zalogowa\u0107. Profil i historia zostan\u0105 z Tob\u0105 na ka\u017Cdym telefonie."],
     ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dzi\u0119kujemy!"]
   }
 };
@@ -283,6 +285,7 @@ function pushUrl(kind, params, appointmentId) {
   if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   if (kind.startsWith("pay_")) return "./?open=report";
+  if (kind === "sign_in") return "./?open=account";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }
 

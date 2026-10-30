@@ -20,6 +20,7 @@ import { Icon, type IconName } from "./Icon";
 export function notificationIcon(kind: PushKind): IconName {
   if (kind === "appt_tip" || kind === "ride_tip") return "sparkles";
   if (kind.startsWith("pay_")) return "wallet";
+  if (kind === "sign_in") return "link";
   if (kind.startsWith("family_") || kind.startsWith("contract_"))
     return "users";
   if (kind === "weekly_report" || kind === "appt_summary") return "history";

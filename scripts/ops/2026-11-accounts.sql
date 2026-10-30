@@ -48,6 +48,15 @@ select (select count(*) from public.appointments) as appts, (select count(*) fro
        (select count(*) from public.kids) as kids, (select count(*) from public.notifications) as bells,
        (select count(*) from public.settlements) as settlements, (select count(*) from public.push_subscriptions) as push;
 
+-- @block B2-nudge (2.12.1): ask the phones still without an account to sign in — a bell entry and a
+-- push that opens ☰ → Account. Ask yourself first (the master_id line), check it on your phone, then
+-- run it again without that line for everyone. Each anonymous account is asked on its own phones.
+select p.nickname, p.public_id, p.master_id, public.siosia_push(p.user_id, 'sign_in', null, '{}'::jsonb)
+  from public.profiles p join auth.users u on u.id = p.user_id
+ where not p.deleted and p.merged_into is null and u.is_anonymous and not public.siosia_sandbox(p.user_id)
+   and p.master_id = 'roman'                                  -- drop this line to ask everyone
+ order by p.nickname;
+
 -- @block B3-merge-gone-phone: a phone nobody has any more → the person's account (both by public id
 -- from B0). Read the answer: {"ok": {"shape": …}} or {"error": "two_families" | "two_masters" | …}.
 select public.siosia_merge_into('<old public id>', '<their public id>');

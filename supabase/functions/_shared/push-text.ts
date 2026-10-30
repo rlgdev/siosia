@@ -51,7 +51,9 @@ export type PushKind =
   // 2.11 (FR-322–324): a reminder to pay, a dobry Pancio, a comment on it (open the weekly report)
   | "pay_remind"
   | "pay_settled"
-  | "pay_comment";
+  | "pay_comment"
+  // 2.12.1: the operator asks a phone still without an account to sign in (opens ☰ → Account)
+  | "sign_in";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -290,6 +292,7 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     pay_remind: ["{sender} asks you to settle up", "{total} to pay since {since}. Once paid, tap “dobry Pancio” on the weekly report."],
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
     pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
+    sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
     ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
   },
   pl: {
@@ -330,6 +333,7 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     pay_remind: ["{sender} prosi o rozliczenie", "Do zapłaty {total} od {since}. Po zapłacie stuknij „dobry Pancio” w raporcie tygodnia."],
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby dodać komentarz."],
     pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
+    sign_in: ["Zachowaj swoje konto w Siosi", "Stuknij, aby się zalogować. Profil i historia zostaną z Tobą na każdym telefonie."],
     ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dziękujemy!"]
   }
 };
@@ -520,5 +524,7 @@ export function pushUrl(kind: PushKind, params?: PushParams, appointmentId?: str
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   // 2.11 (FR-322–324): what is due, the dobry Pancios and their comments are on the weekly report.
   if (kind.startsWith("pay_")) return "./?open=report";
+  // 2.12.1: Profile → Account, where "Keep my account" signs in.
+  if (kind === "sign_in") return "./?open=account";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }

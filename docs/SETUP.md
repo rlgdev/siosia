@@ -303,6 +303,10 @@ team** — your users would never get a code. Use your own sender (free):
 3. Switch it on in the SQL editor — where Google is offered:
    `update public.app_config set google_sign_in = 'on';` (`'no_standalone'` hides it in the
    installed Home Screen app, where Google may not come back; `'no_ios'` on iPhones; `'off'`).
+   Since 2.12.1 the installed app also takes a return that reopens it as a fresh page.
+4. Ask the phones still without an account to sign in: block **B2-nudge** of
+   `scripts/ops/2026-11-accounts.sql` (a bell entry and a push that opens ☰ → *Account*) — first
+   for yourself only, then for everyone.
 
 ### Moving everyone to accounts (the migration window)
 
@@ -444,6 +448,7 @@ with the deployed link.
 | *This Siosia cannot email that address yet* | No custom SMTP: the built-in mailer reaches only your Supabase team → step 4, *Email codes* |
 | No sign-in code arrives | Spam / Promotions; Authentication → Logs; the SMTP sender address must be the Gmail account itself |
 | Google comes back to the start screen, not signed in | Redirect URL missing (step 4.2) or the Google client's redirect URI is not the Supabase callback URL |
+| iPhone Home Screen app: Google ends signed in inside a Safari sheet, the app itself not | The phone kept the return in its in-app browser → set `google_sign_in = 'no_standalone'` again and use email codes in the installed app |
 | Driver never gets requests | Driver must be **online**, within 8 km of the pickup, with location allowed and the app open. Check step 5 isn't blocking: the policies come from step 2 |
 | Rider never sees the car move | Driver phone screen locked or app in background → keep it open (the app warns). Check Realtime isn't disabled |
 | Map tiles/route missing sometimes | Community servers (OSM/OSRM) are best-effort; the app falls back to a straight-line estimate and keeps working |

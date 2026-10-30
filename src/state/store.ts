@@ -324,7 +324,7 @@ export class AppStore {
   /** 2.5: ./?appointment=<id> at launch (a session update or heading-home notice tapped while the app was closed). */
   private launchAppointment: string | null = null;
   /** 2.6: ./?open=family or ./?open=report[&week=] opened the app: that panel, once the screen is up. */
-  private launchPanel: { panel: "family" | "report"; arg: string | null } | null = null;
+  private launchPanel: { panel: "family" | "report" | "profile"; arg: string | null } | null = null;
   /** When the profile in the snapshot was fetched: its photo URL expires (C16). */
   private profileAt = Date.now();
 
@@ -812,7 +812,14 @@ export class AppStore {
         else if (open === "report") screen = "history";
       }
       this.launchPanel =
-        open === "family" ? { panel: "family", arg: null } : open === "report" ? { panel: "report", arg: reportWeekOf(url.searchParams.get("week")) } : null;
+        open === "family"
+          ? { panel: "family", arg: null }
+          : open === "report"
+            ? { panel: "report", arg: reportWeekOf(url.searchParams.get("week")) }
+            : // 2.12.1: the sign-in nudge opens Profile → Account
+              open === "account"
+              ? { panel: "profile", arg: "account" }
+              : null;
       // ./?chat=<room> (2.3): the thread opens as a panel over whatever screen applies;
       // ./?appointment=<id> (2.5): C3 of that appointment, the same way.
       this.launchChat = chatRoomOf(url.searchParams.get("chat"));
@@ -913,6 +920,7 @@ export class AppStore {
       else if (open === "planned" || open === "history") this.go(open);
       // 2.6: Family & contracts over the current screen; the weekly report over H1.
       else if (open === "family") this.openPanel("family");
+      else if (open === "account") this.openPanel("profile", "account");
       else if (open === "report") {
         if (this.snap.screen !== "history" && !this.pinned()) this.go("history");
         this.openPanel("report", reportWeekOf(params.get("week")));

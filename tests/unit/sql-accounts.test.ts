@@ -5,6 +5,7 @@
 // (siosia_merge_into); the deployment can then ask for accounts and open membership. Same cases as
 // the engine tests (tests/unit/accounts.test.ts) where the engine knows the rule — the twin rule (V19).
 
+import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createHarness, errorOf, type Claims, type Json, type SqlHarness } from "./sql-harness";
 
@@ -111,6 +112,19 @@ describe("2.12 accounts (FR-326–FR-331, V81–V86)", () => {
   it("siosia_config tells a phone with no session how to sign in", async () => {
     const cfg = await h.asAnonRole<Json>("select public.siosia_config()");
     expect(cfg).toMatchObject({ authMode: "anonymous", googleSignIn: "off", membershipMode: "invite" });
+  });
+
+  it("the operator's nudge (ops block B2) asks only the named person's anonymous phones, by bell and push", async () => {
+    const ops = readFileSync(new URL("../../scripts/ops/2026-11-accounts.sql", import.meta.url), "utf8");
+    const block = ops.split("-- @block B2-nudge")[1].split("-- @block")[0].replace(/^[^\n]*\n/, "");
+    const asked = (await rows(block)).map((r) => r.public_id);
+    expect(asked.sort()).toEqual([pub.r1, pub.r2].sort());
+    const bell = await rows("select user_id from public.notifications where kind = 'sign_in'");
+    expect(bell.map((r) => name(r.user_id)).sort()).toEqual(["r1", "r2"]);
+    const push = await rows("select user_id from public.push_outbox where kind = 'sign_in'");
+    expect(push.map((r) => name(r.user_id)).sort()).toEqual(["r1", "r2"]);
+    await h.admin("delete from public.notifications where kind = 'sign_in'");
+    await h.admin("delete from public.push_outbox where kind = 'sign_in'");
   });
 
   it("membership is the person's; whoami routes every session", async () => {

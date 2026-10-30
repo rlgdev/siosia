@@ -799,6 +799,6 @@ describe("2.6 family, contract, summary and weekly report texts (FR-250–282)",
 
   it("ships the 2.6 kinds and their URLs in the push-dispatch bundle (B8)", () => {
     const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
-    for (const s of ["family_invite", "contract_proposed", "appt_summary", "weekly_report", "./?open=family", "./?open=report"]) expect(bundle).toContain(s);
+    for (const s of ["family_invite", "contract_proposed", "appt_summary", "weekly_report", "./?open=family", "./?open=report", "sign_in", "./?open=account"]) expect(bundle).toContain(s);
   });
 });

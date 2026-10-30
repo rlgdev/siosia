@@ -2,6 +2,11 @@
 // address. Only a return THIS tab started is accepted: a link carrying someone else's session
 // (login CSRF) is never saved, never takes this phone's old account in, and its tokens are wiped
 // from the address; Google's own error text is never shown (only a fixed reason).
+// 2.12.1: in the installed app (one window; a link from elsewhere opens in the browser, never in
+// it) the mark is kept in localStorage too — an iPhone may come back from Google into a fresh page
+// whose sessionStorage is empty.
+
+import { isStandalone } from "./device";
 
 const RETURN_KEY = "siosia.authReturn";
 const STARTED_KEY = "siosia.googleStarted";
@@ -15,26 +20,35 @@ export type GoogleError = "cancelled" | "in_use" | "failed";
 
 /** Called right before leaving for Google. */
 export function markGoogleStart(intent: GoogleIntent): void {
-  try {
-    sessionStorage.setItem(STARTED_KEY, JSON.stringify({ intent, at: Date.now() }));
-  } catch {
-    /* storage unavailable: the return is then not accepted */
-  }
+  const mark = JSON.stringify({ intent, at: Date.now() });
+  for (const s of marks())
+    try {
+      s().setItem(STARTED_KEY, mark);
+    } catch {
+      /* storage unavailable: the return is then not accepted */
+    }
+}
+
+/** Where the mark lives: this tab, and in the installed app also the app's own storage. */
+function marks(): (() => Storage)[] {
+  return isStandalone() ? [() => sessionStorage, () => localStorage] : [() => sessionStorage];
 }
 
 /** The round trip is over (it failed before leaving, or a page loaded without a Google return). */
 export function clearGoogleStart(): void {
-  try {
-    sessionStorage.removeItem(STARTED_KEY);
-  } catch {
-    /* storage unavailable */
-  }
+  for (const s of [() => sessionStorage, () => localStorage])
+    try {
+      s().removeItem(STARTED_KEY);
+    } catch {
+      /* storage unavailable */
+    }
 }
 
 /** The Google round trip this tab started in the last 10 minutes, if any. */
 export function googleStarted(): { intent: GoogleIntent } | null {
   try {
-    const raw = sessionStorage.getItem(STARTED_KEY);
+    let raw: string | null = null;
+    for (const s of marks()) raw ??= s().getItem(STARTED_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as { intent?: GoogleIntent; at?: number };
     if (!s.at || Date.now() - s.at > STARTED_MS) return null;
@@ -106,7 +120,7 @@ export function takeAuthReturn(): { google: boolean; intent: GoogleIntent | null
     const started = googleStarted();
     sessionStorage.removeItem(RETURN_KEY);
     if (!raw) return { google: false, intent: null, error: null };
-    sessionStorage.removeItem(STARTED_KEY);
+    clearGoogleStart();
     if (!started) return { google: false, intent: null, error: null };
     const p = new URLSearchParams(raw);
     const code = p.get("error_code") || p.get("error");

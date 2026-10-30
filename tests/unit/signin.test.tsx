@@ -13,6 +13,7 @@ import { DEFAULT_CONFIG } from "../../src/core/defaults";
 import type { DeploymentConfig, MyState, Profile, WhoAmI } from "../../src/core/types";
 import { ServerError } from "../../src/core/types";
 import { markGoogleStart } from "../../src/services/authReturn";
+import { pushText, pushUrl } from "../../supabase/functions/_shared/push-text";
 import { AppStore, captureAuthReturn, readAbsorb } from "../../src/state/store";
 
 const PROFILE = {
@@ -193,6 +194,34 @@ describe("taking the phone's old account along (FR-327)", () => {
     const back = await boot({ email: "toria@gmail.com" });
     expect(back.calls.absorb).toEqual(["CODE-0001"]);
     expect(back.store.get().linkNotice).toBe("merged");
+  });
+
+  it("in the installed app Google may come back into a fresh page: the app's own mark still takes the account in", async () => {
+    Object.defineProperty(navigator, "standalone", { value: true, configurable: true });
+    try {
+      const before = await boot({ who: { anonymous: true } });
+      await before.store.signInWithGoogle();
+      sessionStorage.clear(); // an iPhone reopens the Home Screen app on the return: a fresh page
+      history.replaceState(null, "", "/?launch=0#access_token=abc&refresh_token=def&token_type=bearer");
+      captureAuthReturn();
+      expect(location.hash).toContain("access_token"); // left for supabase-js to take
+      const back = await boot({ email: "toria@gmail.com" });
+      expect(back.calls.absorb).toEqual(["CODE-0001"]);
+      expect(back.store.get().linkNotice).toBe("merged");
+      expect(localStorage.getItem("siosia.googleStarted")).toBeNull(); // used once
+    } finally {
+      delete (navigator as Navigator & { standalone?: boolean }).standalone;
+    }
+  });
+
+  it("the sign-in nudge opens Profile → Account, also when it started the app", async () => {
+    const { store } = await boot({ who: { anonymous: true } });
+    store.openFromUrl(pushUrl("sign_in"));
+    expect(store.get()).toMatchObject({ panel: "profile", panelArg: "account" });
+    expect(pushText("sign_in", {}, "pl", "Europe/Warsaw").title).toBe("Zachowaj swoje konto w Siosi");
+    history.replaceState(null, "", "/?launch=0&open=account");
+    const cold = await boot({ who: { anonymous: true } });
+    expect(cold.store.get()).toMatchObject({ panel: "profile", panelArg: "account" });
   });
 
   it("a session planted by a link (login CSRF) is wiped from the address and takes nothing in", async () => {
