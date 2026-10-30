@@ -1,4 +1,5 @@
-// AppStore: boot sequence (config → backend → reachability → session → invite → nickname), the
+// AppStore: boot sequence (config → backend → reachability → deployment → session → sign-in (2.12)
+// → invite → nickname), the
 // user's live server state (MyState) kept fresh by realtime events plus a polling backstop, the
 // server clock offset (countdowns use server time — §12 clock skew) and UI navigation state.
 //
@@ -13,10 +14,11 @@ import { createContext, useContext, useSyncExternalStore } from "react";
 import { createBackend } from "../backend";
 import type { Backend, PushMessage } from "../backend/types";
 import { pushText, pushUrl } from "../../supabase/functions/_shared/push-text";
-import { showLocal } from "../services/push";
+import { dropPushSubscription, showLocal } from "../services/push";
+import { clearGoogleStart, markGoogleStart, takeAuthReturn, type GoogleError } from "../services/authReturn";
 import { loadConfig, type AppConfig } from "../config";
 import { CADENCE } from "../core/defaults";
-import type { ChatRoom, DeploymentConfig, Lang, Mode, MyState, NotificationItem, Profile, Vehicle } from "../core/types";
+import type { ChatRoom, DeploymentConfig, Lang, Mode, MyState, NotificationItem, Profile, Vehicle, WhoAmI } from "../core/types";
 import { ServerError } from "../core/types";
 import { browserLang } from "../i18n";
 import { setGeocodeUrl } from "../services/geocode";
@@ -24,7 +26,9 @@ import { setRoutingUrl } from "../services/routing";
 import { deviceId, readPref, unsupportedFeatures, writePref } from "../services/device";
 import { applyTheme, readThemePref, saveThemePref, type ThemePref } from "../services/theme";
 
-export type Phase = "loading" | "unsupported" | "unavailable" | "invite" | "nickname" | "ready";
+export type Phase = "loading" | "unsupported" | "unavailable" | "signin" | "invite" | "nickname" | "ready";
+/** 2.12: why the sign-in screen shows (said on it), null = a first sign-in. */
+export type SignInNotice = "sign_in_required" | "account_merged" | "session_lost" | "google_failed";
 /** Outcome of opening a master-profile link, shown once. */
 export type LinkNotice =
   | "joined"
@@ -37,7 +41,10 @@ export type LinkNotice =
   | "rate_limited"
   | "active_trip"
   | "active_ride"
-  | "link_failed";
+  | "link_failed"
+  // 2.12: this phone's old account joined the signed-in one; Google did not finish (signed in already)
+  | "merged"
+  | "google_failed";
 /** 2.3: "chat" shows one room's thread (panelArg = the room). */
 /** 2.6: "family" = Family & contracts; "report" = the weekly report (panelArg = its Monday, or null). */
 export type Panel = "profile" | "history" | "vehicle" | "bookings" | "request" | "appointment" | "chat" | "family" | "report" | "yolo" | null;
@@ -94,6 +101,16 @@ export interface AppSnapshot {
   moveConfirm: string | null;
   /** A notification shown inside the app while it is in front (demo backend); a tap opens `url`. */
   pushToast: { title: string; body: string; url: string | null } | null;
+  /** 2.12 (V81): who this session is (anonymous, member, merged away), from siosia_whoami at boot. */
+  who: WhoAmI | null;
+  signInNotice: SignInNotice | null;
+  /** What the notice names: the account this phone was merged into, Google's reason. */
+  signInDetail: string | null;
+  /**
+   * 2.12 (FR-327): this phone's old account was not joined to the signed-in one — reason = the
+   * error (Try again while the code lives), null = it was parked for another sign-in (skipped).
+   */
+  absorbIssue: { publicId: string | null; reason: string | null; retry: boolean } | null;
 }
 
 const INITIAL: AppSnapshot = {
@@ -119,7 +136,11 @@ const INITIAL: AppSnapshot = {
   linkNotice: null,
   masterConfirm: null,
   moveConfirm: null,
-  pushToast: null
+  pushToast: null,
+  who: null,
+  signInNotice: null,
+  signInDetail: null,
+  absorbIssue: null
 };
 
 const MASTER_KEY = "siosia.masterToken";
@@ -183,6 +204,108 @@ function clearMasterToken(): void {
     /* storage unavailable */
   }
 }
+
+// ---------- 2.12: signing in and taking this phone's old account along ----------
+
+export { captureAuthReturn } from "../services/authReturn";
+
+/**
+ * This phone's anonymous account, parked before signing in (a transfer code, its 30 minutes): the
+ * signed-in account takes it in after the reload — only when the sign-in is the one it was parked
+ * for (the email typed, or Google in the same page load), so a shared phone never hands one
+ * person's account to another (FR-327).
+ */
+interface ParkedAbsorb {
+  code: string;
+  exp: number;
+  oldPublicId: string | null;
+  /** The email typed (lower case); null = Google. */
+  forEmail: string | null;
+  /** The sign-in was checked to be the one it was parked for (a retry needs no new check). */
+  bound: boolean;
+}
+const ABSORB_KEY = "siosia.absorb";
+
+export function readAbsorb(): ParkedAbsorb | null {
+  try {
+    const raw = localStorage.getItem(ABSORB_KEY);
+    return raw ? (JSON.parse(raw) as ParkedAbsorb) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAbsorb(p: ParkedAbsorb): void {
+  try {
+    localStorage.setItem(ABSORB_KEY, JSON.stringify(p));
+  } catch {
+    /* storage unavailable: the operator merges the old account by its public id */
+  }
+}
+
+function clearAbsorb(): void {
+  try {
+    localStorage.removeItem(ABSORB_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+const SENT_KEY = "siosia.signinEmail";
+const SENT_MS = 30 * 60_000;
+
+/** The address a sign-in code went to from this phone in the last 30 minutes (the code step survives a relaunch). */
+export function readSentEmail(): string | null {
+  return readSent()?.email ?? null;
+}
+
+/** …and when (Resend waits a minute from then, across a relaunch too). */
+export function readSent(): { email: string; at: number } | null {
+  try {
+    const raw = localStorage.getItem(SENT_KEY);
+    const s = raw ? (JSON.parse(raw) as { email?: string; at?: number }) : null;
+    return s?.email && s.at && Date.now() - s.at < SENT_MS ? { email: s.email, at: s.at } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function keepSentEmail(email: string | null): void {
+  try {
+    if (email) localStorage.setItem(SENT_KEY, JSON.stringify({ email, at: Date.now() }));
+    else localStorage.removeItem(SENT_KEY);
+  } catch {
+    /* storage unavailable: the code step lasts until a reload */
+  }
+}
+
+/** The words for a Google round trip that did not finish (a fixed reason, never Google's text). */
+function googleErrorKey(error: GoogleError, intent: "signin" | "link" | null, d: DeploymentConfig): string {
+  const base = error === "cancelled" ? "signin.googleCancelled" : error === "in_use" ? "signin.googleInUse" : "signin.googleFailed";
+  return intent !== "link" && d.emailSignIn ? `${base}|signin.useEmail` : base;
+}
+
+/**
+ * One take-over at a time per phone (two tabs of the app share the parked code). A tab that waits
+ * more than 15 s gives up (null): the next boot tries again.
+ */
+async function exclusive<T>(fn: () => Promise<T>): Promise<T | null> {
+  const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
+  if (!locks) return fn();
+  const signal = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(15_000) : undefined;
+  try {
+    return (await locks.request("siosia.absorb", signal ? { signal } : {}, fn)) as T;
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === "AbortError" || e.name === "TimeoutError")) return null;
+    throw e;
+  }
+}
+
+/** Errors that a later try cannot fix: the parked code is dropped. */
+const ABSORB_FINAL = new Set([
+  "bad_transfer", "already_merged", "account_merged", "other_realm", "two_masters", "two_families",
+  "merge_conflict", "sign_in_required", "bad_input", "not_found"
+]);
 
 export class AppStore {
   // This phone's appearance choice is read per store (V50): a store made after a change sees it.
@@ -297,12 +420,43 @@ export class AppStore {
       if (!this.backend) this.backend = await this.factory(cfg);
       const api = this.backend;
       await api.ping();
-      const uid = await api.start();
+      // 2.12: how this deployment signs people in comes first (siosia_config needs no session).
       const deployment = await api.getConfig();
-      this.patch({ uid, deployment });
+      this.patch({ deployment });
+      const { uid, sessionLost } = await api.start({ anonymousOk: deployment.authMode !== "accounts" });
+      this.patch({ uid });
+      // After start(): supabase-js has taken the session from a Google return this tab started.
+      const authReturn = takeAuthReturn();
+      const googleError = authReturn.error ? googleErrorKey(authReturn.error, authReturn.intent, deployment) : null;
+      // Google came back: the parked old account is bound to this sign-in now, before anything can fail.
+      const parked = readAbsorb();
+      if (authReturn.google && parked && parked.forEmail === null && !parked.bound) writeAbsorb({ ...parked, bound: true });
+      // Google did not sign this phone in: nothing to take along for that attempt.
+      if (authReturn.error && authReturn.intent === "signin") clearAbsorb();
+      if (!uid) {
+        this.toSignIn(googleError ? "google_failed" : sessionLost ? "session_lost" : null, googleError);
+        return;
+      }
+      let who = await api.whoami(deviceId());
+      this.patch({ who });
+      // A merged-away account, or an anonymous one once accounts are required: sign in (V85, V86).
+      if (who.mergedInto) {
+        this.toSignIn("account_merged", who.mergedInto);
+        return;
+      }
+      if (who.signInRequired) {
+        this.toSignIn("sign_in_required", null);
+        return;
+      }
+      if (googleError) this.patch({ linkNotice: "google_failed", signInDetail: googleError });
       if (token) await this.openMaster(token, false);
       if (joinToken) await this.openJoinLink(joinToken);
-      if (!(await api.isMember(deviceId()))) {
+      const absorbed = await this.absorbParked();
+      if (token || joinToken || absorbed) {
+        who = await api.whoami(deviceId());
+        this.patch({ who });
+      }
+      if (!who.member) {
         this.patch({ phase: "invite" });
         return;
       }
@@ -319,9 +473,10 @@ export class AppStore {
    */
   private async openMaster(token: string, replace: boolean): Promise<void> {
     try {
-      await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
+      const p = await this.api.joinMaster(token, deviceId(), this.snap.lang, replace);
       clearMasterToken();
-      this.patch({ linkNotice: "joined", masterConfirm: null });
+      // 2.12 (FR-328): a closed link opened by a phone already on it (an old bookmark): nothing to say.
+      this.patch({ linkNotice: p.noop ? this.snap.linkNotice : "joined", masterConfirm: null });
     } catch (e) {
       const code = e instanceof ServerError ? e.code : null;
       if (code === "has_profile") {
@@ -332,6 +487,166 @@ export class AppStore {
       if (code === "bad_link" || code === "rate_limited" || code === "active_trip" || code === "active_ride") this.patch({ linkNotice: code });
       else this.patch({ linkNotice: "link_failed" });
     }
+  }
+
+  // ---------- 2.12 accounts (FR-326, FR-327) ----------
+
+  private toSignIn(notice: SignInNotice | null, detail: string | null): void {
+    this.patch({ phase: "signin", signInNotice: notice, signInDetail: detail });
+  }
+
+  /** The invite screen's "I have an account": the sign-in screen (the anonymous session stays until then). */
+  showSignIn(): void {
+    this.toSignIn(null, null);
+  }
+
+  /** Whether the sign-in screen may step back to the invite code (a session that is not frozen). */
+  canSkipSignIn(): boolean {
+    const s = this.snap;
+    if (!s.uid || s.who?.mergedInto || s.signInNotice === "account_merged" || s.signInNotice === "sign_in_required") return false;
+    return s.who?.anonymous === false || s.deployment?.authMode !== "accounts";
+  }
+
+  /** Back from the sign-in screen to the invite code. */
+  skipSignIn(): void {
+    if (this.canSkipSignIn()) this.patch({ phase: "invite", signInNotice: null });
+  }
+
+  /**
+   * Before signing in: this phone's anonymous account (with a profile) hands itself over with a
+   * transfer code, parked here for the signed-in account to take in after the reload.
+   */
+  private async prepareAbsorb(forEmail: string | null): Promise<void> {
+    const who = this.snap.who;
+    clearAbsorb(); // a sign-in never inherits what an earlier attempt parked
+    if (!who?.anonymous || !(who.hasProfile || this.snap.profile)) return;
+    try {
+      const t = await this.api.createTransfer();
+      writeAbsorb({ code: t.code, exp: t.expiresAt, oldPublicId: this.snap.profile?.publicId ?? who.publicId ?? null, forEmail, bound: false });
+    } catch {
+      // not a member any more: nothing to take along
+    }
+  }
+
+  /** Emails a 6-digit code (FR-326). */
+  async sendCode(email: string): Promise<void> {
+    const e = email.trim().toLowerCase();
+    await this.prepareAbsorb(e);
+    await this.api.sendCode!(e);
+  }
+
+  /** Signs in with the code; the page reloads as the signed-in account (and takes the old one in). */
+  async verifyCode(email: string, code: string): Promise<void> {
+    await this.api.verifyCode!(email.trim().toLowerCase(), code);
+    keepSentEmail(null);
+  }
+
+  async signInWithGoogle(): Promise<void> {
+    await this.prepareAbsorb(null);
+    markGoogleStart("signin");
+    try {
+      await this.api.signInWithGoogle!();
+    } catch (e) {
+      clearGoogleStart();
+      throw e;
+    }
+  }
+
+  async linkGoogle(): Promise<void> {
+    markGoogleStart("link");
+    try {
+      await this.api.linkGoogle!();
+    } catch (e) {
+      clearGoogleStart();
+      throw e;
+    }
+  }
+
+  /** This phone only: its notifications for the account stop, the other phones stay signed in. */
+  async signOut(): Promise<void> {
+    clearAbsorb();
+    keepSentEmail(null);
+    await dropPushSubscription(this.api).catch(() => {});
+    await this.api.signOut!();
+    // The session change reloads the page; this is the backstop.
+    setTimeout(() => {
+      if (typeof location !== "undefined") location.reload();
+    }, 1500);
+  }
+
+  /**
+   * Takes in the parked old account once this phone is signed in to the account it was parked for.
+   * True when it was joined. A sign-in it was not parked for drops it (and says so).
+   */
+  private async absorbParked(): Promise<boolean> {
+    const who = this.snap.who;
+    if (!who || who.anonymous) return false; // still the old session: the sign-in is not done yet
+    const before = readAbsorb();
+    if (!before) return false;
+    const done = await exclusive(async () => {
+      const p = readAbsorb(); // read under the lock: another tab may have used it
+      if (!p) return true; // it did: membership may have changed, the boot asks again
+      if (p.exp <= Date.now()) {
+        clearAbsorb();
+        return false;
+      }
+      if (!p.bound) {
+        // Google is bound at its return (boot); an email code by the session's own address, read locally.
+        const email = p.forEmail ? await (this.api.sessionEmail?.() ?? Promise.resolve(null)).catch(() => undefined) : null;
+        if (email === undefined) {
+          this.patch({ absorbIssue: { publicId: p.oldPublicId, reason: "unavailable", retry: true } });
+          return false;
+        }
+        if (!p.forEmail || email !== p.forEmail) {
+          clearAbsorb();
+          this.patch({ absorbIssue: { publicId: p.oldPublicId, reason: null, retry: false } });
+          return false;
+        }
+        writeAbsorb({ ...p, bound: true });
+      }
+      try {
+        await this.api.absorb(p.code, deviceId(), true);
+        clearAbsorb();
+        this.patch({ linkNotice: "merged", absorbIssue: null });
+        return true;
+      } catch (e) {
+        const reason = e instanceof ServerError ? e.code : "unavailable";
+        const final = ABSORB_FINAL.has(reason);
+        if (final) clearAbsorb();
+        this.patch({ absorbIssue: { publicId: p.oldPublicId, reason, retry: !final } });
+        return false;
+      }
+    });
+    return done ?? false;
+  }
+
+  /** "Try again" on a failed take-over (the code lives 30 minutes): boots again, which retries it. */
+  async retryAbsorb(): Promise<void> {
+    const p = readAbsorb();
+    if (!p || p.exp <= Date.now()) {
+      clearAbsorb();
+      this.patch({ absorbIssue: { publicId: this.snap.absorbIssue?.publicId ?? p?.oldPublicId ?? null, reason: "bad_transfer", retry: false } });
+      return;
+    }
+    this.patch({ absorbIssue: null });
+    this.dispose();
+    await this.boot();
+  }
+
+  dismissAbsorbIssue(): void {
+    if (this.snap.absorbIssue) this.patch({ absorbIssue: null });
+  }
+
+  /** Account → "Merge another account here": whose account the code is, for the person to confirm. */
+  previewMerge(code: string) {
+    return this.api.absorbPreview(code.trim());
+  }
+
+  /** …then the merge (FR-327): its push does not follow (that account's phones sign in again). */
+  async mergeAccount(code: string): Promise<void> {
+    await this.api.absorb(code.trim(), deviceId(), false);
+    await this.reloadProfile();
+    await this.refresh();
   }
 
   /** 2.8 (FR-302): joins with someone's invite link — once: on a failure the user asks for a new one. */
@@ -786,6 +1101,8 @@ export class AppStore {
         } while (this.refreshAgain);
       } catch (e) {
         if (e instanceof ServerError && (e.code === "not_member" || e.code === "no_profile")) void this.lostProfile();
+        // 2.12 (V85, V86): merged away, or accounts now required — boot again, which asks to sign in
+        else if (e instanceof ServerError && (e.code === "sign_in_required" || e.code === "account_merged")) void this.lostProfile(true);
         throw e;
       } finally {
         this.refreshing = null;
@@ -815,13 +1132,19 @@ export class AppStore {
 
   private losing = false;
 
-  /** This account lost its profile or membership (moved to another app or phone, deleted, link replaced). */
-  private async lostProfile(): Promise<void> {
+  /**
+   * This account lost its profile or membership (moved to another app or phone, deleted, link
+   * replaced). `quiet`: it must sign in (2.12) — the sign-in screen says why, no "moved away" toast.
+   */
+  private async lostProfile(quiet = false): Promise<void> {
     if (this.losing || this.snap.phase !== "ready") return;
     this.losing = true;
     try {
       this.dispose();
-      this.patch({ profile: null, vehicle: null, screen: "home", mode: null, panel: null, panelArg: null, my: null, linkNotice: "moved_away" });
+      this.patch({
+        profile: null, vehicle: null, screen: "home", mode: null, panel: null, panelArg: null, my: null,
+        linkNotice: quiet ? this.snap.linkNotice : "moved_away"
+      });
       await this.boot();
     } finally {
       this.losing = false;

@@ -81,6 +81,24 @@ alter table public.app_config add constraint app_config_driver_standby_check che
 -- null = notifications not set up) and the site address (also the Web Push contact).
 alter table public.app_config add column if not exists push_function_url text;
 alter table public.app_config add column if not exists site_url text;
+-- 2.12 (FR-326, FR-329): how people sign in and become members. auth_mode 'anonymous' = every phone
+-- may still start with an anonymous session (the migration window); 'accounts' = only a signed-in
+-- account (email code or Google) may use Siosia — anonymous sessions get sign_in_required.
+-- email_sign_in = the app offers "Send me a code" (switch it on once the mail sender is set up);
+-- google_sign_in = where the app offers "Continue with Google" (once the Google provider is set
+-- up). With neither, no phone is asked to sign in. membership_mode 'invite' = the invite code or a
+-- #join= link makes a member; 'open' = every signed-in account is a member.
+alter table public.app_config add column if not exists email_sign_in boolean not null default false;
+alter table public.app_config add column if not exists auth_mode text not null default 'anonymous';
+alter table public.app_config drop constraint if exists app_config_auth_mode_check;
+alter table public.app_config add constraint app_config_auth_mode_check check (auth_mode in ('anonymous', 'accounts'));
+alter table public.app_config add column if not exists google_sign_in text not null default 'off';
+alter table public.app_config drop constraint if exists app_config_google_sign_in_check;
+alter table public.app_config add constraint app_config_google_sign_in_check
+  check (google_sign_in in ('off', 'no_standalone', 'no_ios', 'on'));
+alter table public.app_config add column if not exists membership_mode text not null default 'invite';
+alter table public.app_config drop constraint if exists app_config_membership_mode_check;
+alter table public.app_config add constraint app_config_membership_mode_check check (membership_mode in ('invite', 'open'));
 insert into public.app_config (id) values (1) on conflict (id) do nothing;
 
 -- Secrets (one row). No policy → unreadable by clients.
@@ -132,6 +150,13 @@ alter table public.master_profiles add column if not exists default_dropoff json
 -- Driver profiles: {make, model, colour, seats, plate?}; without a plate each phone adds its own.
 alter table public.master_profiles add column if not exists vehicle jsonb;
 alter table public.profiles add column if not exists master_id text;
+-- 2.12 (FR-328): whether the link still lets a phone in. Closing it leaves the profile switched on —
+-- its presets (fixed fare, role, car) and the phones already on it keep working — unlike active =
+-- false (which voids those phones' memberships) or a new token (which deletes them).
+alter table public.master_profiles add column if not exists joinable boolean not null default true;
+-- 2.12 (FR-327): set on an account's profile when it was merged into a signed-in account: the old
+-- account is frozen (account_merged) and its phone is sent to sign in. The row keeps its public id.
+alter table public.profiles add column if not exists merged_into uuid;
 
 create table if not exists public.vehicles (
   user_id    uuid primary key references auth.users (id) on delete cascade,
@@ -1892,8 +1917,30 @@ returns uuid[] language sql stable security definer set search_path = public as 
                   and siosia_member_ok(o.user_id));
 $$;
 
--- Caller checks shared by every client function. Returns an error code or null.
-create or replace function public.siosia_guard(p_need_profile boolean)
+-- 2.12 (FR-329, V86): the caller holds an anonymous session while the deployment asks for accounts.
+create or replace function public.siosia_anon_blocked()
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false)
+     and coalesce((select auth_mode from app_config where id = 1), 'anonymous') = 'accounts';
+$$;
+
+-- 2.12 (FR-327, V85): this account was merged into a signed-in account (frozen: account_merged).
+create or replace function public.siosia_merged_away(p_user uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from profiles where user_id = p_user and merged_into is not null);
+$$;
+
+-- 2.12: at most 20 phones are recorded per person — a device id is the caller's to choose, so a
+-- loop of made-up ids must not grow the table. A device already recorded always counts.
+create or replace function public.siosia_device_room(p_user uuid, p_device text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from memberships where user_id = p_user and device_id = p_device)
+      or (select count(*) from memberships where user_id = p_user) < 20;
+$$;
+
+-- Caller checks without the 2.12 account rules: siosia_create_transfer uses it, so an anonymous
+-- straggler can still hand its account over to the account it signs in with. Error code or null.
+create or replace function public.siosia_guard_any(p_need_profile boolean)
 returns text language plpgsql stable security definer set search_path = public as $$
 declare v_uid uuid := auth.uid();
 begin
@@ -1903,6 +1950,16 @@ begin
     return 'no_profile';
   end if;
   return null;
+end $$;
+
+-- Caller checks shared by every client function. Returns an error code or null. 2.12: a merged-away
+-- account is frozen, and an anonymous session must sign in once the deployment asks for accounts.
+create or replace function public.siosia_guard(p_need_profile boolean)
+returns text language plpgsql stable security definer set search_path = public as $$
+begin
+  if siosia_merged_away(auth.uid()) then return 'account_merged'; end if;
+  if siosia_anon_blocked() then return 'sign_in_required'; end if;
+  return siosia_guard_any(p_need_profile);
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
@@ -1931,7 +1988,12 @@ returns jsonb language sql stable security definer set search_path = public as $
     'timezone', timezone,
     'standbyHours', driver_standby_h,
     'operatorContact', operator_contact,
-    'vapidPublicKey', (select vapid_public from app_secrets where id = 1))
+    'vapidPublicKey', (select vapid_public from app_secrets where id = 1),
+    -- 2.12: read before any session exists (granted to anon), so a phone knows how to sign in
+    'authMode', auth_mode,
+    'emailSignIn', email_sign_in,
+    'googleSignIn', google_sign_in,
+    'membershipMode', membership_mode)
   from app_config where id = 1;
 $$;
 
@@ -1977,6 +2039,10 @@ returns jsonb language plpgsql security definer set search_path = public, extens
 declare v_uid uuid := auth.uid(); v_hash text; v_test text; v_sandbox boolean;
 begin
   if v_uid is null then return siosia_err('forbidden'); end if;
+  -- 2.12 (V86): an anonymous session cannot join once accounts are required; a merged-away
+  -- account is not brought back by the invite code (its phone signs in instead).
+  if siosia_anon_blocked() then return siosia_err('sign_in_required'); end if;
+  if siosia_merged_away(v_uid) then return siosia_err('already_merged'); end if;
   if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
   if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
     return siosia_err('rate_limited');
@@ -1988,8 +2054,12 @@ begin
     insert into invite_failures (user_id) values (v_uid);
     return siosia_err('bad_invite');
   end if;
-  insert into memberships (user_id, device_id, sandbox) values (v_uid, p_device, v_sandbox)
-  on conflict (user_id, device_id) do update set sandbox = memberships.sandbox or excluded.sandbox;
+  if siosia_device_room(v_uid, p_device) then
+    insert into memberships (user_id, device_id, sandbox) values (v_uid, p_device, v_sandbox)
+    on conflict (user_id, device_id) do update set sandbox = memberships.sandbox or excluded.sandbox;
+  else
+    update memberships set sandbox = sandbox or v_sandbox where user_id = v_uid; -- 2.12: 20 phones recorded
+  end if;
   return siosia_ok('true'::jsonb);
 end $$;
 
@@ -2031,6 +2101,8 @@ returns jsonb language plpgsql security definer set search_path = public, extens
 declare v_uid uuid := auth.uid(); m master_profiles;
 begin
   if v_uid is null then return siosia_err('forbidden'); end if;
+  if siosia_anon_blocked() then return siosia_err('sign_in_required'); end if; -- 2.12 (V86)
+  if siosia_merged_away(v_uid) then return siosia_err('already_merged'); end if;
   if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
   if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
     return siosia_err('rate_limited');
@@ -2039,6 +2111,15 @@ begin
    where token_hash = encode(digest(btrim(coalesce(p_token, '')), 'sha256'), 'hex') and active;
   if m.id is null then
     insert into invite_failures (user_id) values (v_uid);
+    return siosia_err('bad_link');
+  end if;
+  -- 2.12 (FR-328): a closed link. A phone already on this profile (an old bookmark, the Home Screen
+  -- launch address) changes nothing and hears nothing; anyone else gets bad_link — never counted as
+  -- a failed attempt, so a bookmark cannot lock a person out of joining or moving their account.
+  if not m.joinable then
+    if exists (select 1 from profiles where user_id = v_uid and not deleted and master_id = m.id) then
+      return siosia_ok(siosia_profile_json(v_uid) || '{"noop": true}'::jsonb);
+    end if;
     return siosia_err('bad_link');
   end if;
   perform pg_advisory_xact_lock(hashtextextended(v_uid::text, 7));
@@ -2056,9 +2137,11 @@ begin
     return siosia_err('has_profile');
   end if;
   perform siosia_go_offline(v_uid);
-  insert into memberships (user_id, device_id, via_master) values (v_uid, p_device, m.id)
-  on conflict (user_id, device_id) do update
-    set via_master = case when memberships.via_master is null then null else excluded.via_master end;
+  if siosia_device_room(v_uid, p_device) then
+    insert into memberships (user_id, device_id, via_master) values (v_uid, p_device, m.id)
+    on conflict (user_id, device_id) do update
+      set via_master = case when memberships.via_master is null then null else excluded.via_master end;
+  end if;
   insert into profiles (user_id, nickname, language, master_id)
   values (v_uid, m.nickname, case when p_language = 'pl' then 'pl' else 'en' end, m.id)
   on conflict (user_id) do update set nickname = excluded.nickname, master_id = excluded.master_id, deleted = false;
@@ -2067,10 +2150,12 @@ begin
   return siosia_ok(siosia_profile_json(v_uid));
 end $$;
 
--- A one-time code (30 min) that lets another app or phone take over this profile.
+-- A one-time code (30 min) that lets another app or phone take over this profile. 2.12: also the
+-- way an anonymous account hands itself to the account its phone signs in with (siosia_absorb), so
+-- it works for an anonymous session even once accounts are required (siosia_guard_any).
 create or replace function public.siosia_create_transfer()
 returns jsonb language plpgsql security definer set search_path = public, extensions as $$
-declare v_err text := siosia_guard(true); v_uid uuid := auth.uid();
+declare v_err text := siosia_guard_any(true); v_uid uuid := auth.uid();
   v_alpha text := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; v_raw text := ''; b bytea := gen_random_bytes(8);
   v_exp timestamptz := now() + interval '30 minutes';
 begin
@@ -2093,6 +2178,8 @@ returns jsonb language plpgsql security definer set search_path = public, extens
 declare v_uid uuid := auth.uid(); t account_transfers; v_old uuid; v_via text; v_hash text; v_photo text; k kids;
 begin
   if v_uid is null then return siosia_err('forbidden'); end if;
+  if siosia_anon_blocked() then return siosia_err('sign_in_required'); end if; -- 2.12 (V86)
+  if siosia_merged_away(v_uid) then return siosia_err('already_merged'); end if;
   if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
   if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
     return siosia_err('rate_limited');
@@ -2107,9 +2194,22 @@ begin
     insert into invite_failures (user_id) values (v_uid);
     return siosia_err('bad_transfer');
   end if;
+  -- 2.12 (V86): a signed-in account — or one other accounts were merged into — never moves to
+  -- another session by a move code (its other phones and merged phones would lose it): this phone
+  -- signs in with the same email or Google instead.
+  if v_old <> v_uid and (exists (select 1 from auth.users where id = v_old and not coalesce(is_anonymous, true))
+                         or exists (select 1 from profiles where merged_into = v_old)) then
+    return siosia_err('sign_in_instead');
+  end if;
   if v_old = v_uid then
     delete from account_transfers where code_hash = v_hash;
     return siosia_ok(siosia_profile_json(v_uid));
+  end if;
+  -- 2.12: a signed-in account (shared by its phones, holding what they brought in) never takes a
+  -- move code — that would throw its own kids, family seat and bell away; it merges instead
+  -- (Profile → "Merge another account here", siosia_absorb keeps both).
+  if (auth.jwt() ->> 'is_anonymous') = 'false' or exists (select 1 from profiles where merged_into = v_uid) then
+    return siosia_err('use_merge');
   end if;
   -- Both accounts, always in the same order (no deadlock with a concurrent move).
   perform pg_advisory_xact_lock(hashtextextended(least(v_old, v_uid)::text, 7));
@@ -2271,9 +2371,12 @@ begin
   return format('Master profile %s is ready. Share <app URL>#master=<token>.', p_id);
 end $$;
 
+-- 2.12 (FR-007 amended): membership is the person's, on every phone — the device argument stays
+-- for installed apps that still send it (v1 signatures kept), but no longer narrows the answer.
+-- An anonymous session that must sign in, or a merged-away account, is not a member here.
 create or replace function public.siosia_is_member(p_device text)
 returns boolean language sql stable security definer set search_path = public as $$
-  select siosia_member_ok(auth.uid(), p_device);
+  select siosia_member_ok(auth.uid()) and not siosia_anon_blocked() and not siosia_merged_away(auth.uid());
 $$;
 
 create or replace function public.siosia_get_profile()
@@ -4790,6 +4893,8 @@ returns jsonb language plpgsql security definer set search_path = public, extens
 declare v_uid uuid := auth.uid(); i member_invites;
 begin
   if v_uid is null then return siosia_err('forbidden'); end if;
+  if siosia_anon_blocked() then return siosia_err('sign_in_required'); end if; -- 2.12 (V86)
+  if siosia_merged_away(v_uid) then return siosia_err('already_merged'); end if;
   if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
   if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
     return siosia_err('rate_limited');
@@ -4801,7 +4906,7 @@ begin
     return siosia_err('bad_link');
   end if;
   update member_invites set used_by = v_uid, used_at = now() where token_hash = i.token_hash;
-  if not siosia_member_ok(v_uid) then
+  if not siosia_member_ok(v_uid) and siosia_device_room(v_uid, p_device) then
     insert into memberships (user_id, device_id, sandbox) values (v_uid, p_device, siosia_sandbox(i.from_user))
     on conflict (user_id, device_id) do update set sandbox = memberships.sandbox or excluded.sandbox;
   end if;
@@ -5596,7 +5701,7 @@ $$;
 
 create or replace function public.siosia_can_see_photo(p_path text)
 returns boolean language sql stable security definer set search_path = public as $$
-  select siosia_can_see_photo(p_path, auth.uid());
+  select siosia_can_see_photo(p_path, auth.uid()) and not siosia_anon_blocked(); -- 2.12 (V86)
 $$;
 
 -- Write (upload, replace, remove) an object: a member, under the folder of their own public id —
@@ -5620,7 +5725,7 @@ $$;
 
 create or replace function public.siosia_photo_upload_ok(p_path text)
 returns boolean language sql stable security definer set search_path = public as $$
-  select siosia_photo_upload_ok(p_path, auth.uid());
+  select siosia_photo_upload_ok(p_path, auth.uid()) and not siosia_anon_blocked(); -- 2.12 (V86)
 $$;
 
 -- ---------------------------------------------------------------------------------------------
@@ -5655,6 +5760,329 @@ begin
   update notifications set read_at = now() where user_id = v_uid and read_at is null;
   perform siosia_notify(v_uid);
   return siosia_ok('true'::jsonb);
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 2.12 accounts (FR-326–FR-331): sign in with an email code or Google, one account per person on
+-- every phone. An anonymous account a phone used before is merged into the signed-in one.
+-- ---------------------------------------------------------------------------------------------
+
+-- Who am I to Siosia (V81) — answered for every session, anonymous or merged-away included, so the
+-- app can route it: sign in, the invite code, or the app. A member's phone is recorded as one of
+-- its devices (the way it became a member: the invite code first, else its master link). With
+-- membership_mode 'open' (FR-329) a signed-in account becomes a member here.
+create or replace function public.siosia_whoami(p_device text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := auth.uid(); v_anon boolean := coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false);
+  v_blocked boolean := siosia_anon_blocked(); v_into text; v_member boolean := false;
+  v_room boolean := (select count(*) from memberships where user_id = auth.uid()) < 20;
+begin
+  if v_uid is null then return siosia_err('forbidden'); end if;
+  if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
+  select coalesce(q.public_id, '?') into v_into
+    from profiles p left join profiles q on q.user_id = p.merged_into
+   where p.user_id = v_uid and p.merged_into is not null;
+  if v_into is null and not v_blocked then
+    if not v_anon and not siosia_member_ok(v_uid) and v_room
+       and (select membership_mode from app_config where id = 1) = 'open' then
+      insert into memberships (user_id, device_id) values (v_uid, p_device) on conflict do nothing;
+    end if;
+    v_member := siosia_member_ok(v_uid);
+    -- at most 20 phones recorded per person (a device id is the caller's to choose)
+    if v_member and v_room then
+      insert into memberships (user_id, device_id, via_master, sandbox)
+      select v_uid, p_device,
+             (select mb.via_master from memberships mb where mb.user_id = v_uid order by mb.via_master nulls first limit 1),
+             siosia_sandbox(v_uid)
+      on conflict (user_id, device_id) do nothing;
+    end if;
+  end if;
+  return siosia_ok(jsonb_build_object(
+    'member', v_member,
+    'hasProfile', exists (select 1 from profiles where user_id = v_uid and not deleted),
+    'anonymous', v_anon,
+    'signInRequired', v_blocked,
+    'mergedInto', v_into,
+    'publicId', (select public_id from profiles where user_id = v_uid and not deleted),
+    'sandbox', siosia_sandbox(v_uid)));
+end $$;
+
+-- What stops merging p_from into p_into, checked before anything changes (V82): an error code or
+-- null. Shared by siosia_merge_accounts and siosia_absorb_preview (so a preview never confirms what
+-- the merge would refuse).
+create or replace function public.siosia_merge_blocker(p_from uuid, p_into uuid, p_mode text)
+returns text language plpgsql stable security definer set search_path = public as $$
+declare f profiles; t profiles; v_ff uuid; v_tf uuid;
+begin
+  select * into f from profiles where user_id = p_from;
+  if f.user_id is null or f.deleted then
+    return case when f.merged_into is not null then 'already_merged' else 'bad_transfer' end;
+  end if;
+  if p_mode <> 'operator' and not siosia_member_ok(p_from) then return 'bad_transfer'; end if;
+  select * into t from profiles where user_id = p_into;
+  if t.merged_into is not null then return 'account_merged'; end if;
+  -- V66: one realm per account. A fresh account (no membership) takes the realm of what it absorbs.
+  if p_mode <> 'operator' and not siosia_same_realm(p_from, p_into)
+     and exists (select 1 from memberships where user_id = p_into) then
+    return 'other_realm';
+  end if;
+  if exists (select 1 from rides where status in ('requested','accepted','arrived','in_progress')
+             and (rider_id in (p_from, p_into) or driver_id in (p_from, p_into))) then
+    return 'active_ride';
+  end if;
+  select family_id into v_ff from family_members where user_id = p_from;
+  select family_id into v_tf from family_members where user_id = p_into;
+  if v_ff is not null and v_tf is not null and v_ff <> v_tf then return 'two_families'; end if;
+  if t.user_id is not null and not t.deleted and f.master_id is not null and t.master_id is not null
+     and f.master_id <> t.master_id then
+    return 'two_masters';
+  end if;
+  if exists (select 1 from rides a join rides b on b.appointment_id = a.appointment_id and b.leg = a.leg
+              where a.rider_id = p_from and b.rider_id = p_into and a.appointment_id is not null
+                and a.status not in ('cancelled', 'expired') and b.status not in ('cancelled', 'expired')) then
+    return 'merge_conflict';
+  end if;
+  return null;
+end $$;
+
+-- Merges account p_from into account p_into (FR-327, V82) — the person's other phone, or the
+-- anonymous account a phone used before signing in. Internal: siosia_absorb (the phone hands its old
+-- account over with a transfer code) and the operator's siosia_merge_into call it; never granted.
+-- Modelled on siosia_redeem_transfer, but nothing of either account is thrown away:
+--   * p_into without a profile (a fresh sign-in): p_from's whole profile row moves (public id,
+--     photo folders, nickname, master profile, counters) — the "move" shape;
+--   * p_into with a profile: it stays, takes what it lacks (photo, place, offers, master profile),
+--     p_from's row is kept as a deleted one with merged_into set (frozen: account_merged) — "merge";
+--   * kids, the bell, push subscriptions, memberships (all its phones) come along, never deleted;
+--   * duplicates a unique index forbids are resolved (offers, ratings, chat presence, contracts);
+--   * two different families, two different master profiles or a clashing ride leg stop it with an
+--     error before anything changes (the operator decides).
+-- p_mode 'absorb' (this phone's own old account) and 'manual' (another account's code, typed in
+-- Profile) need p_from to be a member in p_into's realm (or p_into new, no membership yet); 'manual'
+-- drops p_from's push subscriptions instead of moving them (its phones sign in again — a code must
+-- never send this account's notifications to someone else's phone); 'operator' (siosia_merge_into)
+-- skips the member and realm checks.
+create or replace function public.siosia_merge_accounts(p_from uuid, p_into uuid, p_mode text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare f profiles; t profiles; v_move boolean; v_ff uuid; v_tf uuid; k contracts; v_into_public text; v_key text; v_err text;
+begin
+  if p_from is null or p_into is null or p_from = p_into then return siosia_err('bad_input'); end if;
+  if p_mode is null or p_mode not in ('absorb', 'manual', 'operator') then return siosia_err('bad_input'); end if;
+  if not exists (select 1 from auth.users where id = p_into) then return siosia_err('not_found'); end if;
+  -- Both accounts, always in the same order (no deadlock with a concurrent move or merge).
+  perform pg_advisory_xact_lock(hashtextextended(least(p_from, p_into)::text, 7));
+  perform pg_advisory_xact_lock(hashtextextended(greatest(p_from, p_into)::text, 7));
+  perform siosia_sweep();
+  v_err := siosia_merge_blocker(p_from, p_into, p_mode);
+  if v_err is not null then return siosia_err(v_err); end if;
+  select * into f from profiles where user_id = p_from;
+  select * into t from profiles where user_id = p_into;
+  v_move := t.user_id is null or t.deleted;
+  select family_id into v_ff from family_members where user_id = p_from;
+  select family_id into v_tf from family_members where user_id = p_into;
+
+  perform siosia_go_offline(p_from);
+  perform siosia_go_offline(p_into);
+  update rides set rider_id = p_into where rider_id = p_from;
+  update rides set driver_id = p_into where driver_id = p_from;
+  update rides set excluded = array_replace(excluded, p_from, p_into) where p_from = any (excluded);
+  update appointments set client_id = p_into where client_id = p_from;
+  update appointments set provider_id = p_into where provider_id = p_from;
+  update appointments set tip_by = p_into where tip_by = p_from;
+  update appointment_series set client_id = p_into where client_id = p_from;
+  update appointment_series set provider_id = p_into where provider_id = p_from;
+  -- Both accounts may hold a card for the same ride, or have rated the same ride: keep p_into's.
+  delete from offers o using offers n
+   where o.driver_id = p_from and n.driver_id = p_into and n.ride_id = o.ride_id and n.round = o.round;
+  update offers set driver_id = p_into where driver_id = p_from;
+  delete from ratings g using ratings n where g.from_user = p_from and n.from_user = p_into and n.ride_id = g.ride_id;
+  delete from ratings g using ratings n where g.from_user = p_from and n.from_user = p_into and n.appointment_id = g.appointment_id;
+  update ratings set from_user = p_into where from_user = p_from;
+  update ratings set to_user = p_into where to_user = p_from;
+  -- Kids come along (both accounts' kids stay; photos follow their rows), and what each wrote.
+  update kids set owner_id = p_into where owner_id = p_from;
+  update kid_ratings set from_user = p_into where from_user = p_from;
+  update messages set sender = p_into where sender = p_from;
+  update appointment_updates set author = p_into where author = p_from;
+  -- The family seat moves (both in the same family: one seat stays) — never through leaving, which
+  -- could end the family's contracts.
+  if v_ff is not null then
+    if v_tf is null then update family_members set user_id = p_into where user_id = p_from;
+    else delete from family_members where user_id = p_from; end if;
+  end if;
+  delete from family_invites i
+   where i.to_user = p_from and i.status = 'pending'
+     and (i.family_id = (select family_id from family_members where user_id = p_into)
+          or exists (select 1 from family_invites j where j.to_user = p_into and j.family_id = i.family_id and j.status = 'pending'));
+  update family_invites set from_user = p_into where from_user = p_from;
+  update family_invites set to_user = p_into where to_user = p_from;
+  -- One active and one proposed contract per family and provider: p_from's duplicate yields (its
+  -- appointments keep the rate they were priced at).
+  for k in select c.* from contracts c
+            where c.provider_id = p_from and c.status in ('active', 'proposed')
+              and exists (select 1 from contracts d where d.provider_id = p_into and d.family_id = c.family_id and d.status = c.status) loop
+    update contracts set status = case when k.status = 'active' then 'replaced' else 'withdrawn' end, ended_at = now()
+     where id = k.id;
+  end loop;
+  update contracts set provider_id = p_into where provider_id = p_from;
+  update contracts set proposed_by = p_into where proposed_by = p_from;
+  update contracts set ended_by = p_into where ended_by = p_from;
+  update member_invites set from_user = p_into where from_user = p_from;
+  update member_invites set used_by = p_into where used_by = p_from;
+  update notifications set user_id = p_into where user_id = p_from;
+  update settlements set by_user = p_into where by_user = p_from;
+  update settlements set with_user = p_into where with_user = p_from;
+  update settlements set comment_by = p_into where comment_by = p_from;
+  delete from chat_presence o using chat_presence n where o.user_id = p_from and n.user_id = p_into and n.room = o.room;
+  update chat_presence set user_id = p_into where user_id = p_from;
+  -- Every phone keeps getting notifications, now for the one account — except after a typed code
+  -- ('manual'): that account's phones sign in again before they hear anything of this one.
+  if p_mode = 'manual' then
+    delete from push_outbox where user_id = p_from;
+    delete from push_subscriptions where user_id = p_from;
+  else
+    update push_outbox set user_id = p_into where user_id = p_from;
+    update push_subscriptions set user_id = p_into where user_id = p_from;
+  end if;
+  -- The profile.
+  if v_move then
+    delete from profiles where user_id = p_into; -- a deleted leftover of p_into, if any
+    update profiles set user_id = p_into where user_id = p_from;
+    -- The old account keeps a merged-away row (a new public id), so a phone still holding its
+    -- session is sent to sign in rather than to the invite code.
+    insert into profiles (user_id, nickname, deleted, merged_into, offers) values (p_from, 'Merged', true, p_into, '{}');
+  else
+    update profiles x set photo_path = coalesce(x.photo_path, f.photo_path),
+                          home = coalesce(x.home, f.home),
+                          offers = case when coalesce(cardinality(x.offers), 0) = 0 then f.offers else x.offers end,
+                          master_id = coalesce(x.master_id, f.master_id),
+                          nickname = case when x.master_id is null and f.master_id is not null then f.nickname else x.nickname end,
+                          created_at = least(x.created_at, f.created_at),
+                          rider_cancels = x.rider_cancels + f.rider_cancels,
+                          driver_cancels = x.driver_cancels + f.driver_cancels,
+                          late_cancels = x.late_cancels + f.late_cancels
+     where x.user_id = p_into;
+    if f.photo_path is not null and f.photo_path is distinct from (select photo_path from profiles where user_id = p_into) then
+      perform siosia_drop_photo_object(f.photo_path);
+    end if;
+    update profiles set deleted = true, merged_into = p_into, master_id = null, photo_path = null, offers = '{}', home = null
+     where user_id = p_from;
+  end if;
+  -- Accounts merged into p_from earlier now point at p_into.
+  update profiles set merged_into = p_into where merged_into = p_from;
+  -- 2.11 sides: a person's side is "p:" + their master profile, else the user. Every key that stood
+  -- for either account becomes the survivor's side (its master profile may come from p_from).
+  v_key := 'p:' || coalesce((select master_id from profiles where user_id = p_into and not deleted), p_into::text);
+  update settlements set from_party = v_key where from_party in ('p:' || p_from::text, 'p:' || p_into::text) and from_party <> v_key;
+  update settlements set to_party = v_key where to_party in ('p:' || p_from::text, 'p:' || p_into::text) and to_party <> v_key;
+  if exists (select 1 from vehicles where user_id = p_from) then
+    if exists (select 1 from vehicles where user_id = p_into) then delete from vehicles where user_id = p_from;
+    else update vehicles set user_id = p_into where user_id = p_from; end if;
+  end if;
+  delete from driver_status where user_id = p_from;
+  -- Every phone of p_from becomes a phone of p_into, the way it was a member (V66: realm kept).
+  insert into memberships (user_id, device_id, via_master, sandbox, accepted_at)
+  select p_into, device_id, via_master, sandbox, accepted_at from memberships where user_id = p_from
+   order by via_master nulls first, accepted_at desc
+   limit greatest(1, 20 - (select count(*) from memberships where user_id = p_into))
+  on conflict (user_id, device_id) do update
+    set sandbox = memberships.sandbox or excluded.sandbox,
+        via_master = case when memberships.via_master is null then null else excluded.via_master end;
+  delete from memberships where user_id = p_from;
+  delete from account_transfers where user_id = p_from;
+  -- Storage keeps the uploader per object; no Siosia rule reads it, but it should name a live user.
+  if exists (select 1 from information_schema.columns where table_schema = 'storage' and table_name = 'objects' and column_name = 'owner') then
+    execute 'update storage.objects set owner = $1 where owner = $2' using p_into, p_from;
+  end if;
+  if exists (select 1 from information_schema.columns where table_schema = 'storage' and table_name = 'objects' and column_name = 'owner_id') then
+    execute 'update storage.objects set owner_id = $1 where owner_id = $2' using p_into::text, p_from::text;
+  end if;
+  perform siosia_notify(p_from);
+  perform siosia_notify(p_into);
+  select public_id into v_into_public from profiles where user_id = p_into;
+  return siosia_ok(jsonb_build_object('shape', case when v_move then 'move' else 'merge' end,
+                                      'from', f.public_id, 'into', v_into_public));
+end $$;
+
+-- The phone signed in (FR-327): the anonymous account it used before handed itself over with a
+-- transfer code (siosia_create_transfer, parked by the app before signing in) and is merged into the
+-- signed-in account here. Wrong codes count as failed invite attempts, like siosia_redeem_transfer.
+-- p_same_phone = true: this phone's own old account (parked before signing in); false: a code
+-- from another account typed in Profile → "Merge another account here" (its push does not follow).
+drop function if exists public.siosia_absorb(text, text);
+create or replace function public.siosia_absorb(p_code text, p_device text, p_same_phone boolean default true)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_uid uuid := auth.uid(); t account_transfers; v_hash text; v_res jsonb;
+begin
+  if v_uid is null then return siosia_err('forbidden'); end if;
+  -- Only a signed-in account takes another one in (an anonymous one moves with a move code).
+  if coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) then return siosia_err('sign_in_required'); end if;
+  if siosia_merged_away(v_uid) then return siosia_err('account_merged'); end if;
+  if coalesce(char_length(p_device), 0) not between 1 and 80 then return siosia_err('bad_input'); end if;
+  if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
+    return siosia_err('rate_limited');
+  end if;
+  v_hash := encode(digest(upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g')), 'sha256'), 'hex');
+  select * into t from account_transfers where code_hash = v_hash and expires_at > now();
+  if t.user_id is null then
+    insert into invite_failures (user_id) values (v_uid);
+    return siosia_err('bad_transfer');
+  end if;
+  if t.user_id = v_uid then
+    delete from account_transfers where code_hash = v_hash;
+    return siosia_ok(siosia_profile_json(v_uid));
+  end if;
+  v_res := siosia_merge_accounts(t.user_id, v_uid, case when coalesce(p_same_phone, true) then 'absorb' else 'manual' end);
+  if v_res ? 'error' then return v_res; end if;
+  -- Under the merge's locks: a second tap that waited finds the code gone (merge removed it).
+  delete from account_transfers where code_hash = v_hash;
+  insert into memberships (user_id, device_id, via_master, sandbox)
+  select v_uid, p_device,
+         (select mb.via_master from memberships mb where mb.user_id = v_uid order by mb.via_master nulls first limit 1),
+         siosia_sandbox(v_uid)
+   where siosia_member_ok(v_uid) and (select count(*) from memberships where user_id = v_uid) < 20
+  on conflict (user_id, device_id) do nothing;
+  return siosia_ok(siosia_profile_json(v_uid) || jsonb_build_object('merge', v_res -> 'ok'));
+end $$;
+
+-- Before "Merge another account here" joins anything: whose account the code is (the person
+-- confirms by name). Does not spend the code; wrong codes count as failed attempts.
+create or replace function public.siosia_absorb_preview(p_code text)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $$
+declare v_uid uuid := auth.uid(); t account_transfers; p profiles; v_err text;
+begin
+  if v_uid is null then return siosia_err('forbidden'); end if;
+  if coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) then return siosia_err('sign_in_required'); end if;
+  if siosia_merged_away(v_uid) then return siosia_err('account_merged'); end if;
+  if (select count(*) from invite_failures where user_id = v_uid and at > now() - interval '1 hour') >= 10 then
+    return siosia_err('rate_limited');
+  end if;
+  select * into t from account_transfers
+   where code_hash = encode(digest(upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g')), 'sha256'), 'hex')
+     and expires_at > now();
+  select * into p from profiles where user_id = t.user_id and not deleted;
+  if p.user_id is null then
+    insert into invite_failures (user_id) values (v_uid);
+    return siosia_err('bad_transfer');
+  end if;
+  if p.user_id = v_uid then return siosia_err('bad_input'); end if;
+  v_err := siosia_merge_blocker(p.user_id, v_uid, 'manual');
+  if v_err is not null then return siosia_err(v_err); end if;
+  return siosia_ok(jsonb_build_object('nickname', p.nickname, 'publicId', p.public_id,
+    'family', exists (select 1 from family_members where user_id = p.user_id), 'master', p.master_id is not null));
+end $$;
+
+-- Operator only (SQL editor), 2.12 (FR-327): merges a phone's account the person no longer has in
+-- hand (a lost phone, an old Safari tab) into their account, both named by public id.
+create or replace function public.siosia_merge_into(p_from_public text, p_into_public text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_from uuid; v_into uuid;
+begin
+  select user_id into v_from from profiles where public_id = p_from_public and not deleted;
+  if v_from is null then raise exception 'No live profile with public id %', p_from_public; end if;
+  select user_id into v_into from profiles where public_id = p_into_public and not deleted;
+  if v_into is null then raise exception 'No live profile with public id %', p_into_public; end if;
+  return siosia_merge_accounts(v_from, v_into, 'operator');
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
@@ -5756,6 +6184,10 @@ grant execute on function public.siosia_contract_apply_past(uuid, text) to authe
 grant execute on function public.siosia_remind_payment(text) to authenticated;
 grant execute on function public.siosia_settle_up(text) to authenticated;
 grant execute on function public.siosia_comment_settlement(uuid, text) to authenticated;
+-- 2.12
+grant execute on function public.siosia_whoami(text) to authenticated;
+grant execute on function public.siosia_absorb(text, text, boolean) to authenticated;
+grant execute on function public.siosia_absorb_preview(text) to authenticated;
 -- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
 -- 2-argument rules stay the server's: revoked above with everything else)
 grant execute on function public.siosia_can_see_photo(text) to authenticated;
@@ -5798,6 +6230,7 @@ create or replace function public.siosia_rt_can_read(p_topic text)
 returns boolean language sql stable security definer set search_path = public as $$
   select auth.uid() is not null
      and siosia_member_ok(auth.uid())
+     and not siosia_anon_blocked() -- 2.12 (V86)
      and (p_topic = 'drivers'
           or p_topic = 'user:' || auth.uid()::text
           or (p_topic like 'ride:%' and siosia_in_ride(substr(p_topic, 6))));
@@ -5808,6 +6241,7 @@ create or replace function public.siosia_rt_can_write(p_topic text, p_extension 
 returns boolean language sql stable security definer set search_path = public as $$
   select auth.uid() is not null
      and siosia_member_ok(auth.uid())
+     and not siosia_anon_blocked() -- 2.12 (V86)
      and ((p_topic = 'drivers' and p_extension = 'presence'
            and exists (select 1 from driver_status where user_id = auth.uid() and online))
           or (p_topic like 'ride:%' and p_extension in ('broadcast','presence')

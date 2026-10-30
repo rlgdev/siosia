@@ -106,8 +106,9 @@ export class MockBackend implements Backend {
     }
   }
 
-  async start(): Promise<string> {
-    return this.uid;
+  /** The demo's user is this tab's: never a sign-in (V81). */
+  async start(): Promise<{ uid: string | null; sessionLost: boolean }> {
+    return { uid: this.uid, sessionLost: false };
   }
   async ping(): Promise<void> {}
   async getConfig(): Promise<DeploymentConfig> {
@@ -116,8 +117,18 @@ export class MockBackend implements Backend {
     return { ...pub, services: pub.services.filter((e) => e.enabled) };
   }
 
-  isMember(deviceId: string) {
-    return this.call((e) => e.isMember(this.uid, deviceId));
+  // 2.12 (FR-007 amended): membership is the person's, on every phone — the device is not asked.
+  isMember(_deviceId: string) {
+    return this.call((e) => e.isMember(this.uid));
+  }
+  whoami(deviceId: string) {
+    return this.call((e) => e.whoami(this.uid, deviceId));
+  }
+  absorb(code: string, deviceId: string, samePhone = true) {
+    return this.call((e) => e.absorb(this.uid, code, deviceId, samePhone));
+  }
+  absorbPreview(code: string) {
+    return this.call((e) => e.absorbPreview(this.uid, code));
   }
   join(code: string, deviceId: string) {
     return this.call((e) => e.join(this.uid, code, deviceId));

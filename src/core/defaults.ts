@@ -57,7 +57,12 @@ export const DEFAULT_CONFIG: DeploymentConfig = {
   operatorContact: "",
   services: DEFAULT_SERVICES,
   appointment: { reminderMin: [1440, 120], seriesMaxDays: 91, seriesMaxCount: 12 },
-  calendarUrl: null
+  calendarUrl: null,
+  // 2.12: the demo never asks anyone to sign in (V81)
+  authMode: "anonymous",
+  emailSignIn: false,
+  googleSignIn: "off",
+  membershipMode: "invite"
 };
 
 /** Internal server constants (not deployment config). Mirrored in supabase/migrations. */

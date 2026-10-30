@@ -32,8 +32,8 @@ describe.skipIf(!URL || !KEY || !INVITE)("SupabaseBackend against the live proje
     const rider = new SupabaseBackend(URL, KEY);
     const driver = new SupabaseBackend(URL, KEY);
     await rider.ping();
-    const riderId = await rider.start();
-    const driverId = await driver.start();
+    const riderId = (await rider.start()).uid!;
+    const driverId = (await driver.start()).uid!;
     expect(riderId).not.toBe(driverId);
 
     expect(await rider.isMember("live-rider")).toBe(false);

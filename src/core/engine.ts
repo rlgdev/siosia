@@ -74,7 +74,9 @@ import {
   type RideView,
   type CancelledBy,
   type Vehicle,
-  type ViewerRole
+  type ViewerRole,
+  type ServerErrorCode,
+  type WhoAmI
 } from "./types";
 
 export interface UserRow {
@@ -96,6 +98,8 @@ export interface UserRow {
   photoPath?: string | null;
   /** 2.9 (V72): when this phone last fetched its state (at most once a minute) — picks a master's phone in use. */
   seenAt?: number | null;
+  /** 2.12 (FR-327): merged into this account — frozen (account_merged), its phone signs in. */
+  mergedInto?: string | null;
 }
 
 /**
@@ -119,6 +123,8 @@ export interface MasterProfile {
   vehicle?: (Omit<Vehicle, "plate"> & { plate?: string }) | null;
   /** 2.0: catalog entries every phone on this profile offers (null = none besides rides). */
   offers?: string[] | null;
+  /** 2.12 (FR-328): false = the link lets no new phone in; the profile and its phones stay. Default true. */
+  joinable?: boolean;
 }
 
 /** Master profiles of the in-browser demo (links: …?backend=mock#master=demo-master / demo-roman). */
@@ -657,6 +663,7 @@ export class Engine {
   }
 
   join(uid: string, code: string, deviceId: string): void {
+    this.refuseMerged(uid);
     if (this.cfg.inviteCode === null) return;
     const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
     if (fails.length >= 10) throw new ServerError("rate_limited");
@@ -667,7 +674,7 @@ export class Engine {
       throw new ServerError("bad_invite");
     }
     const devices = this.db.members[uid] ?? [];
-    if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+    if (!devices.includes(deviceId) && this.deviceRoom(uid, deviceId)) this.db.members[uid] = [...devices, deviceId];
     if (test) (this.db.sandbox ??= {})[uid] = true;
   }
 
@@ -723,13 +730,21 @@ export class Engine {
    * fixed fare, rider only). The link replaces the invite code. Wrong tokens count as failed
    * invite attempts (same rate limit).
    */
-  joinMaster(uid: string, token: string, deviceId: string, language: Lang, replace = false): Profile {
+  joinMaster(uid: string, token: string, deviceId: string, language: Lang, replace = false): Profile & { noop?: boolean } {
+    this.refuseMerged(uid);
     if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
     const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
     if (fails.length >= 10) throw new ServerError("rate_limited");
     const m = (this.cfg.masters ?? []).find((x) => x.token === token.trim() && x.active !== false);
     if (!m) {
       this.db.inviteFails[uid] = [...fails, this.now];
+      throw new ServerError("bad_link");
+    }
+    // 2.12 (FR-328): a closed link — a phone already on the profile changes nothing; anyone else gets
+    // bad_link, never counted as a failed attempt (an old bookmark must not lock anyone out).
+    if (m.joinable === false) {
+      const me = this.db.users[uid];
+      if (me && !me.deleted && me.masterId === m.id) return { ...this.getProfile(uid)!, noop: true };
       throw new ServerError("bad_link");
     }
     this.sweep();
@@ -740,7 +755,7 @@ export class Engine {
     const existing = this.db.users[uid];
     if (!replace && existing && !existing.deleted && (existing.masterId ?? null) !== m.id) throw new ServerError("has_profile");
     this.goOffline(uid);
-    if (!(this.db.members[uid] ?? []).includes(deviceId)) {
+    if (!(this.db.members[uid] ?? []).includes(deviceId) && this.deviceRoom(uid, deviceId)) {
       const links = (this.db.linkMembers ??= {});
       links[uid] = { ...(links[uid] ?? {}), [deviceId]: m.id };
     }
@@ -779,6 +794,7 @@ export class Engine {
    * the user confirms (`replace`). Wrong codes count as failed invite attempts.
    */
   redeemTransfer(uid: string, code: string, deviceId: string, replace = false): Profile {
+    this.refuseMerged(uid);
     if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
     const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
     if (fails.length >= 10) throw new ServerError("rate_limited");
@@ -789,10 +805,15 @@ export class Engine {
       this.db.inviteFails[uid] = [...fails, this.now];
       throw new ServerError("bad_transfer");
     }
+    // 2.12 (V86): an account others were merged into never moves by a move code — that phone signs in;
+    // and one others were merged into never takes a move code — it merges instead (keeps both).
+    const mergedInto = (x: string) => Object.values(this.db.users).some((u) => u.mergedInto === x);
+    if (old !== uid && mergedInto(old)) throw new ServerError("sign_in_instead");
     if (old === uid) {
       delete this.db.transfers![key];
       return this.getProfile(uid)!;
     }
+    if (mergedInto(uid)) throw new ServerError("use_merge");
     this.sweep();
     if (this.activeRideOf(old) || this.activeRideOf(uid)) throw new ServerError("active_ride");
     const mine = this.db.users[uid];
@@ -900,6 +921,277 @@ export class Engine {
     return this.getProfile(uid)!;
   }
 
+  // ---------- 2.12 accounts: one account per person on every phone (FR-326–FR-331) ----------
+
+  /**
+   * Who this session is to Siosia (V81, twin of siosia_whoami): routes the phone to the app, the
+   * invite code or sign-in. A member's phone is recorded as one of its devices (the way it became a
+   * member: the invite code first, else its master link). membershipMode "open": every account is a
+   * member. The engine knows no anonymous sessions — anonymous / signInRequired are always false.
+   */
+  whoami(uid: string, deviceId: string): WhoAmI {
+    if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
+    const u = this.db.users[uid];
+    const into = u?.mergedInto ? (this.db.users[u.mergedInto]?.publicId ?? "?") : null;
+    let member = false;
+    if (!into) {
+      if (this.cfg.membershipMode === "open" && !this.isMember(uid) && this.deviceRoom(uid, deviceId)) this.addDevice(uid, deviceId, null);
+      member = this.isMember(uid);
+      if (member && this.hasMembership(uid) && this.deviceRoom(uid, deviceId)) this.recordDevice(uid, deviceId);
+    }
+    return {
+      member,
+      hasProfile: !!u && !u.deleted,
+      anonymous: false,
+      signInRequired: false,
+      mergedInto: into,
+      publicId: u && !u.deleted ? this.publicIdOf(uid) : null,
+      sandbox: this.sandboxOf(uid)
+    };
+  }
+
+  /** At most 20 phones are recorded per person (a device id is the caller's to choose). */
+  private deviceRoom(uid: string, deviceId: string): boolean {
+    const direct = this.db.members[uid] ?? [];
+    const links = this.db.linkMembers?.[uid] ?? {};
+    return direct.includes(deviceId) || deviceId in links || direct.length + Object.keys(links).length < 20;
+  }
+
+  /** Any membership row at all, switched-off master links included (twin of exists … memberships). */
+  private hasMembership(uid: string): boolean {
+    return (this.db.members[uid] ?? []).length > 0 || Object.keys(this.db.linkMembers?.[uid] ?? {}).length > 0;
+  }
+
+  private addDevice(uid: string, deviceId: string, viaMaster: string | null): void {
+    if (viaMaster === null) {
+      const devices = this.db.members[uid] ?? [];
+      if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+    } else if (!(this.db.members[uid] ?? []).includes(deviceId)) {
+      const links = (this.db.linkMembers ??= {});
+      links[uid] = { [deviceId]: viaMaster, ...(links[uid] ?? {}) };
+    }
+  }
+
+  /** A member's phone joins its devices the way the account is a member (the invite code first). */
+  private recordDevice(uid: string, deviceId: string): void {
+    if ((this.db.members[uid] ?? []).length > 0) this.addDevice(uid, deviceId, null);
+    else {
+      const via = Object.values(this.db.linkMembers?.[uid] ?? {})[0];
+      if (via) this.addDevice(uid, deviceId, via);
+    }
+  }
+
+  /**
+   * The phone signed in (FR-327, twin of siosia_absorb): the account it used before handed itself
+   * over with a transfer code and is merged into this one. Wrong codes count as failed attempts.
+   */
+  absorb(uid: string, code: string, deviceId: string, samePhone = true): Profile | null {
+    if (this.db.users[uid]?.mergedInto) throw new ServerError("account_merged");
+    if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
+    const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
+    if (fails.length >= 10) throw new ServerError("rate_limited");
+    const key = normalizeTransfer(code);
+    const t = this.db.transfers?.[key];
+    const old = t && t.expiresAt > this.now ? t.userId : null;
+    if (!old) {
+      this.db.inviteFails[uid] = [...fails, this.now];
+      throw new ServerError("bad_transfer");
+    }
+    if (old === uid) {
+      delete this.db.transfers![key];
+      return this.getProfile(uid);
+    }
+    this.mergeAccounts(old, uid, samePhone ? "absorb" : "manual");
+    delete this.db.transfers?.[key];
+    if (this.isMember(uid) && this.hasMembership(uid) && this.deviceRoom(uid, deviceId)) this.recordDevice(uid, deviceId);
+    return this.getProfile(uid);
+  }
+
+  /** Whose account a typed code is, before "Merge another account here" (twin of siosia_absorb_preview). */
+  absorbPreview(uid: string, code: string): { nickname: string; publicId: string | null; family: boolean; master: boolean } {
+    if (this.db.users[uid]?.mergedInto) throw new ServerError("account_merged");
+    const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
+    if (fails.length >= 10) throw new ServerError("rate_limited");
+    const t = this.db.transfers?.[normalizeTransfer(code)];
+    const p = t && t.expiresAt > this.now ? this.db.users[t.userId] : undefined;
+    if (!p || p.deleted) {
+      this.db.inviteFails[uid] = [...fails, this.now];
+      throw new ServerError("bad_transfer");
+    }
+    if (p.id === uid) throw new ServerError("bad_input");
+    const blocked = this.mergeBlocker(p.id, uid, "manual");
+    if (blocked) throw new ServerError(blocked);
+    return { nickname: p.nickname, publicId: this.publicIdOf(p.id), family: !!this.db.familyMembers?.[p.id], master: !!p.masterId };
+  }
+
+  /**
+   * Merges account `from` into `into` (FR-327, V82; twin of siosia_merge_accounts). Nothing of either
+   * is thrown away: `into` without a profile takes `from`'s whole profile ("move"); with one it keeps
+   * it, takes what it lacks, and `from` stays as a deleted, merged-away row ("merge"). Kids, the bell,
+   * memberships come along; unique duplicates are resolved; two families, two master profiles or a
+   * clashing ride leg refuse before anything changes. "absorb" needs `from` to be a member in
+   * `into`'s realm (or `into` without any membership); "operator" skips both checks.
+   */
+  /** What stops merging `from` into `into`, before anything changes (twin of siosia_merge_blocker). */
+  private mergeBlocker(from: string, into: string, mode: "absorb" | "manual" | "operator"): ServerErrorCode | null {
+    const f = this.db.users[from];
+    if (!f || f.deleted) return f?.mergedInto ? "already_merged" : "bad_transfer";
+    if (mode !== "operator" && !this.isMember(from)) return "bad_transfer";
+    const t = this.db.users[into];
+    if (t?.mergedInto) return "account_merged";
+    if (mode !== "operator" && !this.sameRealm(from, into) && this.hasMembership(into)) return "other_realm";
+    if (this.activeRideOf(from) || this.activeRideOf(into)) return "active_ride";
+    const fm = this.db.familyMembers ?? {};
+    const ff = fm[from]?.familyId ?? null;
+    const tf = fm[into]?.familyId ?? null;
+    if (ff && tf && ff !== tf) return "two_families";
+    if (t && !t.deleted && f.masterId && t.masterId && f.masterId !== t.masterId) return "two_masters";
+    const live = (r: RideRow) => r.status !== "cancelled" && r.status !== "expired";
+    const rides = Object.values(this.db.rides);
+    if (rides.some((a) => a.riderId === from && a.appointmentId && live(a) && rides.some((b) => b.riderId === into && b.appointmentId === a.appointmentId && b.leg === a.leg && live(b))))
+      return "merge_conflict";
+    return null;
+  }
+
+  mergeAccounts(from: string, into: string, mode: "absorb" | "manual" | "operator"): "move" | "merge" {
+    if (!from || !into || from === into) throw new ServerError("bad_input");
+    this.sweep();
+    const blocked = this.mergeBlocker(from, into, mode);
+    if (blocked) throw new ServerError(blocked);
+    const f = this.db.users[from];
+    const t = this.db.users[into];
+    const move = !t || t.deleted;
+    const fm = (this.db.familyMembers ??= {});
+    const ff = fm[from]?.familyId ?? null;
+    const tf = fm[into]?.familyId ?? null;
+    const rides = Object.values(this.db.rides);
+
+    this.goOffline(from);
+    this.goOffline(into);
+    for (const r of rides) {
+      if (r.riderId === from) r.riderId = into;
+      if (r.driverId === from) r.driverId = into;
+      r.excluded = r.excluded.map((x) => (x === from ? into : x));
+    }
+    for (const a of [...Object.values(this.db.appointments ?? {}), ...Object.values(this.db.series ?? {})]) {
+      if (a.clientId === from) a.clientId = into;
+      if (a.providerId === from) a.providerId = into;
+      if ("tipBy" in a && a.tipBy === from) a.tipBy = into;
+    }
+    for (const [k, o] of Object.entries(this.db.offers))
+      if (o.driverId === from && Object.values(this.db.offers).some((n) => n.driverId === into && n.rideId === o.rideId && n.round === o.round))
+        delete this.db.offers[k];
+    for (const o of Object.values(this.db.offers)) if (o.driverId === from) o.driverId = into;
+    this.db.ratings = this.db.ratings.filter((g) => !(g.fromUser === from && this.db.ratings.some((n) => n.fromUser === into && ratingKey(n) === ratingKey(g))));
+    for (const g of this.db.ratings) {
+      if (g.fromUser === from) g.fromUser = into;
+      if (g.toUser === from) g.toUser = into;
+    }
+    for (const k of Object.values(this.db.kids ?? {})) if (k.ownerId === from) k.ownerId = into;
+    for (const g of this.db.kidRatings ?? []) if (g.fromUser === from) g.fromUser = into;
+    for (const m of this.db.messages ?? []) if (m.sender === from) m.sender = into;
+    for (const u of this.db.updates ?? []) if (u.author === from) u.author = into;
+    // The family seat moves (both in the same family: one seat stays) — never by leaving.
+    if (ff) {
+      if (!tf) fm[into] = fm[from];
+      delete fm[from];
+    }
+    const myFamily = fm[into]?.familyId ?? null;
+    const invites = this.db.familyInvites ?? [];
+    this.db.familyInvites = invites.filter(
+      (i) =>
+        !(
+          i.toUser === from &&
+          i.status === "pending" &&
+          (i.familyId === myFamily || invites.some((j) => j.toUser === into && j.familyId === i.familyId && j.status === "pending"))
+        )
+    );
+    for (const i of this.db.familyInvites) {
+      if (i.fromUser === from) i.fromUser = into;
+      if (i.toUser === from) i.toUser = into;
+    }
+    const contracts = Object.values(this.db.contracts ?? {});
+    for (const c of contracts) {
+      if (c.providerId !== from || (c.status !== "active" && c.status !== "proposed")) continue;
+      if (contracts.some((d) => d.providerId === into && d.familyId === c.familyId && d.status === c.status)) {
+        c.status = c.status === "active" ? "replaced" : "withdrawn";
+        c.endedAt = this.now;
+      }
+    }
+    for (const c of contracts) {
+      if (c.providerId === from) c.providerId = into;
+      if (c.proposedBy === from) c.proposedBy = into;
+      if (c.endedBy === from) c.endedBy = into;
+    }
+    for (const i of Object.values(this.db.memberInvites ?? {})) {
+      if (i.fromUser === from) i.fromUser = into;
+      if (i.usedBy === from) i.usedBy = into;
+    }
+    for (const n of this.db.notifications ?? []) if (n.userId === from) n.userId = into;
+    for (const s of this.db.settlements ?? []) {
+      if (s.byUser === from) s.byUser = into;
+      if (s.withUser === from) s.withUser = into;
+      if (s.commentBy === from) s.commentBy = into;
+    }
+    const pres = this.db.chatPresence;
+    if (pres?.[from]) {
+      pres[into] = { ...pres[from], ...(pres[into] ?? {}) };
+      delete pres[from];
+    }
+    if (move) {
+      this.db.users[into] = { ...f, id: into };
+      // The old account keeps a merged-away row (a new public id): its phone is sent to sign in.
+      this.db.users[from] = { id: from, nickname: "Merged", language: f.language, createdAt: this.now, riderCancels: 0, driverCancels: 0, lateCancels: 0, deleted: true, mergedInto: into, publicId: randomPublicId(), offers: [] };
+    } else {
+      const x = t!;
+      const adoptMaster = !x.masterId && !!f.masterId;
+      this.db.users[into] = {
+        ...x,
+        photoPath: x.photoPath ?? f.photoPath ?? null,
+        home: x.home ?? f.home ?? null,
+        offers: (x.offers ?? []).length ? x.offers : f.offers ?? [],
+        masterId: x.masterId ?? f.masterId ?? null,
+        nickname: adoptMaster ? f.nickname : x.nickname,
+        createdAt: Math.min(x.createdAt, f.createdAt),
+        riderCancels: x.riderCancels + f.riderCancels,
+        driverCancels: x.driverCancels + f.driverCancels,
+        lateCancels: x.lateCancels + f.lateCancels
+      };
+      if (f.photoPath && f.photoPath !== this.db.users[into].photoPath) delete this.db.photos?.[f.photoPath];
+      this.db.users[from] = { ...f, deleted: true, mergedInto: into, masterId: null, photoPath: null, offers: [], home: null };
+    }
+    for (const u of Object.values(this.db.users)) if (u.mergedInto === from) u.mergedInto = into;
+    // 2.11 sides: every key that stood for either account becomes the survivor's side.
+    const key = `p:${this.linkedMaster(into) ?? into}`;
+    const old = new Set([`p:${from}`, `p:${into}`]);
+    for (const s of this.db.settlements ?? []) {
+      if (old.has(s.fromParty)) s.fromParty = key;
+      if (old.has(s.toParty)) s.toParty = key;
+    }
+    if (this.db.vehicles[from]) {
+      if (!this.db.vehicles[into]) this.db.vehicles[into] = this.db.vehicles[from];
+      delete this.db.vehicles[from];
+    }
+    delete this.db.drivers[from];
+    // Every phone of `from` becomes a phone of `into`, the way it was a member (V66: realm kept).
+    const theirs: [string, string | null][] = [
+      ...(this.db.members[from] ?? []).map((d): [string, string | null] => [d, null]),
+      ...Object.entries(this.db.linkMembers?.[from] ?? {})
+    ];
+    const room = Math.max(1, 20 - ((this.db.members[into] ?? []).length + Object.keys(this.db.linkMembers?.[into] ?? {}).length));
+    for (const [d, m] of theirs.slice(0, room)) this.addDevice(into, d, m);
+    delete this.db.members[from];
+    if (this.db.linkMembers) delete this.db.linkMembers[from];
+    if (this.db.sandbox?.[from]) {
+      this.db.sandbox[into] = true;
+      delete this.db.sandbox[from];
+    }
+    for (const [k, x] of Object.entries(this.db.transfers ?? {})) if (x.userId === from) delete this.db.transfers![k];
+    this.effects.notify.add(from);
+    this.effects.notify.add(into);
+    return move ? "move" : "merge";
+  }
+
   /** The master profile this user rides as, while it is switched on (fixed fare, icon). */
   private masterOf(uid: string): MasterProfile | null {
     const m = this.masterDef(this.linkedMaster(uid));
@@ -925,7 +1217,14 @@ export class Engine {
   }
 
   private requireMember(uid: string): void {
+    // 2.12 (V85): a merged-away account is frozen (twin of siosia_guard)
+    if (this.db.users[uid]?.mergedInto) throw new ServerError("account_merged");
     if (!this.isMember(uid)) throw new ServerError("not_member");
+  }
+
+  /** 2.12 (V86): a merged-away account is not brought back by a code or a link — its phone signs in. */
+  private refuseMerged(uid: string): void {
+    if (this.db.users[uid]?.mergedInto) throw new ServerError("already_merged");
   }
 
   private requireUser(uid: string): UserRow {
@@ -992,6 +1291,7 @@ export class Engine {
    * A wrong, used or expired link counts as a failed invite attempt.
    */
   joinWithLink(uid: string, token: string, deviceId: string): void {
+    this.refuseMerged(uid);
     if (!deviceId || deviceId.length > 80) throw new ServerError("bad_input");
     const fails = (this.db.inviteFails[uid] ?? []).filter((t) => this.now - t < 3600_000);
     if (fails.length >= 10) throw new ServerError("rate_limited");
@@ -1005,7 +1305,7 @@ export class Engine {
     i.usedAt = this.now;
     if (!this.isMember(uid)) {
       const devices = this.db.members[uid] ?? [];
-      if (!devices.includes(deviceId)) this.db.members[uid] = [...devices, deviceId];
+      if (!devices.includes(deviceId) && this.deviceRoom(uid, deviceId)) this.db.members[uid] = [...devices, deviceId];
       if (this.sandboxOf(i.fromUser)) (this.db.sandbox ??= {})[uid] = true;
     }
     this.linkFamilyInvites(uid);

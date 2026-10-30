@@ -4,7 +4,8 @@ import { Launch, launchWanted } from "./components/Launch";
 import { OfflineBanner, SharingBanner } from "./components/SharingBanner";
 import { applyTheme, watchSystemTheme } from "./services/theme";
 import { I18nProvider, useI18n } from "./i18n";
-import { InviteScreen, Loading, NicknameScreen, Unavailable, Unsupported } from "./screens/Boot";
+import { InviteScreen, Loading, NicknameScreen, SignInScreen, Unavailable, Unsupported } from "./screens/Boot";
+import { wordsOf } from "./components/SignIn";
 import { DriverApp } from "./screens/driver/DriverApp";
 import { VehiclePanel } from "./screens/driver/VehicleForm";
 import { ChatPanel } from "./components/ChatSheet";
@@ -116,6 +117,10 @@ function LinkToast() {
           ? t("move.done", { name: app.profile?.nickname ?? "" })
           : n === "moved_away"
             ? t("move.away")
+          : n === "merged"
+            ? t("signin.merged")
+          : n === "google_failed"
+            ? wordsOf(t, app.signInDetail)
         : n === "link_failed"
           ? t("master.failed")
           : n === "invited"
@@ -138,6 +143,9 @@ function Screens() {
       break;
     case "unavailable":
       main = <Unavailable />;
+      break;
+    case "signin":
+      main = <SignInScreen />;
       break;
     case "invite":
       main = <InviteScreen />;

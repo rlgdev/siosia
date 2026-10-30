@@ -167,12 +167,15 @@ export function PushPrompt() {
 export function MoveHere() {
   const { t } = useI18n();
   const store = useStore();
+  const app = useApp();
   const [code, setCode] = useState("");
   const [busy, run, error] = useBusy();
   const submit = (e: FormEvent) => {
     e.preventDefault();
     void run(() => store.redeemCode(code));
   };
+  // 2.12: a signed-in account never takes a move code (it merges: Profile → Merge another account here)
+  if (app.who?.anonymous === false && !!store.backend?.sendCode) return null;
   return (
     <details className="move-here" open={isStandalone()}>
       <summary>{t("move.title")}</summary>

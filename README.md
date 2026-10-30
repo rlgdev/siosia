@@ -35,7 +35,9 @@ On a desktop without GPS add `?sim=52.2297,21.0122` to give a tab a simulated po
 
 ## What a user needs
 
-- **Rider:** a nickname. That's the whole profile (plus the operator's invite code, once per device).
+- **Rider:** a nickname. That's the whole profile (plus the operator's invite code, once per person).
+  Since 2.12 a person signs in with a 6-digit code by email or with Google and has one account on all
+  their phones; the sign-in email is kept by Supabase Auth only, never in Siosia's tables.
 - **Driver:** a nickname and the vehicle (make, model, colour, plate, seats) — shown to the rider
   only after acceptance.
 - **Provider:** a nickname and the services they offer turned on (☰ → *Services I offer*). The
@@ -44,7 +46,8 @@ On a desktop without GPS add `?sim=52.2297,21.0122` to give a tab a simulated po
 ## Stack
 
 React 18 + Vite + TypeScript · Leaflet + OpenStreetMap tiles · OSRM routing · Nominatim search ·
-Supabase Free (Postgres functions + RLS + Realtime + anonymous auth + two Edge Functions: Web Push
+Supabase Free (Postgres functions + RLS + Realtime + email-code / Google auth — anonymous sessions only during the
+2.12 migration window — + two Edge Functions: Web Push
 sender, calendar `.ics`) · PWA · GitHub Pages · GitHub Actions. No custom server.
 
 ## Scripts
@@ -83,5 +86,4 @@ are **never stored**: no table has a column for them, and drivers' positions rea
 as a call argument used for matching. A ride record keeps pickup, dropoff, totals, times, fare,
 statuses and ratings. An appointment keeps its service, time, place and note, seen only by its two
 people (a driver taking a ride to it sees just the ride); *My place* is seen only by its owner, and
-providers are listed by a random public id, never a user id. The nickname is the only personal
-field.
+providers are listed by a random public id, never a user id. The nickname is the only personal field in Siosia's own tables; a signed-in account's email (or Google identity) is kept by Supabase Auth and never shown to others.

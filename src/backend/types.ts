@@ -50,7 +50,8 @@ import type {
   Role,
   SharingStop,
   Vehicle,
-  NotificationItem
+  NotificationItem,
+  WhoAmI
 } from "../core/types";
 
 export type BackendKind = "mock" | "supabase";
@@ -100,13 +101,24 @@ export interface Backend {
   /** Whether this deployment requires an invite code (FR-007). */
   readonly needsInvite: boolean;
 
-  /** Ensures a session (anonymous on first launch, FR-002); returns the user id. */
-  start(): Promise<string>;
+  /**
+   * Ensures a session (anonymous on first launch, FR-002) and returns its user id. 2.12 (V81):
+   * with `anonymousOk: false` (the deployment asks for accounts) no anonymous session is made — no
+   * session gives uid null; `sessionLost` = this browser held a session that is gone (signed out,
+   * expired): the sign-in screen says so.
+   */
+  start(opts?: { anonymousOk?: boolean }): Promise<{ uid: string | null; sessionLost: boolean }>;
   /** Throws when the backend cannot be reached within 5 s (D-04). */
   ping(): Promise<void>;
   getConfig(): Promise<DeploymentConfig>;
 
   isMember(deviceId: string): Promise<boolean>;
+  /** 2.12 (V81): who this session is — the app routes on it (sign in, the invite code, the app). */
+  whoami(deviceId: string): Promise<WhoAmI>;
+  /** 2.12 (FR-327): takes in the account this phone used before, by its transfer code (keep both). */
+  absorb(code: string, deviceId: string, samePhone?: boolean): Promise<Profile | null>;
+  /** 2.12: whose account a typed code is, before merging it (the person confirms by name). */
+  absorbPreview(code: string): Promise<{ nickname: string; publicId: string | null; family: boolean; master: boolean }>;
   join(code: string, deviceId: string): Promise<void>;
   /** 2.8 (FR-301): a personal link into Siosia for someone new (the app shares `<site>#join=<token>`). */
   createMemberInvite(): Promise<{ token: string; expiresAt: number }>;
@@ -116,7 +128,7 @@ export interface Backend {
    * Opens a shared master profile from its link token (replaces the invite code). Fails with
    * has_profile when this account already has another profile, unless `replace` (user confirmed).
    */
-  joinMaster(token: string, deviceId: string, language: Lang, replace?: boolean): Promise<Profile>;
+  joinMaster(token: string, deviceId: string, language: Lang, replace?: boolean): Promise<Profile & { noop?: boolean }>;
   /** A one-time code (30 min) that moves this profile to another app or phone. */
   createTransfer(): Promise<{ code: string; expiresAt: number }>;
   /** Takes over the profile behind a move code; has_profile unless `replace` (user confirmed). */
@@ -264,11 +276,18 @@ export interface Backend {
   /** Live channel of one assignment: topic ride:<id>:<round>. */
   openRide(ride: { id: string; round: number }, role: Role, handlers: RideChannelHandlers): RideChannel;
 
-  // Optional account linking (US8) — only the Supabase backend implements these.
+  // 2.12 accounts (FR-326) — only the Supabase backend implements these; the demo never signs in.
   account?(): Promise<AccountInfo>;
-  linkEmail?(email: string): Promise<void>;
-  signInWithEmail?(email: string): Promise<void>;
-  linkGoogle?(): Promise<void>;
+  /** The signed-in email of this browser's session, read locally (no network). */
+  sessionEmail?(): Promise<string | null>;
+  /** Emails a 6-digit sign-in code (a new address gets an account; no link is ever sent). */
+  sendCode?(email: string): Promise<void>;
+  /** Signs in with the code typed in the app (this browser's session becomes that account). */
+  verifyCode?(email: string, code: string): Promise<void>;
+  /** Leaves for Google and comes back signed in (the page reloads). */
   signInWithGoogle?(): Promise<void>;
+  /** Adds Google as a second way into this account (same account; leaves for Google and back). */
+  linkGoogle?(): Promise<void>;
+  /** Signs out on this browser only — the person's other phones stay signed in. */
   signOut?(): Promise<void>;
 }

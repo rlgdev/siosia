@@ -12,7 +12,7 @@ Static PWA + managed backend on free tiers, exactly the class of system Rubber p
 | Server rules | `Engine` (`src/core/engine.ts`) run in the browser | SQL functions (`supabase/migrations/0001_siosia.sql`) |
 | Durable state | one JSON document in `localStorage`, every call under a Web Lock (atomic across tabs) | Postgres tables, RLS, all writes through `SECURITY DEFINER` functions |
 | Realtime | `BroadcastChannel` + in-tab bus with presence TTL | private Realtime channels, Broadcast from Database |
-| Identity | per tab (`sessionStorage`) → two tabs = two users | anonymous auth, optional email/Google linking |
+| Identity | per tab (`sessionStorage`) → two tabs = two users | 2.12: one account per person — a 6-digit email code or Google; anonymous sessions only during the migration window |
 | Used by | demo deployments (`?backend=mock`), unit/integration/e2e tests | production |
 
 The `Engine` is the reference implementation; the SQL is its twin. Both are tested: the engine by
@@ -301,3 +301,37 @@ engine mirrors all of it; the demo robot answers a parent's first note and a hea
   Monday push is a sweep step gated by `app_config.report_week` (the migration sets it to the current
   Monday, so an upgraded deployment starts next week). `siosia_sweep_family(p_now)` takes the clock
   as an argument so the PGlite test can move it.
+
+## 2.12: accounts — one person, one account, every phone
+
+- **Sign-in** is a 6-digit **email code typed in the app** (`signInWithOtp` + `verifyOtp` type
+  `email`; the templates carry `{{ .Token }}` and no link — an iPhone opens links from Mail in Safari,
+  whose storage is not the Home Screen app's) or **Google** (`signInWithOAuth`, the implicit flow
+  pinned in `createClient`, so the session comes back in the address and needs no verifier from
+  another storage). `main.tsx` keeps what Google left in the address (`captureAuthReturn`) before
+  supabase-js reads it. Sign-out is `scope: "local"`: the person's other phones stay signed in.
+- **Switches** in `app_config`, read through the anon-granted `siosia_config` before any session:
+  `email_sign_in`, `google_sign_in` (`off | no_standalone | no_ios | on`), `auth_mode`
+  (`anonymous` = a phone may still start anonymously; `accounts` = `siosia_guard` answers
+  `sign_in_required` to an anonymous JWT, `auth.jwt() ->> 'is_anonymous'`, and the app never makes up
+  an anonymous session), `membership_mode` (`invite` | `open` = every signed-in account is a member).
+- **Membership is the person's**: `siosia_is_member(p_device)` keeps its signature for installed apps
+  but answers for the user; `siosia_whoami(p_device)` routes every session (member, anonymous,
+  sign-in required, merged into) and records the phone as one of the member's devices.
+- **Taking a phone's old account along** (`siosia_absorb`): before signing in, the app parks a
+  transfer code of the phone's anonymous account (`siosia_create_transfer`, which uses the lenient
+  `siosia_guard_any` so a straggler can still do it) in `localStorage['siosia.absorb']`, bound to the
+  email typed (or to Google in the same page load). After the reload the signed-in account takes it
+  in — never for a different sign-in, so a shared phone never hands one person's account to another.
+- **The merge** `siosia_merge_accounts(from, into, mode)` (internal; twin `Engine.mergeAccounts`)
+  keeps both sides: into an account without a profile the whole profile row moves (public id, photo
+  folders, master profile, family seat); into one with a profile, `from`'s rows join it and `from`'s
+  profile stays as a deleted row with `merged_into`. Either way `from` is left with a merged-away row:
+  `siosia_guard` freezes it (`account_merged`) and `whoami.mergedInto` sends its phone to sign in —
+  never an auth ban (a ban is one-way on the phone). Two families, two master profiles, two realms
+  or a clashing ride leg refuse before anything changes; the operator merges phones gone with
+  `siosia_merge_into(public id, public id)`.
+- **Master profiles** stay as presets (fixed fare, role, car; `p:<master>` settlement sides keep
+  their keys because `master_id` moves with the profile). `master_profiles.joinable = false` closes
+  the link without touching the phones on it: its own phone gets a silent no-op, anyone else
+  `bad_link` without counting a failed attempt (old bookmarks must not lock anyone out).

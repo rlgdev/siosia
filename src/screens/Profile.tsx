@@ -1,5 +1,6 @@
 // S2 Profile: nickname, language, own stats, My place and Services I offer (2.0, FR-140, FR-093),
-// links to Planned / History / vehicle, the app and notifications, account linking (US8), privacy.
+// links to Planned / History / vehicle, the app and notifications, the account (2.12: sign in with an
+// email code or Google, add Google, merge another account here, sign out), privacy, the build.
 // 2.3 (FR-200, FR-210): my photo next to the nickname, and My kids.
 
 import { AppSection } from "../components/AppInstall";
@@ -14,6 +15,7 @@ import { Confirm, Notice, Panel, RatingBadge, useBusy } from "../components/ui";
 import { ACTIVE_STATUSES, type Place } from "../core/types";
 import { EntryIcon, localText } from "./Catalog";
 import { MyKids } from "./MyKids";
+import { AbsorbIssueCard, googleOffered, SignInForm, signInOffered } from "../components/SignIn";
 import { useI18n } from "../i18n";
 import { isThemePref } from "../services/theme";
 import { resetDemo } from "../state/demo";
@@ -27,14 +29,18 @@ export function ProfilePanel() {
   const [name, setName] = useState(app.profile?.nickname ?? "");
   const [busy, run, error] = useBusy();
   const [account, setAccount] = useState<AccountInfo | null>(null);
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   useEffect(() => {
     void store.reloadProfile();
     if (api.account) void api.account().then(setAccount).catch(() => {});
   }, [api, store]);
+  // Opened from the start screen's "Sign in…" notice: straight to the Account card.
+  const toAccount = app.panelArg === "account" && !!account;
+  useEffect(() => {
+    if (toAccount) document.querySelector("[data-testid=profile-account]")?.scrollIntoView?.({ block: "start" });
+  }, [toAccount]);
 
   const p = app.profile;
   // The server refuses a deletion during a ride (active_ride): say so instead of offering it (C2).
@@ -135,67 +141,53 @@ export function ProfilePanel() {
         </div>
       </section>
 
-      <section className="card stack">
+      <section className="card stack" data-testid="profile-account">
         <h3>{t("profile.account")}</h3>
-        {!api.account ? (
+        <AbsorbIssueCard />
+        {!api.sendCode ? (
           <p className="muted">{t("profile.accountsDemo")}</p>
+        ) : !account ? null : account.isAnonymous && !signInOffered(app.deployment) ? (
+          <p className="muted">{t("signin.notReady")}</p>
+        ) : account.isAnonymous ? (
+          <>
+            <p>
+              <strong>{t("signin.keepTitle")}</strong>
+            </p>
+            <p className="muted">{t("signin.keepBody")}</p>
+            {rideOn && <p className="muted small">{t("signin.afterRide")}</p>}
+            <SignInForm disabled={rideOn} testId="keep" />
+          </>
         ) : (
           <>
-            <p className="muted">
-              {account && !account.isAnonymous && account.email ? t("profile.signedInAs", { email: account.email }) : t("profile.anonymous")}
+            {account.email && <p data-testid="profile-signed-in">{t("profile.signedInAs", { email: account.email })}</p>}
+            <p className="muted small">
+              {t("profile.providers", {
+                list: account.providers.map((x) => (x === "google" ? "Google" : x === "email" ? t("profile.providerEmail") : x)).join(", ")
+              })}
             </p>
-            {sent && <Notice kind="ok">{t("profile.emailSent", { email: sent })}</Notice>}
-            {(!account || account.isAnonymous) && (
-              <>
-                <label className="field">
-                  <span>{t("profile.email")}</span>
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" inputMode="email" />
-                </label>
-                <div className="row wrap">
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={busy || !email.includes("@")}
-                    onClick={() => void run(async () => (await api.linkEmail?.(email), setSent(email)))}
-                  >
-                    {t("profile.linkEmail")}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={busy || !email.includes("@")}
-                    onClick={() => void run(async () => (await api.signInWithEmail?.(email), setSent(email)))}
-                  >
-                    {t("profile.signInEmail")}
-                  </button>
-                </div>
-                <div className="row wrap">
-                  <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void run(() => api.linkGoogle!())}>
-                    {t("profile.linkGoogle")}
-                  </button>
-                  <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void run(() => api.signInWithGoogle!())}>
-                    {t("profile.signInGoogle")}
-                  </button>
-                </div>
-              </>
-            )}
-            {account && !account.isAnonymous && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() =>
-                  void run(async () => {
-                    await api.signOut?.();
-                    location.reload();
-                  })
-                }
-              >
-                {t("profile.signOut")}
+            {api.linkGoogle && googleOffered(app.deployment?.googleSignIn) && !account.providers.includes("google") && (
+              <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void run(() => store.linkGoogle())}>
+                {t("profile.addGoogle")}
               </button>
             )}
+            <MergeAccount />
+            <button type="button" className="btn btn-secondary" disabled={busy || rideOn} onClick={() => setConfirmSignOut(true)} data-testid="profile-sign-out">
+              {t("profile.signOut")}
+            </button>
+            {rideOn && <p className="muted small">{t("profile.signOutRide")}</p>}
           </>
         )}
       </section>
+      <Confirm
+        open={confirmSignOut}
+        message={t("profile.signOutConfirm")}
+        confirmLabel={t("profile.signOut")}
+        onCancel={() => setConfirmSignOut(false)}
+        onConfirm={() => {
+          setConfirmSignOut(false);
+          void run(() => store.signOut());
+        }}
+      />
 
       <section className="card stack">
         <h3 className="with-info">
@@ -224,14 +216,84 @@ export function ProfilePanel() {
       <Confirm
         open={confirmDelete}
         danger
-        message={t("profile.deleteConfirm")}
+        message={account && !account.isAnonymous ? `${t("profile.deleteConfirm")} ${t("profile.deleteNote")}` : t("profile.deleteConfirm")}
         onCancel={() => setConfirmDelete(false)}
         onConfirm={() => {
           setConfirmDelete(false);
           void run(() => store.deleteProfile());
         }}
       />
+      <p className="muted small center-text" data-testid="profile-build">
+        {t("profile.build", { id: __SIOSIA_BUILD__ })}
+      </p>
     </Panel>
+  );
+}
+
+/**
+ * 2.12 (FR-327): another account of mine (say, Google with a different address) joins this one —
+ * its code comes from that account's ☰ → Siosia as an app → Show code. Whose account it is shows
+ * first; nothing joins before a clear yes (a code from someone else must not slip in).
+ */
+function MergeAccount() {
+  const { t } = useI18n();
+  const store = useStore();
+  const [code, setCode] = useState("");
+  const [busy, run, error] = useBusy();
+  const [done, setDone] = useState(false);
+  const [other, setOther] = useState<{ nickname: string; publicId: string | null } | null>(null);
+  const ready = code.replace(/[^A-Za-z0-9]/g, "").length === 8;
+  return (
+    <details className="merge-account">
+      <summary>{t("profile.mergeTitle")}</summary>
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run(async () => {
+            setDone(false);
+            setOther(await store.previewMerge(code));
+          });
+        }}
+      >
+        <p className="muted small">{t("profile.mergeBody")}</p>
+        <label className="field">
+          <span>{t("profile.mergeLabel")}</span>
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            autoCapitalize="characters"
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={12}
+            data-testid="merge-code"
+          />
+        </label>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        {done && <Notice kind="ok">{t("profile.mergeDone")}</Notice>}
+        <button type="submit" className="btn btn-secondary" disabled={busy || !ready}>
+          {t("profile.mergeSubmit")}
+        </button>
+      </form>
+      <Confirm
+        open={!!other}
+        message={t("profile.mergeConfirm", { name: other?.nickname ?? "", publicId: other?.publicId ?? "—" })}
+        confirmLabel={t("profile.mergeYes")}
+        onCancel={() => setOther(null)}
+        onConfirm={() => {
+          setOther(null);
+          void run(async () => {
+            await store.mergeAccount(code);
+            setCode("");
+            setDone(true);
+          });
+        }}
+      />
+    </details>
   );
 }
 

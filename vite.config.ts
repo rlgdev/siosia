@@ -1,13 +1,18 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import { readFileSync } from "node:fs";
 
 // BASE_PATH "./" keeps every asset path relative, so the same build works on any static host,
 // including a GitHub Pages sub-path (D-01). Override with an absolute path if a host needs it.
 const base = process.env.BASE_PATH || "./";
+// 2.12: the build shown in Profile — package.json's version and the commit CI built (local: "dev").
+const VERSION = (JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }).version;
+const BUILD = `${VERSION}+${(process.env.GITHUB_SHA ?? "dev").slice(0, 7)}`;
 
 export default defineConfig({
   base,
+  define: { __SIOSIA_BUILD__: JSON.stringify(BUILD) },
   plugins: [
     react(),
     VitePWA({

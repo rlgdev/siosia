@@ -502,6 +502,37 @@ export interface DeploymentConfig {
   appointment: AppointmentSettings;
   /** The calendar Edge Function (null = Google Calendar only; the demo builds .ics itself). */
   calendarUrl: string | null;
+  /**
+   * 2.12 (FR-326, FR-329): "anonymous" = a phone may still start with an anonymous session (the
+   * migration window); "accounts" = only a signed-in account (email code or Google) may use Siosia.
+   * The demo is always "anonymous" — it never shows a sign-in screen.
+   */
+  authMode?: AuthMode;
+  /** 2.12: "Send me a code" is offered (the operator switches it on once the mail sender works). */
+  emailSignIn?: boolean;
+  /** 2.12: where "Continue with Google" is offered (standalone = the installed Home Screen app). */
+  googleSignIn?: GoogleSignIn;
+  /** 2.12 (FR-329): "invite" = the invite code or a #join= link makes a member; "open" = every signed-in account. */
+  membershipMode?: MembershipMode;
+}
+
+export type AuthMode = "anonymous" | "accounts";
+export type GoogleSignIn = "off" | "no_standalone" | "no_ios" | "on";
+export type MembershipMode = "invite" | "open";
+
+/** 2.12 (V81): who this session is to Siosia — what the app shows next (sign in, invite, the app). */
+export interface WhoAmI {
+  member: boolean;
+  hasProfile: boolean;
+  /** An anonymous Supabase session (always false in the demo). */
+  anonymous: boolean;
+  /** An anonymous session while the deployment asks for accounts: show the sign-in screen. */
+  signInRequired: boolean;
+  /** This account was merged into another (its public id): the phone must sign in. */
+  mergedInto: string | null;
+  /** My live profile's public id (null without one). */
+  publicId: string | null;
+  sandbox: boolean;
 }
 
 export interface RatingSummary {
@@ -884,7 +915,20 @@ export type ServerErrorCode =
   | "in_family"
   | "family_full"
   // 2.9
-  | "already_tipped";
+  | "already_tipped"
+  // 2.12 accounts
+  | "sign_in_required"
+  | "account_merged"
+  | "already_merged"
+  | "other_realm"
+  | "two_families"
+  | "two_masters"
+  | "merge_conflict"
+  | "bad_code"
+  | "email_not_allowed"
+  | "sign_in_instead"
+  | "use_merge"
+  | "code_wait";
 
 export class ServerError extends Error {
   readonly code: ServerErrorCode;

@@ -3,12 +3,15 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
 import { applyTheme, readThemePref } from "./services/theme";
-import { AppStore } from "./state/store";
+import { AppStore, captureAuthReturn } from "./state/store";
 import "@fontsource-variable/geist";
 import "./styles/theme.css";
 
 // Appearance before the first paint (V50): the fixed choice on <html>, the meta colour of the mode.
 applyTheme(readThemePref());
+
+// 2.12: what a Google sign-in left in the address, kept before supabase-js reads and removes it.
+captureAuthReturn();
 
 const store = new AppStore();
 

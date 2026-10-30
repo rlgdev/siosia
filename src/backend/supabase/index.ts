@@ -8,6 +8,7 @@
 
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 import { DEFAULT_CONFIG } from "../../core/defaults";
+import { acceptUrlSession } from "../../services/authReturn";
 import {
   ACTIVE_STATUSES,
   ServerError,
@@ -50,7 +51,8 @@ import {
   type SessionUpdate,
   type SharingStop,
   type UpdateInput,
-  type Vehicle
+  type Vehicle,
+  type WhoAmI
 } from "../../core/types";
 import type {
   AccountInfo,
@@ -66,6 +68,19 @@ type RpcResult<T> = { ok?: T; error?: ServerErrorCode };
 type ChannelOpts = Parameters<SupabaseClient["channel"]>[1];
 
 const redirectTo = () => window.location.origin + window.location.pathname;
+/** Where supabase-js keeps this browser's session. */
+const AUTH_KEY = "siosia.auth";
+/** The session this browser held at load: a signed-in account's, an anonymous one, or none. */
+const hadSession = (): "account" | "anon" | null => {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(AUTH_KEY) : null;
+    if (!raw) return null;
+    const s = JSON.parse(raw) as { user?: { is_anonymous?: boolean } };
+    return s.user && s.user.is_anonymous === false ? "account" : "anon";
+  } catch {
+    return null;
+  }
+};
 const randomKey = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 const PING_TIMEOUT_MS = 5000;
@@ -125,6 +140,12 @@ function placePhotos(v: unknown, urls: Map<string, string>): void {
 function authError(e: { status?: number; code?: string; message: string }): ServerError {
   const code = e.code ?? "";
   if (e.status === 429 || /rate_limit/.test(code)) return new ServerError("rate_limited", e.message);
+  // 2.12: a new code for the same address too soon (per-address cooldown, seconds in the message)
+  const wait = /after (\d+) seconds?/i.exec(e.message);
+  if (wait) return new ServerError("code_wait", wait[1]);
+  // 2.12: GoTrue does not tell a wrong code from an expired one
+  if (code === "otp_expired" || /token has expired or is invalid/i.test(e.message)) return new ServerError("bad_code", e.message);
+  if (code === "email_address_not_authorized") return new ServerError("email_not_allowed", e.message);
   if (["email_exists", "user_already_exists", "identity_already_exists"].includes(code)) return new ServerError("email_in_use", e.message);
   if (["otp_disabled", "user_not_found", "signup_disabled"].includes(code)) return new ServerError("no_account", e.message);
   if (["provider_disabled", "manual_linking_disabled", "email_provider_disabled"].includes(code) || /provider is not enabled/i.test(e.message))
@@ -185,10 +206,16 @@ export class SupabaseBackend implements Backend {
   private publicId: string | null = null;
   /** Open chat threads (onMessage): the ids each has delivered, so a message is emitted once. */
   private readonly chatSubs = new Set<{ room: string; seen: Set<string> }>();
+  /** The session this browser held when the page loaded (supabase-js removes an expired one at once). */
+  private readonly hadSessionAtLoad = hadSession();
 
   constructor(url: string, key: string) {
     this.sb = createClient(url, key, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: "siosia.auth" },
+      // 2.12: the implicit flow, pinned — Google comes back with the session in the address, so it
+      // never needs a verifier left in another storage (on an iPhone the Home Screen app and Safari
+      // have separate ones). Email sign-in is a code typed in the app: no link, no redirect.
+      // A session in the address is taken only from a Google return this tab started (login CSRF).
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: acceptUrlSession, storageKey: AUTH_KEY, flowType: "implicit" },
       realtime: { params: { eventsPerSecond: 10 } }
     });
   }
@@ -260,27 +287,30 @@ export class SupabaseBackend implements Backend {
     }
   }
 
-  async start(): Promise<string> {
+  async start(opts: { anonymousOk?: boolean } = {}): Promise<{ uid: string | null; sessionLost: boolean }> {
+    const had = this.hadSessionAtLoad;
     const { data } = await this.sb.auth.getSession();
     let session = data.session;
-    if (!session) {
+    // 2.12 (V81): once the deployment asks for accounts — or this phone was signed in to an account
+    // whose session is gone — the phone signs in: Siosia never makes up a new anonymous identity.
+    if (!session && opts.anonymousOk !== false && had !== "account") {
       const { data: signIn, error } = await this.sb.auth.signInAnonymously();
       if (error || !signIn.session) throw new ServerError("unavailable", error?.message ?? "Anonymous sign-in failed");
       session = signIn.session;
     }
-    this.uid = session.user.id;
-    await this.sb.realtime.setAuth(session.access_token);
+    this.uid = session?.user.id ?? "";
+    if (session) await this.sb.realtime.setAuth(session.access_token);
     this.sb.auth.onAuthStateChange((_evt, s) => {
-      const next = s?.user?.id ?? null;
-      // Another tab signed in as someone else, or signed out: everything here belongs to the old
-      // user (profile, mode, channels), so start over rather than act on a stale identity.
+      const next = s?.user?.id ?? "";
+      // Signed in (an email code, Google), signed out, or another tab did either: everything here
+      // belongs to the old session (profile, mode, channels), so start over with the new one.
       if (next !== this.uid) {
         if (typeof location !== "undefined") location.reload();
         return;
       }
       if (s?.access_token) void this.sb.realtime.setAuth(s.access_token);
     });
-    return this.uid;
+    return { uid: session ? this.uid : null, sessionLost: !session && !!had };
   }
 
   /** D-04: reachability within 5 s, whatever the client does first (e.g. a token refresh). */
@@ -323,6 +353,15 @@ export class SupabaseBackend implements Backend {
   }
   async join(code: string, deviceId: string) {
     await this.rpc("siosia_join", { p_code: code, p_device: deviceId });
+  }
+  whoami(deviceId: string) {
+    return this.rpc<WhoAmI>("siosia_whoami", { p_device: deviceId });
+  }
+  async absorb(code: string, deviceId: string, samePhone = true) {
+    return this.profile(await this.rpc<Profile | null>("siosia_absorb", { p_code: code, p_device: deviceId, p_same_phone: samePhone }));
+  }
+  absorbPreview(code: string) {
+    return this.rpc<{ nickname: string; publicId: string | null; family: boolean; master: boolean }>("siosia_absorb_preview", { p_code: code });
   }
   createMemberInvite() {
     return this.rpc<{ token: string; expiresAt: number }>("siosia_create_member_invite");
@@ -368,7 +407,9 @@ export class SupabaseBackend implements Backend {
     return this.profile(await this.rpc<Profile>("siosia_redeem_transfer", { p_code: code, p_device: deviceId, p_replace: replace }));
   }
   async joinMaster(token: string, deviceId: string, language: Lang, replace = false) {
-    return this.profile(await this.rpc<Profile>("siosia_join_master", { p_token: token, p_device: deviceId, p_language: language, p_replace: replace }));
+    return this.profile(
+      await this.rpc<Profile & { noop?: boolean }>("siosia_join_master", { p_token: token, p_device: deviceId, p_language: language, p_replace: replace })
+    );
   }
   async getProfile() {
     return this.profile(await this.rpc<Profile | null>("siosia_get_profile"));
@@ -784,15 +825,27 @@ export class SupabaseBackend implements Backend {
     };
   }
 
-  async linkEmail(email: string) {
-    const { error } = await this.sb.auth.updateUser({ email }, { emailRedirectTo: redirectTo() });
+  async sessionEmail() {
+    const { data } = await this.sb.auth.getSession();
+    return data.session?.user?.email?.toLowerCase() ?? null;
+  }
+
+  // 2.12 (FR-326): a 6-digit code by email, typed in the app — never a link (an iPhone opens links
+  // from Mail in Safari, not in the Home Screen app). A new address gets an account.
+  async sendCode(email: string) {
+    const { error } = await this.sb.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } });
     if (error) throw authError(error);
   }
 
-  async signInWithEmail(email: string) {
-    const { error } = await this.sb.auth.signInWithOtp({
-      email,
-      options: { shouldCreateUser: false, emailRedirectTo: redirectTo() }
+  async verifyCode(email: string, code: string) {
+    const { error } = await this.sb.auth.verifyOtp({ email: email.trim(), token: code.replace(/\s+/g, ""), type: "email" });
+    if (error) throw authError(error);
+  }
+
+  async signInWithGoogle() {
+    const { error } = await this.sb.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: redirectTo(), queryParams: { prompt: "select_account" } }
     });
     if (error) throw authError(error);
   }
@@ -802,13 +855,10 @@ export class SupabaseBackend implements Backend {
     if (error) throw authError(error);
   }
 
-  async signInWithGoogle() {
-    const { error } = await this.sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirectTo() } });
-    if (error) throw authError(error);
-  }
-
+  /** This browser only: the default ("global") would sign the person out on every phone. */
   async signOut() {
-    await this.sb.auth.signOut();
+    const { error } = await this.sb.auth.signOut({ scope: "local" });
+    if (error) throw authError(error);
   }
 }
 

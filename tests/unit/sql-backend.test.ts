@@ -5,34 +5,9 @@
 
 import { PGlite } from "@electric-sql/pglite";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
-import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
+import { MIGRATION, PRELUDE } from "./sql-harness";
 
-const MIGRATION = readFileSync(new URL("../../supabase/migrations/0001_siosia.sql", import.meta.url), "utf8");
-
-const PRELUDE = `
-create schema if not exists extensions;
-create schema if not exists auth;
-create table if not exists auth.users (id uuid primary key);
-create or replace function auth.uid() returns uuid language sql stable as $$
-  select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-do $$ begin
-  if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
-  if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
-end $$;
-create schema if not exists realtime;
-create table if not exists realtime.messages (
-  id bigserial primary key, topic text not null, extension text not null default 'broadcast',
-  event text, payload jsonb, private boolean, inserted_at timestamptz default now());
-alter table realtime.messages enable row level security;
-create or replace function realtime.topic() returns text language sql stable as $$
-  select nullif(current_setting('realtime.topic', true), '') $$;
-create or replace function realtime.send(payload jsonb, event text, topic text, private boolean default true)
-returns void language sql security definer as $$
-  insert into realtime.messages (topic, extension, event, payload, private) values (topic, 'broadcast', event, payload, private) $$;
-grant usage on schema public, auth, realtime, extensions to anon, authenticated;
-grant select, insert on realtime.messages to authenticated;
-`;
 
 type Json = Record<string, unknown>;
 
@@ -115,7 +90,8 @@ describe("SQL backend (PGlite)", () => {
     // codes are normalised: spaces and case do not matter
     await call(U.rider, "siosia_join", [" pilot2026 ", "dev-r"]);
     expect(await as(U.rider, "select public.siosia_is_member('dev-r')")).toBe(true);
-    expect(await as(U.rider, "select public.siosia_is_member('other-device')")).toBe(false);
+    // 2.12 (FR-007 amended): membership is the person's — a member's other phone is in too
+    expect(await as(U.rider, "select public.siosia_is_member('other-device')")).toBe(true);
   });
 
   it("onboards with a nickname only and validates the vehicle", async () => {

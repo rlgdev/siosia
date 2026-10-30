@@ -66,6 +66,18 @@ export async function disablePush(api: Backend): Promise<PushState> {
   return "off";
 }
 
+/**
+ * 2.12: signing out on this phone — its notifications stop for the account (the subscription goes
+ * from the server and the browser), without turning them off for whoever signs in next.
+ */
+export async function dropPushSubscription(api: Backend): Promise<void> {
+  if (api.kind === "mock") return;
+  const sub = await (await registration())?.pushManager.getSubscription().catch(() => null);
+  if (!sub) return;
+  await api.deletePush(sub.endpoint).catch(() => {});
+  await sub.unsubscribe().catch(() => false);
+}
+
 /** Shows a notification from the page (demo backend, app in the background). */
 export async function showLocal(title: string, body: string, tag: string): Promise<boolean> {
   if (!hasNotification() || Notification.permission !== "granted" || readPref<boolean>("push.off", false)) return false;

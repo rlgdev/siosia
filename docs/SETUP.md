@@ -245,22 +245,85 @@ Chat (2.3) needs nothing new: messages live in the `messages` table and travel o
 realtime channels already set up; the `chat_message` notification goes out through `push-dispatch`
 (redeploy it after this upgrade, as for every release).
 
-## 4. Authentication settings (4 min)
+## 4. Authentication settings (4 min, + 15 min for email codes and Google)
+
+Since 2.12 a person signs in with a **6-digit code by email** or with **Google** and has **one
+account on all their phones** (FR-326). Until you switch a method on, nobody is asked to sign in and
+every phone starts with an anonymous session, as before.
 
 1. **Authentication → Sign In / Providers** (sometimes *Providers*): turn **Allow anonymous
-   sign-ins** **ON** → *Save*. Every phone gets a private session without an account (FR-002).
-   Supabase rate-limits anonymous sign-ins per IP (Authentication → Rate Limits); keep it.
-   Do **not** enable CAPTCHA — the app doesn't send CAPTCHA tokens.
-2. Optional, for *Keep my account across devices* (US8):
-   - **Email (magic link)** works out of the box (the built-in mailer sends only a few emails per
-     hour — fine for a pilot).
-   - **Allow manual linking** ON (same page) lets an anonymous user attach Google later.
-   - **Google** needs an OAuth client from Google Cloud Console (Authorized redirect URI:
-     `https://<project-ref>.supabase.co/auth/v1/callback`), then paste its client ID and secret
-     into the Google provider.
-3. **Authentication → URL Configuration**: set **Site URL** to your site address from step 7
+   sign-ins** **ON** → *Save* — for now (see *Lockdown* below). Supabase rate-limits anonymous
+   sign-ins per IP (Authentication → Rate Limits); keep it. Do **not** enable CAPTCHA — the app
+   doesn't send CAPTCHA tokens.
+2. **Authentication → URL Configuration**: set **Site URL** to your site address from step 7
    (e.g. `https://<github-user>.github.io/siosia/`) and add the same with `**` to **Redirect URLs**
-   (`https://<github-user>.github.io/siosia/**`). You can come back after step 7.
+   (`https://<github-user>.github.io/siosia/**`; for local testing also `http://localhost:5173/**`
+   and `http://localhost:4173/**`). Google comes back to this address. You can come back after step 7.
+
+### Email codes (needs a mail sender)
+
+The built-in Supabase mailer sends a couple of emails an hour and **only to members of your Supabase
+team** — your users would never get a code. Use your own sender (free):
+
+1. A Google account with **2-Step Verification** → <https://myaccount.google.com/apppasswords> →
+   create an app password "Siosia" (16 characters).
+2. **Project Settings → Authentication → SMTP Settings** → *Enable custom SMTP*: host
+   `smtp.gmail.com`, port `587`, user = that Gmail address, password = the app password, sender
+   email = **the same address** (Gmail rewrites any other), sender name `Siosia` → *Save*.
+   **Authentication → Rate Limits** → emails per hour: 30. (Alternative: Brevo's free plan.)
+3. **Authentication → Emails → Templates** — Siosia never sends links, only codes:
+   - **Confirm signup** (a new address), **Magic Link** (an address seen before), **Change Email
+     Address**: subject `Siosia: {{ .Token }}`; body e.g.
+     `<h2>{{ .Token }}</h2><p>Your Siosia code. / Twój kod do Siosi.</p>` — no `{{ .ConfirmationURL }}`.
+   - **Reset Password**, **Invite user**, **Reauthentication**: replace the body with
+     `<p>Siosia never sends links. If you did not expect this email, ignore it. / Siosia nie wysyła
+     linków. Jeśli nie spodziewałeś się tego e-maila, zignoruj go.</p>`.
+4. **Authentication → Sign In / Providers → Email**: enabled, *Confirm email* ON, *Allow new users
+   to sign up* ON (the invite code still decides who becomes a member), OTP length 6, expiry 1800 s.
+5. Switch it on — for everyone, so do it right after the SMTP steps, at a quiet moment: in the SQL
+   editor `update public.app_config set email_sign_in = true;`, open the site, ☰ → *Account*, and
+   send yourself a code. It must arrive within a minute (check Spam); if not, switch it back off
+   (`= false`) until the sender works.
+
+### Google
+
+1. <https://console.cloud.google.com> → a new project "Siosia" (no billing) → **APIs & Services →
+   Google Auth Platform**:
+   - **Branding**: app name `Siosia`, support and developer email (no logo — a logo needs a review);
+   - **Audience**: External → **Publish app** (In production; the basic scopes need no
+     verification; *Testing* would cap sign-in at 100 listed users with grants that expire);
+   - **Data access**: only `openid`, `…/auth/userinfo.email`, `…/auth/userinfo.profile`;
+   - **Clients → Create client → Web application** "Siosia web": *Authorized JavaScript origins*
+     `https://<github-user>.github.io` (and `http://localhost:5173` for local tests); *Authorized
+     redirect URIs*: the **Callback URL** shown in Supabase → Authentication → Providers → Google
+     (`https://<project-ref>.supabase.co/auth/v1/callback`). Copy the client ID and secret.
+2. **Supabase → Authentication → Providers → Google**: enable, paste the client ID and secret,
+   *Skip nonce check* OFF → *Save*. **Allow manual linking** ON (same Sign In / Providers page) lets
+   a signed-in person add Google to their account.
+3. Switch it on in the SQL editor — where Google is offered:
+   `update public.app_config set google_sign_in = 'on';` (`'no_standalone'` hides it in the
+   installed Home Screen app, where Google may not come back; `'no_ios'` on iPhones; `'off'`).
+
+### Moving everyone to accounts (the migration window)
+
+With a method switched on, a phone with an anonymous account shows *Sign in to keep your history on
+every phone* on the start screen and *Keep my account* in ☰ → *Account*. Signing in takes that
+phone's old account along: its profile, history, family seat, contracts, kids, photos, bell and
+notifications join the person's account (`siosia_absorb`). Each further phone signs in with the
+**same email** and joins the same account. A phone the person no longer has: merge it in the SQL
+editor by public ids — `select public.siosia_merge_into('<old public id>', '<their public id>');`
+(it refuses two different families, two master profiles or a ride in progress; nothing changes then).
+
+### Lockdown (after everyone moved)
+
+1. `update public.master_profiles set joinable = false;` — master links let no new phone in (phones
+   already on a profile keep it, presets included; never use `active = false` for this, it signs
+   their phones out).
+2. `update public.app_config set auth_mode = 'accounts', membership_mode = 'open';` — anonymous
+   sessions must sign in (`sign_in_required`); every signed-in account is a member (no invite code).
+   Keep `membership_mode = 'invite'` if new people should still need the code or a `#join=` link.
+3. **Authentication → Sign In / Providers → Allow anonymous sign-ins OFF** → *Save*.
+4. Undo in seconds: `auth_mode = 'anonymous'` (and the toggle back ON).
 
 ## 5. Realtime: private channels only (1 min)
 
@@ -353,7 +416,10 @@ public id: `select public.siosia_set_sandbox('<public id>', true);`
 | Change the invite code | `select public.siosia_set_invite_code('NEW-CODE');` — existing devices stay joined |
 | Change tariff / timers / area | `update public.app_config set … where id = 1;` — applies to new requests |
 | Paused project | Free projects pause after 7 quiet days. The **Keep backend awake** workflow pings weekly once `SUPABASE_URL` is set. If it paused anyway: Supabase dashboard → project → **Restore**. The app shows *Service unavailable — retry* (with your contact) meanwhile |
-| Remove a user | Authentication → Users → delete; their rides stay, anonymised |
+| Remove a user | Authentication → Users → delete; their rides stay, anonymised. (Deleting the profile in the app keeps the sign-in.) |
+| Merge a phone someone no longer has (2.12) | `select public.siosia_merge_into('<old public id>', '<their public id>');` — public ids are in `profiles.public_id`; refuses two families, two master profiles, a ride in progress |
+| Switch sign-in methods (2.12) | `update public.app_config set email_sign_in = true, google_sign_in = 'on';` (see step 4) |
+| Close a master link (2.12) | `update public.master_profiles set joinable = false where id = '<id>';` — its phones keep the profile |
 | Update the app | push to `main`; CI tests and redeploys. Re-run the SQL file if `supabase/migrations` changed; redeploy `push-dispatch` / `calendar` (`npm run push:bundle`, `npm run calendar:bundle`) if `supabase/functions` changed |
 
 ## Local development against your project
@@ -361,7 +427,7 @@ public id: `select public.siosia_set_sandbox('<public id>', true);`
 ```bash
 cp .env.example .env.local      # fill VITE_SUPABASE_URL + VITE_SUPABASE_PUBLISHABLE_KEY
 npm install
-npm run dev                     # http://localhost:5173 (add it to Auth → Redirect URLs for magic links)
+npm run dev                     # http://localhost:5173 (add it to Auth → Redirect URLs for Google)
 ```
 
 `?backend=mock` forces the demo backend at any time. Phones need HTTPS for GPS, so test on phones
@@ -374,16 +440,19 @@ with the deployed link.
 | *Service unavailable* right after deploy | Variables missing/typo (step 7.3) → fix and re-run the workflow. Or the project is paused → **Restore** |
 | Stuck on *Service unavailable* although the project is up | SQL from step 2 not run (the app calls `siosia_config`) → run it |
 | *That invite code is not valid* | Step 3 not run, or a different code. Spaces and letter case don't matter |
-| Session error on first launch | Anonymous sign-ins disabled → step 4.1 |
+| Session error on first launch | Anonymous sign-ins disabled while `auth_mode` is still `anonymous` → step 4.1, or finish the lockdown (step 4) |
+| *This Siosia cannot email that address yet* | No custom SMTP: the built-in mailer reaches only your Supabase team → step 4, *Email codes* |
+| No sign-in code arrives | Spam / Promotions; Authentication → Logs; the SMTP sender address must be the Gmail account itself |
+| Google comes back to the start screen, not signed in | Redirect URL missing (step 4.2) or the Google client's redirect URI is not the Supabase callback URL |
 | Driver never gets requests | Driver must be **online**, within 8 km of the pickup, with location allowed and the app open. Check step 5 isn't blocking: the policies come from step 2 |
 | Rider never sees the car move | Driver phone screen locked or app in background → keep it open (the app warns). Check Realtime isn't disabled |
-| Magic link opens the wrong site | Step 4.3 URLs |
 | Map tiles/route missing sometimes | Community servers (OSM/OSRM) are best-effort; the app falls back to a straight-line estimate and keeps working |
 
 ## Security checklist
 
 - [ ] Only the **publishable** key is in GitHub variables / `.env.local`.
-- [ ] Anonymous sign-ins ON, CAPTCHA OFF, rate limit kept.
+- [ ] Anonymous sign-ins ON during the migration window (OFF after the lockdown, step 4), CAPTCHA OFF, rate limit kept.
+- [ ] Email templates send codes only (no `{{ .ConfirmationURL }}` anywhere).
 - [ ] Realtime **Allow public access** OFF.
 - [ ] Invite code set and shared only with your group.
 - [ ] SQL file ran without errors (it revokes direct table writes; all writes go through checked functions).

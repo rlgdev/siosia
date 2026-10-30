@@ -6,6 +6,7 @@
 import { AppHint } from "../components/AppInstall";
 import { Icon, Logo } from "../components/Icon";
 import { NotificationsBell } from "../components/Notifications";
+import { AbsorbIssueCard, signInOffered } from "../components/SignIn";
 import { Avatar, CarIconButton, ownCarIcon } from "../components/ProfileIcon";
 import { whenText } from "../components/when";
 import { useI18n } from "../i18n";
@@ -58,6 +59,15 @@ export function Home() {
         <NotificationsBell />
       </header>
       {app.cfg?.backend === "mock" && <p className="notice notice-info">{t("demo.banner")}</p>}
+      {/* 2.12 (FR-327): an anonymous account is nudged to sign in, so it works on every phone */}
+      {app.who?.anonymous && !!store.backend?.sendCode && signInOffered(app.deployment) && (
+        <button type="button" className="notice notice-info row spread" onClick={() => store.openPanel("profile", "account")} data-testid="home-signin">
+          <span>{t("signin.banner")}</span>
+          <Icon name="chevron" />
+        </button>
+      )}
+      {/* 2.12: this phone's old account was not joined to the signed-in one */}
+      {app.panel !== "profile" && <AbsorbIssueCard />}
       <AppHint />
       {/* 2.6: a family invitation or a contract proposal waits for my answer */}
       {!!app.my?.familyPending && (

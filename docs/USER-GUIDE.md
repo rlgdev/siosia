@@ -5,21 +5,37 @@
 Rides, lessons and help with the kids, among people who know each other.
 
 You need: the **link** and the **invite code** from your organiser, and a phone with a current
-Chrome (Android) or Safari (iOS). No app store, no account, no payment details.
+Chrome (Android) or Safari (iOS). No app store, no payment details.
 
 ## First time — 1 minute
 
-1. Open the link. Enter the **invite code** (once per phone).
-2. Choose a **nickname** (2–20 characters). That's your whole profile — no name, phone or email.
-3. Optional: **install it** like an app — Android Chrome: menu ⋮ → *Add to Home screen*;
-   iPhone: see *Siosia as an app on iPhone* below (the app needs a one-time code).
-4. Language: English or Polski on the start screen (it follows your phone by default).
-5. Light or dark: Siosia follows your phone's setting; *Profile → Appearance* fixes one for this
+1. Open the link and enter the **invite code**. On another phone of yours, tap *I already have an
+   account — sign in* instead and skip the code. (Once your organiser requires accounts, the
+   sign-in screen comes first.)
+2. **Sign in** with your email (Siosia emails you a 6-digit code — type it in the app) or with
+   Google, when offered (the start-screen notice, or ☰ → *Account*). Use the same email on every phone.
+3. Choose a **nickname** (2–20 characters). That's your whole profile; the email stays with the
+   sign-in service, other people never see it.
+4. Optional: **install it** like an app — Android Chrome: menu ⋮ → *Add to Home screen*;
+   iPhone: see *Siosia as an app on iPhone* below.
+5. Language: English or Polski on the start screen (it follows your phone by default).
+6. Light or dark: Siosia follows your phone's setting; *Profile → Appearance* fixes one for this
    phone.
 
 When asked, **allow location**. If you said no by mistake:
 Android Chrome → 🔒 next to the address → *Permissions → Location → Allow*;
 iPhone → *Settings → Privacy → Location Services → Safari Websites → While Using*, then reload.
+
+### Already using Siosia without signing in?
+
+The start screen says *Sign in to keep your history on every phone*. Tap it (or ☰ → *Account* →
+*Keep my account*), sign in with your email or Google — **inside the Home Screen app** on an
+iPhone, not in Safari — and everything on this phone comes along: profile, history, family,
+contracts, kids, photos, notifications. Then do the same on your other phones with the **same
+email**: each joins the same account. A phone you no longer have: tell the organiser, who joins
+it for you. *Merge another account here* (☰ → *Account*) joins an account you made by mistake
+(say, Google with another address): show its code in that account (☰ → *Siosia as an app* →
+*Show code for the app*) and type it here. *Sign out* signs out this phone only.
 
 ## The start screen
 
@@ -91,8 +107,9 @@ Need to cancel? *Cancel* → choose a reason; the rider is automatically offered
 
 ## Siosia as an app on iPhone — and notifications
 
-An app added to the iPhone Home Screen keeps its **own** storage, separate from Safari and Chrome:
-it does not see the profile you used in the browser. So move it once:
+An app added to the iPhone Home Screen keeps its **own** storage, separate from Safari and Chrome.
+Signed in? Then just sign in again inside the app with the same email. Not signed in yet? Move the
+profile once:
 
 1. In Siosia in the browser: ☰ → **Siosia as an app** → *Show code for the app* (valid 30 min).
 2. Share (the square with an arrow) → **Add to Home Screen**.
@@ -313,7 +330,7 @@ it sooner). Nothing was removed — it just takes less room.
 - A ride keeps: pickup, dropoff, distance, duration, price, times, statuses, ratings.
 - An appointment keeps: the service, time, place, note, statuses and ratings — seen only by its two
   people. A driver taking a ride to it sees just the ride. *My place* is seen only by you.
-- Your nickname is the only personal information. ☰ → *Delete my profile* cancels your upcoming
+- Your nickname is the only personal information other people see; the email you sign in with stays with the sign-in service. ☰ → *Delete my profile* cancels your upcoming
   appointments (the other side is told) and anonymises your rides and appointments.
 
 ## Problems?
@@ -335,22 +352,39 @@ it sooner). Nothing was removed — it just takes less room.
 Przejazdy, lekcje i pomoc przy dzieciach — wśród ludzi, którzy się znają.
 
 Potrzebujesz: **linku** i **kodu zaproszenia** od organizatora oraz telefonu z aktualnym Chrome
-(Android) lub Safari (iOS). Bez sklepu z aplikacjami, bez konta, bez danych płatniczych.
+(Android) lub Safari (iOS). Bez sklepu z aplikacjami, bez danych płatniczych.
 
 ## Pierwsze uruchomienie — 1 minuta
 
-1. Otwórz link. Wpisz **kod zaproszenia** (raz na telefon).
-2. Wybierz **pseudonim** (2–20 znaków). To cały Twój profil — bez imienia, telefonu i e-maila.
-3. Opcjonalnie **zainstaluj** jak aplikację — Android Chrome: menu ⋮ → *Dodaj do ekranu
+1. Otwórz link i wpisz **kod zaproszenia**. Na kolejnym swoim telefonie stuknij *Mam już konto —
+   zaloguj się* zamiast kodu. (Gdy organizator zacznie wymagać kont, najpierw pojawi się logowanie.)
+2. **Zaloguj się** e-mailem (Siosia wyśle 6-cyfrowy kod — wpisz go w aplikacji) albo przez Google,
+   gdy jest dostępne (komunikat na ekranie startowym albo ☰ → *Konto*). Na każdym telefonie używaj
+   tego samego e-maila.
+3. Wybierz **pseudonim** (2–20 znaków). To cały Twój profil; e-mail zostaje w usłudze logowania,
+   inni go nie widzą.
+4. Opcjonalnie **zainstaluj** jak aplikację — Android Chrome: menu ⋮ → *Dodaj do ekranu
    głównego*; iPhone Safari: Udostępnij → *Do ekranu początkowego*.
-4. Język: English lub Polski na ekranie startowym (domyślnie jak w telefonie).
-5. Jasny lub ciemny: Siosia podąża za ustawieniem telefonu; *Profil → Wygląd* ustawia jeden na
+
+5. Język: English lub Polski na ekranie startowym (domyślnie jak w telefonie).
+6. Jasny lub ciemny: Siosia podąża za ustawieniem telefonu; *Profil → Wygląd* ustawia jeden na
    stałe na tym telefonie.
 
 Gdy telefon zapyta, **zezwól na lokalizację**. Jeśli odmówiłeś przez pomyłkę:
 Android Chrome → 🔒 obok adresu → *Uprawnienia → Lokalizacja → Zezwól*;
 iPhone → *Ustawienia → Prywatność → Usługi lokalizacji → Witryny Safari → Podczas używania*, potem
 odśwież stronę.
+
+### Używasz już Siosi bez logowania?
+
+Ekran startowy mówi *Zaloguj się, aby zachować historię na każdym telefonie*. Stuknij (albo ☰ →
+*Konto* → *Zachowaj moje konto*), zaloguj się e-mailem lub przez Google — na iPhonie **w aplikacji
+z ekranu początkowego**, nie w Safari — a wszystko z tego telefonu przejdzie z Tobą: profil,
+historia, rodzina, umowy, dzieci, zdjęcia, powiadomienia. Potem zrób to samo na innych telefonach
+**tym samym e-mailem**: każdy dołączy do tego samego konta. Telefonu już nie masz? Powiedz
+organizatorowi, dołączy go za Ciebie. *Połącz tu inne konto* (☰ → *Konto*) dołącza konto założone
+przez pomyłkę (np. Google z innym adresem): pokaż jego kod na tamtym koncie (☰ → *Siosia jako
+aplikacja* → *Pokaż kod dla aplikacji*) i wpisz go tutaj. *Wyloguj* wylogowuje tylko ten telefon.
 
 ## Ekran startowy
 
@@ -426,7 +460,8 @@ Musisz anulować? *Anuluj* → wybierz powód; kurs automatycznie trafia do inne
 ## Siosia jako aplikacja na iPhonie — i powiadomienia
 
 Aplikacja dodana do ekranu początkowego iPhone'a ma **własną** pamięć, oddzielną od Safari i
-Chrome: nie widzi profilu z przeglądarki. Przenieś go raz:
+Chrome. Jesteś zalogowany? Po prostu zaloguj się w aplikacji tym samym e-mailem. Jeszcze nie?
+Przenieś profil raz:
 
 1. W Siosi w przeglądarce: ☰ → **Siosia jako aplikacja** → *Pokaż kod dla aplikacji* (ważny 30 min).
 2. Udostępnij (kwadrat ze strzałką) → **Do ekranu początkowego**.
@@ -651,7 +686,7 @@ zamknąć wcześniej). Nic nie zniknęło — zajmuje tylko mniej miejsca.
 - Kurs przechowuje: odbiór, cel, dystans, czas, cenę, godziny, statusy i oceny.
 - Termin przechowuje: usługę, czas, miejsce, notatkę, statusy i oceny — widzą je tylko dwie osoby.
   Kierowca, który wiezie na termin, widzi tylko przejazd. *Moje miejsce* widzisz tylko Ty.
-- Pseudonim to jedyna informacja osobowa. ☰ → *Usuń mój profil* odwołuje nadchodzące terminy
+- Pseudonim to jedyna informacja osobowa widoczna dla innych; e-mail, którym się logujesz, zostaje w usłudze logowania. ☰ → *Usuń mój profil* odwołuje nadchodzące terminy
   (druga strona dostaje wiadomość) i anonimizuje kursy i terminy.
 
 ## Problemy?
