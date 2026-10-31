@@ -86,7 +86,7 @@ describe("an active contract applied to past appointments (FR-319, V76)", () => 
     expect(appt("mum", wed.id).cost).toMatchObject({ total: 120, source: "contract" });
     expect(sent()).toEqual(["contract_applied>dad", "contract_applied>mum"]); // the provider applied: the family hears
     expect(appt("dad", lesson.id).rate).toBeNull(); // no Learning rate
-    expect(appt("dad", later.id)).toMatchObject({ rate: 40, price: 120, contractId: k.id }); // 2.13: coming, unpriced — priced when the contract became active
+    expect(appt("dad", later.id)).toMatchObject({ rate: 40, price: 120, contractId: k.id }); // 2.12.2: coming, unpriced — priced when the contract became active
     pushes = [];
     expect(apply("dad", k.id, "2026-10-20")).toEqual({ count: 0 });
     expect(pushes).toEqual([]);

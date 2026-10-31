@@ -4,7 +4,7 @@
 // 2.1 (FR-161): You could help (N) — others' open requests, soonest first, with I can do it.
 // 2.3 (FR-202, FR-221): "with Zosia and Kuba" on an item with kids attached (a candidate: the
 // count), the other party's photo, and the chat of an accepted appointment with its unread count.
-// 2.13: every appointment shows its price — "est." when it is the rate × the booked time (the final
+// 2.12.2: every appointment shows its price — "est." when it is the rate × the booked time (the final
 // cost follows the time spent), as set for a fixed price or a custom amount, or "no price set".
 
 import { Icon } from "../components/Icon";
@@ -309,7 +309,7 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
   );
 }
 
-/** 2.13: an appointment's price — an estimate at a rate, as set otherwise, or none set yet. */
+/** 2.12.2: an appointment's price — an estimate at a rate, as set otherwise, or none set yet. */
 export function ApptPrice({ a }: { a: AppointmentView }) {
   const { t } = useI18n();
   if (a.price === null)

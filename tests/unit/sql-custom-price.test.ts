@@ -1,5 +1,5 @@
 // @vitest-environment node
-// Siosia 2.13 backend rules against the REAL SQL migration in PGlite: a YOLO event without a price of
+// Siosia 2.12.2 backend rules against the REAL SQL migration in PGlite: a YOLO event without a price of
 // its own takes the Childcare price (its base), and the client may set a custom payment per
 // occurrence instead of the rate — no contract reprices it. Same cases as the engine tests
 // (tests/unit/custom-price.test.ts) — the twin rule (V19) — plus the migration's backfill.
@@ -53,7 +53,7 @@ beforeEach(async () => {
   await h.db.exec("delete from public.appointments; delete from public.appointment_series; delete from public.push_outbox; delete from public.contracts;");
 });
 
-describe("the price of a YOLO event and a custom payment (2.13)", () => {
+describe("the price of a YOLO event and a custom payment (2.12.2)", () => {
   it("a YOLO event takes the Childcare price; a contract's Childcare rate before it", async () => {
     expect(await request("dad", "nanny", 26 * 60)).toMatchObject({ price: 150, rate: 50, contractId: null, customPrice: false });
     expect(await request("dad", null, 27 * 60, { duration: 120 })).toMatchObject({ price: 100, rate: 50, customPrice: false });

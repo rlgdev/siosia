@@ -22,5 +22,5 @@ export function formatMoney(amount: number, currency: string, locale: string): s
   }
 }
 
-/** 2.13: a custom payment per occurrence of an appointment, 1 … 10000 (twin of siosia_request_service). */
+/** 2.12.2: a custom payment per occurrence of an appointment, 1 … 10000 (twin of siosia_request_service). */
 export const CUSTOM_PRICE_MAX = 10000;

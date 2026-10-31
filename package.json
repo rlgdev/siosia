@@ -1,7 +1,7 @@
 {
   "name": "siosia",
   "private": true,
-  "version": "2.12.1",
+  "version": "2.12.2",
   "type": "module",
   "description": "Siosia — a mobile-first ride-hailing web app: one link, ride or drive, zero running cost.",
   "scripts": {

@@ -369,7 +369,7 @@ describe("price and cost (FR-262, FR-270–273, V62, V63)", () => {
     // Ending keeps the frozen prices.
     at((e) => e.endContract("dad", c.id));
     expect(getAppt("dad", a.id).price).toBe(100);
-    // 2.13: the request still without a price took the contract's rate when it became active.
+    // 2.12.2: the request still without a price took the contract's rate when it became active.
     expect(getAppt("dad", before.id)).toMatchObject({ price: 120, rate: 40, contractId: c.id });
   });
 

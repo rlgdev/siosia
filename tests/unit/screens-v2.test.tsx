@@ -1692,7 +1692,7 @@ describe("2.5 C3: the session feed and heading home (FR-230–233, FR-240–241,
   });
 });
 
-describe("2.13 the price of an appointment: a YOLO event at the Childcare rate, a custom amount, est. in Planned", () => {
+describe("2.12.2 the price of an appointment: a YOLO event at the Childcare rate, a custom amount, est. in Planned", () => {
   const YOLO = DEFAULT_SERVICES.find((e) => e.id === "yolo_halloween")!;
   const priced = DEFAULT_SERVICES.map((e) => (e.id === "childcare" ? { ...e, price: { perHour: 50 } } : e));
   const deployment = { ...DEFAULT_CONFIG, services: priced };

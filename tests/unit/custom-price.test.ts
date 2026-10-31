@@ -1,4 +1,4 @@
-// Siosia 2.13 server rules in the engine (the SQL twin is tests/unit/sql-custom-price.test.ts — same
+// Siosia 2.12.2 server rules in the engine (the SQL twin is tests/unit/sql-custom-price.test.ts — same
 // cases, V19): a YOLO event without a price of its own takes the Childcare price (its base), and the
 // client may set a custom payment per occurrence instead of the rate — no contract reprices it.
 
@@ -59,7 +59,7 @@ beforeEach(() => {
   at((e) => e.setOffers("nanny", ["learning", "childcare"]));
 });
 
-describe("the price of a YOLO event and a custom payment (2.13)", () => {
+describe("the price of a YOLO event and a custom payment (2.12.2)", () => {
   it("a YOLO event takes the Childcare price; a contract's Childcare rate before it", () => {
     expect(request("dad", "nanny", 26 * 60)).toMatchObject({ price: 150, rate: 50, contractId: null, customPrice: false });
     expect(request("dad", null, 27 * 60, { duration: 120 })).toMatchObject({ price: 100, rate: 50, customPrice: false });

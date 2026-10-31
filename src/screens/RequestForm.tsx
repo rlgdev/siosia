@@ -6,7 +6,7 @@
 // the group sees until someone takes it; preselected when nobody offers the entry.
 // 2.3 (FR-201): a client with kids ticks the ones who will be there; they travel as kidIds (a
 // series: to every occurrence) and the provider sees them — nobody else.
-// 2.13: Payment — at the rate (a contract's, else the price list's; a YOLO event without a price of
+// 2.12.2: Payment — at the rate (a contract's, else the price list's; a YOLO event without a price of
 // its own takes its base's, the Childcare rate) or a custom amount for the whole event (each time).
 
 import { useEffect, useMemo, useState } from "react";
@@ -106,7 +106,7 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   // The picker shows only to a client who has kids (none: nothing to tick).
   const [kids] = useMyKids();
   const [kidIds, setKidIds] = useState<string[]>([]);
-  // 2.13: a custom amount for the whole event instead of the rate.
+  // 2.12.2: a custom amount for the whole event instead of the rate.
   const [custom, setCustom] = useState(false);
   const [amount, setAmount] = useState("");
 
@@ -122,7 +122,7 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   // 2.6 (FR-262): my family's contract with the chosen provider sets the rate (the server freezes the same).
   const chosen = open ? null : (entry.providers.find((p) => p.publicId === provider) ?? null);
   const contractRate = chosen?.contractRate ?? null;
-  // 2.13: an entry without a price of its own takes its base's (a YOLO event: the Childcare price).
+  // 2.12.2: an entry without a price of its own takes its base's (a YOLO event: the Childcare price).
   const baseEntry = entry.base ? (dep.services.find((x) => x.id === entry.base) ?? null) : null;
   const list = entry.price ?? baseEntry?.price ?? null;
   const fromBase = !entry.price && !!baseEntry?.price;

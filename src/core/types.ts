@@ -248,7 +248,7 @@ export interface AppointmentView {
   rate: number | null;
   /** 2.6 (FR-262): the contract that set the price, if any. */
   contractId: string | null;
-  /** 2.13: the price is the client's custom payment (kept as set: no contract reprices it). */
+  /** 2.12.2: the price is the client's custom payment (kept as set: no contract reprices it). */
   customPrice: boolean;
   /** 2.6 (FR-272): the provider's correction of the time, in minutes; null = as booked. */
   actualMin: number | null;
@@ -450,7 +450,7 @@ export interface ServiceRequestInput {
   note: string;
   repeat?: RepeatInput;
   /**
-   * 2.13: a custom payment the client sets for each occurrence (a total, not per hour) instead of
+   * 2.12.2: a custom payment the client sets for each occurrence (a total, not per hour) instead of
    * the rate (contract or price list; a YOLO event: the Childcare rate). null/absent = the rate.
    */
   customPrice?: number | null;

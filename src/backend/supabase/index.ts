@@ -525,7 +525,7 @@ export class SupabaseBackend implements Backend {
     };
     // 2.3 overload (kids to attach); the 2.0 signature stays for a request without them.
     if (input.kidIds && input.kidIds.length) args.p_kids = input.kidIds;
-    // 2.13 overload (a custom payment): it takes the kids too (none = an empty list).
+    // 2.12.2 overload (a custom payment): it takes the kids too (none = an empty list).
     if (input.customPrice != null) {
       args.p_kids = input.kidIds ?? [];
       args.p_custom_price = input.customPrice;

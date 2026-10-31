@@ -645,7 +645,7 @@ alter table public.rides add column if not exists settled_at timestamptz;
 alter table public.rides add column if not exists settlement_id uuid;
 -- … and how much it came to then: a later tip, corrected time or contract makes the difference due.
 alter table public.appointments add column if not exists settled_amount numeric(10, 2);
--- 2.13: the price is the client's custom payment for the occurrence — no contract reprices it.
+-- 2.12.2: the price is the client's custom payment for the occurrence — no contract reprices it.
 alter table public.appointments add column if not exists price_custom boolean not null default false;
 alter table public.rides add column if not exists settled_amount numeric(10, 2);
 -- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
@@ -1243,7 +1243,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     -- 2.6 (FR-262, FR-270–272): where the price came from and, once done, what it cost.
     'rate', a.rate,
     'contractId', case when v.sees then a.contract_id end,
-    -- 2.13: the price is the client's custom payment.
+    -- 2.12.2: the price is the client's custom payment.
     'customPrice', a.price_custom,
     'actualMin', a.actual_min,
     'cost', case when v.sees then siosia_cost_json(a) end,
@@ -3524,7 +3524,7 @@ end $$;
 -- every other rule and limit the same, only the checks of a provider skipped.
 -- 2.3 (FR-201): p_kids = the client's own kids to attach, to every occurrence of a series (the
 -- 2.0 signature below passes none; cached apps keep working).
--- 2.13: p_custom_price = the client's custom payment per occurrence (1 … 10000) instead of the
+-- 2.12.2: p_custom_price = the client's custom payment per occurrence (1 … 10000) instead of the
 -- rate; null = the rate (a contract's, else the price list's — an entry without a price of its
 -- own takes its base's: a YOLO event the Childcare price). The 2.3 signature passes none.
 create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
@@ -3574,7 +3574,7 @@ begin
   v_kids := siosia_own_kids(v_uid, p_kids);
   if v_kids is null then return siosia_err('bad_input'); end if;
   if p_custom_price is not null and (v_custom < 1 or v_custom > 10000) then return siosia_err('bad_input'); end if;
-  -- The price list's: the entry's own, else (2.13) its base's — a YOLO event takes Childcare's.
+  -- The price list's: the entry's own, else (2.12.2) its base's — a YOLO event takes Childcare's.
   v_list := case when jsonb_typeof(e -> 'price') = 'object' then e -> 'price'
                  when e ->> 'base' is not null and jsonb_typeof(siosia_service(e ->> 'base') -> 'price') = 'object'
                    then siosia_service(e ->> 'base') -> 'price' end;
@@ -3584,7 +3584,7 @@ begin
   -- 2.6 (FR-262, V62): an active contract between my family and the provider sets the rate.
   select r.contract_id, r.per_hour into v_contract, v_rate from siosia_contract_rate(v_uid, v_prov, p_service) r;
   if p_custom_price is not null then
-    -- 2.13: the custom payment replaces the rate.
+    -- 2.12.2: the custom payment replaces the rate.
     v_price := v_custom; v_rate := null; v_contract := null;
   elsif v_contract is not null then
     v_price := round(v_rate * p_duration / 60.0, 2);
@@ -3809,7 +3809,7 @@ begin
     return siosia_err(sqlerrm);
   end;
   -- 2.6 (FR-262): the taker's contract with the client's family reprices what was accepted —
-  -- 2.13: not a custom payment, which stays as the client set it.
+  -- 2.12.2: not a custom payment, which stays as the client set it.
   update appointments x set rate = r.per_hour, contract_id = r.contract_id, price = round(r.per_hour * x.duration_min / 60.0, 2)
     from siosia_contract_rate(a.client_id, v_uid, a.service_id) r
    where (x.id = a.id or x.series_id = a.series_id) and x.provider_id = v_uid and x.status = 'accepted' and not x.price_custom;
@@ -5103,7 +5103,7 @@ begin
   return siosia_ok(siosia_contract_json(k, v_uid));
 end $$;
 
--- 2.13: a contract that becomes active prices the coming appointments between its family and its
+-- 2.12.2: a contract that becomes active prices the coming appointments between its family and its
 -- provider that have no price yet (nor a custom payment) — at its rate for the service or its base.
 create or replace function public.siosia_price_unpriced(k public.contracts)
 returns void language plpgsql security definer set search_path = public as $$
@@ -6137,7 +6137,7 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
--- 2.13: coming appointments without a price take the one they would get today (idempotent: only
+-- 2.12.2: coming appointments without a price take the one they would get today (idempotent: only
 -- rows still without a price, never a custom payment) — first an active contract of the pair, then
 -- the price list (an entry without a price of its own: its base's — a YOLO event, Childcare's).
 -- ---------------------------------------------------------------------------------------------
