@@ -647,6 +647,9 @@ alter table public.rides add column if not exists settlement_id uuid;
 alter table public.appointments add column if not exists settled_amount numeric(10, 2);
 -- 2.12.2: the price is the client's custom payment for the occurrence — no contract reprices it.
 alter table public.appointments add column if not exists price_custom boolean not null default false;
+-- 2.12.2: the one-time pricing of coming appointments still without a price has run (end of file):
+-- later re-runs of this file never price an agreed appointment from a later price-list change.
+alter table public.app_config add column if not exists prices_backfilled boolean not null default false;
 alter table public.rides add column if not exists settled_amount numeric(10, 2);
 -- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
 create table if not exists public.member_invites (
@@ -890,6 +893,16 @@ create or replace function public.siosia_service(p_id text)
 returns jsonb language sql stable security definer set search_path = public as $$
   select e from app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) e
    where c.id = 1 and e ->> 'id' = p_id limit 1;
+$$;
+
+-- 2.12.2: an entry's price-list price — its own, else its base's while the base is enabled (a YOLO
+-- event takes Childcare's); null = none. Only {"perHour": n} or {"fixed": n} with a number counts.
+create or replace function public.siosia_list_price(e jsonb)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select case when jsonb_typeof(x.p -> 'perHour') = 'number' or jsonb_typeof(x.p -> 'fixed') = 'number' then x.p end
+    from (select case when jsonb_typeof(e -> 'price') = 'object' then e -> 'price'
+                      when e ->> 'base' is not null and coalesce((siosia_service(e ->> 'base') ->> 'enabled')::boolean, false)
+                        then siosia_service(e ->> 'base') -> 'price' end as p) x;
 $$;
 
 -- A catalog entry's name in a language (English, then the id, as fallbacks).
@@ -3574,10 +3587,8 @@ begin
   v_kids := siosia_own_kids(v_uid, p_kids);
   if v_kids is null then return siosia_err('bad_input'); end if;
   if p_custom_price is not null and (v_custom < 1 or v_custom > 10000) then return siosia_err('bad_input'); end if;
-  -- The price list's: the entry's own, else (2.12.2) its base's — a YOLO event takes Childcare's.
-  v_list := case when jsonb_typeof(e -> 'price') = 'object' then e -> 'price'
-                 when e ->> 'base' is not null and jsonb_typeof(siosia_service(e ->> 'base') -> 'price') = 'object'
-                   then siosia_service(e ->> 'base') -> 'price' end;
+  -- The price list's: the entry's own, else (2.12.2) its enabled base's — a YOLO event takes Childcare's.
+  v_list := siosia_list_price(e);
   v_price := case when jsonb_typeof(v_list -> 'perHour') = 'number'
                     then round((v_list ->> 'perHour')::numeric * p_duration / 60, 2)
                   when jsonb_typeof(v_list -> 'fixed') = 'number' then (v_list ->> 'fixed')::numeric end;
@@ -5105,10 +5116,17 @@ end $$;
 
 -- 2.12.2: a contract that becomes active prices the coming appointments between its family and its
 -- provider that have no price yet (nor a custom payment) — at its rate for the service or its base.
+-- Locks the series rows first, then the occurrences (the order of answer, take and cancel).
 create or replace function public.siosia_price_unpriced(k public.contracts)
 returns void language plpgsql security definer set search_path = public as $$
 declare a appointments; v_rate numeric;
 begin
+  perform 1 from appointment_series s
+   where s.id in (select x.series_id from appointments x
+                   where x.series_id is not null and x.price is null and not x.price_custom
+                     and x.status in ('requested', 'accepted') and x.starts_at > now()
+                     and siosia_family_of(x.client_id) = k.family_id and siosia_same_person(x.provider_id, k.provider_id))
+   order by s.id for update;
   for a in select * from appointments x
             where x.price is null and not x.price_custom and x.status in ('requested', 'accepted') and x.starts_at > now()
               and siosia_family_of(x.client_id) = k.family_id and siosia_same_person(x.provider_id, k.provider_id)
@@ -6137,30 +6155,40 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
--- 2.12.2: coming appointments without a price take the one they would get today (idempotent: only
--- rows still without a price, never a custom payment) — first an active contract of the pair, then
--- the price list (an entry without a price of its own: its base's — a YOLO event, Childcare's).
+-- 2.12.2, once (app_config.prices_backfilled): coming appointments without a price take the one they
+-- would get today — first an active contract of the pair, then the price list (an entry without a
+-- price of its own: its enabled base's — a YOLO event, Childcare's). Never a custom payment. Later
+-- re-runs of this file leave prices alone (V62: the request freezes the price).
 -- ---------------------------------------------------------------------------------------------
 do $$
-declare k public.contracts;
+declare k public.contracts; l record; a public.appointments;
 begin
-  for k in select * from public.contracts where status = 'active' loop
+  if (select prices_backfilled from public.app_config where id = 1) then return; end if;
+  for k in select * from public.contracts where status = 'active' order by id loop
     perform public.siosia_price_unpriced(k);
   end loop;
-  update public.appointments x
-     set rate = case when jsonb_typeof(l.p -> 'perHour') = 'number' then (l.p ->> 'perHour')::numeric end,
-         price = case when jsonb_typeof(l.p -> 'perHour') = 'number' then round((l.p ->> 'perHour')::numeric * x.duration_min / 60.0, 2)
-                      else (l.p ->> 'fixed')::numeric end
-    from (select e ->> 'id' as id,
-                 case when jsonb_typeof(e -> 'price') = 'object' then e -> 'price'
-                      when e ->> 'base' is not null then public.siosia_service(e ->> 'base') -> 'price' end as p
-            from public.app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) e where c.id = 1) l
-   where l.id = x.service_id and jsonb_typeof(l.p) = 'object'
-     and (jsonb_typeof(l.p -> 'perHour') = 'number' or jsonb_typeof(l.p -> 'fixed') = 'number')
-     and x.price is null and not x.price_custom and x.status in ('requested', 'accepted') and x.starts_at > now();
+  for l in select e ->> 'id' as id, public.siosia_list_price(e) as p
+             from public.app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) e
+            where c.id = 1 and e ->> 'kind' = 'time' loop
+    continue when l.p is null;
+    -- series rows first, then the occurrences (the order of answer, take and cancel)
+    perform 1 from public.appointment_series s
+     where s.id in (select x.series_id from public.appointments x
+                     where x.service_id = l.id and x.price is null and not x.price_custom
+                       and x.status in ('requested', 'accepted') and x.starts_at > now())
+     order by s.id for update;
+    update public.appointments x
+       set rate = case when jsonb_typeof(l.p -> 'perHour') = 'number' then (l.p ->> 'perHour')::numeric end,
+           price = case when jsonb_typeof(l.p -> 'perHour') = 'number'
+                          then round((l.p ->> 'perHour')::numeric * x.duration_min / 60.0, 2)
+                        else (l.p ->> 'fixed')::numeric end
+     where x.service_id = l.id and x.price is null and not x.price_custom
+       and x.status in ('requested', 'accepted') and x.starts_at > now();
+  end loop;
   update public.appointment_series s
      set price = (select x.price from public.appointments x where x.series_id = s.id and x.price is not null order by x.seq limit 1)
    where s.price is null and exists (select 1 from public.appointments x where x.series_id = s.id and x.price is not null);
+  update public.app_config set prices_backfilled = true where id = 1;
 end $$;
 
 -- ---------------------------------------------------------------------------------------------

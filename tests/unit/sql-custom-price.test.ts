@@ -35,6 +35,14 @@ const contract = async (rates: unknown) => {
   return c;
 };
 const getAppt = (who: Who, id: unknown) => call<Json>(who, "siosia_get_appointment", [id]);
+/** Merges `patch` (a JSON object) into one catalog entry, as an operator's edit would. */
+const patchService = (id: string, patch: string) =>
+  h.admin(
+    `update public.app_config set services = (
+       select jsonb_agg(case when e ->> 'id' = $1 then e || $2::jsonb else e end order by o)
+         from jsonb_array_elements(services) with ordinality x(e, o)) where id = 1`,
+    [id, patch]
+  );
 
 beforeAll(async () => {
   h = await createHarness(Object.values(U));
@@ -94,12 +102,33 @@ describe("the price of a YOLO event and a custom payment (2.12.2)", () => {
     expect(await getAppt("dad", mine.id)).toMatchObject({ price: 200, contractId: null });
   });
 
-  it("re-running the migration prices the coming appointments still without a price, never a custom payment", async () => {
+  it("prices a YOLO event at Childcare's list price only while Childcare is enabled (the form shows the same)", async () => {
+    await patchService("childcare", '{"enabled": false}');
+    try {
+      expect(await request("dad", "nanny", 26 * 60)).toMatchObject({ price: null, rate: null, customPrice: false });
+    } finally {
+      await patchService("childcare", '{"enabled": true}');
+    }
+    expect(await request("dad", "nanny", 30 * 60)).toMatchObject({ price: 150, rate: 50 });
+  });
+
+  it("the first run on a 2.12.1 database prices the coming appointments still without a price — once, never a custom payment", async () => {
     const a = await request("dad", "nanny", 26 * 60);
     const b = await request("dad", "nanny", 30 * 60, { custom: 70 });
+    const lesson = await request("dad", "nanny", 34 * 60, { service: "learning", duration: 60 }); // no price anywhere
     await h.admin("update public.appointments set price = null, rate = null where id = $1", [a.id]);
+    await h.admin("update public.app_config set prices_backfilled = false where id = 1"); // as on the live 2.12.1 database
     await h.db.exec(MIGRATION);
     expect(await getAppt("dad", a.id)).toMatchObject({ price: 150, rate: 50, customPrice: false });
     expect(await getAppt("dad", b.id)).toMatchObject({ price: 70, rate: null, customPrice: true });
+    expect(await getAppt("dad", lesson.id)).toMatchObject({ price: null, rate: null });
+    // A later price-list change, then a later release re-running the file: the agreed one keeps no price (V62).
+    await patchService("learning", '{"price": {"perHour": 60}}');
+    try {
+      await h.db.exec(MIGRATION);
+      expect(await getAppt("dad", lesson.id)).toMatchObject({ price: null, rate: null });
+    } finally {
+      await patchService("learning", '{"price": null}');
+    }
   });
 });

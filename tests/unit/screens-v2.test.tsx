@@ -1709,6 +1709,9 @@ describe("2.12.2 the price of an appointment: a YOLO event at the Childcare rate
     expect(screen.getByTestId("request-problem")).toHaveTextContent("Enter an amount from 1 to 10000.");
     fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "0.5" } });
     expect(send).toBeDisabled();
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "12.345" } });
+    expect(screen.getByTestId("request-problem")).toHaveTextContent("Use at most two decimals");
+    expect(send).toBeDisabled();
     fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "200" } });
     expect(screen.getByTestId("request-price")).toHaveTextContent(/200[,.]00/);
     expect(screen.getByTestId("request-custom")).toHaveTextContent("custom amount");
@@ -1725,6 +1728,31 @@ describe("2.12.2 the price of an appointment: a YOLO event at the Childcare rate
     await userEvent.click(screen.getByTestId("request-pay-custom"));
     fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "120,5" } });
     expect(screen.getByTestId("request-price")).toHaveTextContent(/120[,.]50/);
+  });
+
+  it("C3: 'estimate' only while it may still happen; a done custom amount says so and the correction hint keeps the total", async () => {
+    const past = Date.now() - 5 * 3600_000;
+    const cancelled = appt({ status: "cancelled", cancelledBy: "client", price: 150, rate: 50 });
+    const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => cancelled }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-price")).not.toHaveTextContent("estimate");
+    unmount();
+    const coming = appt({ price: 150, rate: 50 });
+    const second = setup("en", <AppointmentPanel />, { getAppointment: async () => coming }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-price")).toHaveTextContent("estimate");
+    second.unmount();
+    const done = appt({
+      status: "done",
+      role: "provider",
+      startsAt: past,
+      endedAt: Date.now() - 3600_000,
+      price: 200,
+      rate: null,
+      customPrice: true,
+      cost: { minutes: 180, rate: null, total: 200, currency: "PLN", source: "custom", corrected: false }
+    });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => done }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("cost-source")).toHaveTextContent("custom amount");
+    expect(screen.getByTestId("cost-total")).toHaveTextContent(/200[,.]00/);
   });
 
   it("shows every appointment's price in Planned: est. at a rate, a custom amount as set, or no price set", async () => {

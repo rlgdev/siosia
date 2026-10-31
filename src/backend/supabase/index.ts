@@ -527,6 +527,8 @@ export class SupabaseBackend implements Backend {
     if (input.kidIds && input.kidIds.length) args.p_kids = input.kidIds;
     // 2.12.2 overload (a custom payment): it takes the kids too (none = an empty list).
     if (input.customPrice != null) {
+      // JSON would send NaN / Infinity as null — a rate request; refuse it like the engine twin.
+      if (!Number.isFinite(input.customPrice)) throw new ServerError("bad_input");
       args.p_kids = input.kidIds ?? [];
       args.p_custom_price = input.customPrice;
     }

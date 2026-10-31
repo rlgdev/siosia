@@ -3914,12 +3914,14 @@ export class Engine {
 
   /**
    * The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed
-   * price — 2.12.2: an entry without a price of its own takes its base's (a YOLO event: Childcare's).
+   * price — 2.12.2: an entry without a price of its own takes its base's (a YOLO event: Childcare's)
+   * while the base is enabled (the app shows only enabled entries' prices).
    */
   private priceFor(e: CatalogEntry, client: string, provider: string | null, minutes: number): { rate: number | null; price: number | null; contractId: string | null } {
     const c = this.contractRate(client, provider, e.id);
     if (c) return { rate: c.perHour, price: round2((c.perHour * minutes) / 60), contractId: c.contractId };
-    const list = e.price ?? (e.base ? (this.service(e.base)?.price ?? null) : null);
+    const base = e.base ? this.service(e.base) : null;
+    const list = e.price ?? (base?.enabled ? (base.price ?? null) : null);
     if (list && "perHour" in list) return { rate: list.perHour, price: round2((list.perHour * minutes) / 60), contractId: null };
     return { rate: null, price: list && "fixed" in list ? list.fixed : null, contractId: null };
   }

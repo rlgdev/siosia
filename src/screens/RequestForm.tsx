@@ -135,8 +135,11 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
           : list.fixed
         : null;
   const hourly = contractRate ?? (list && "perHour" in list ? list.perHour : null);
-  const customAmount = Math.round(Number(amount.replace(",", ".")) * 100) / 100;
-  const customOk = amount.trim() !== "" && Number.isFinite(customAmount) && customAmount >= 1 && customAmount <= CUSTOM_PRICE_MAX;
+  // Whole units or up to two decimals, a comma or a dot (Polish keyboards) — never a third decimal to round.
+  const amountText = amount.trim().replace(",", ".");
+  const customShape = /^\d+(\.\d{1,2})?$/.test(amountText);
+  const customAmount = Number(amountText);
+  const customOk = customShape && customAmount >= 1 && customAmount <= CUSTOM_PRICE_MAX;
   const price = custom ? (customOk ? customAmount : null) : ratePrice;
   const fmtRate = (r: number) => new Intl.NumberFormat(locale, { style: "currency", currency: dep.tariff.currency }).format(r);
   const baseName = localText(baseEntry?.name, locale.startsWith("pl") ? "pl" : "en") || entry.base || "";
@@ -148,7 +151,7 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
     if (startMs > Date.now() + dep.booking.maxDays * 86_400_000) return t("request.tooFar", { days: dep.booking.maxDays });
     if (entry.needsPlace && !place) return t("request.needPlace");
     if (note.length > 200) return t("request.noteLong");
-    if (custom && !customOk) return t("request.customBad", { max: CUSTOM_PRICE_MAX });
+    if (custom && !customOk) return t(amountText !== "" && /^\d+\.\d{3,}$/.test(amountText) ? "request.customDecimals" : "request.customBad", { max: CUSTOM_PRICE_MAX });
     if (repeat !== "none") {
       if (starts.length < 2 || starts.length > max) return t("request.repeatCount", { max });
       if (starts[starts.length - 1] > Date.now() + dep.appointment.seriesMaxDays * 86_400_000) return t("request.repeatFar", { days: dep.appointment.seriesMaxDays });
@@ -339,21 +342,6 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
             <Money amount={price} currency={dep.tariff.currency} />
           </strong>
           {repeat !== "none" && <span className="muted small">{t("request.perOccurrence")}</span>}
-          {custom && (
-            <span className="muted small" data-testid="request-custom">
-              {t("request.customPrice")}
-            </span>
-          )}
-          {!custom && contractRate === null && hourly !== null && (
-            <span className="muted small" data-testid="request-list-rate">
-              {fromBase ? t("request.baseListRate", { service: baseName, rate: fmtRate(hourly) }) : t("request.listRate", { rate: fmtRate(hourly) })}
-            </span>
-          )}
-          {!custom && hourly !== null && (
-            <span className="muted small" data-testid="request-estimate-note">
-              {t("request.estimateNote")}
-            </span>
-          )}
           {!custom && contractRate !== null && chosen && (
             <span className="muted small" data-testid="request-contract">
               {t("request.contractRate", { name: chosen.nickname, rate: fmtRate(contractRate) })}
@@ -361,6 +349,19 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
               {entry.base && ` · ${t("request.baseRate", { service: baseName })}`}
             </span>
           )}
+        </p>
+      )}
+      {/* 2.12.2: where the price comes from, under the row (the row itself stays as narrow as before) */}
+      {price !== null && (custom || hourly !== null) && (
+        <p className="muted small" data-testid="request-price-notes">
+          {custom && <span data-testid="request-custom">{t("request.customPrice")}</span>}
+          {!custom && contractRate === null && hourly !== null && (
+            <span data-testid="request-list-rate">
+              {fromBase ? t("request.baseListRate", { service: baseName, rate: fmtRate(hourly) }) : t("request.listRate", { rate: fmtRate(hourly) })}
+              {" · "}
+            </span>
+          )}
+          {!custom && hourly !== null && <span data-testid="request-estimate-note">{t("request.estimateNote")}</span>}
         </p>
       )}
       {problem && <p className="hint" data-testid="request-problem">{problem}</p>}

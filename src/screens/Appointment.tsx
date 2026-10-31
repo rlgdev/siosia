@@ -166,8 +166,8 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
               <small className="muted">
                 {" · "}
                 {t("cost.planned", { rate: money(a.rate, a.currency, locale), source: t(a.contractId ? "cost.source.contract" : "cost.source.catalog") })}
-                {" · "}
-                {t("common.estimate")}
+                {/* 2.12.2: an estimate only while it may still happen (rate × the booked time) */}
+                {(a.status === "requested" || a.status === "accepted") && ` · ${t("common.estimate")}`}
               </small>
             )}
             {a.customPrice && (
@@ -393,6 +393,13 @@ function CostSection({ a, reload }: { a: AppointmentView; reload: () => void }) 
           </span>
         </div>
       )}
+      {/* 2.12.2: a set amount (custom or a fixed price) says so; the time does not change it */}
+      {cost.rate === null && (cost.source === "custom" || cost.source === "fixed") && (
+        <div className="kv">
+          <span>{t("cost.price")}</span>
+          <span data-testid="cost-source">{t(`cost.source.${cost.source}` as MessageKey)}</span>
+        </div>
+      )}
       <div className="kv big">
         <span>{t("cost.total")}</span>
         {cost.total === null ? (
@@ -411,7 +418,7 @@ function CostSection({ a, reload }: { a: AppointmentView; reload: () => void }) 
             <label className="field">
               <span className="with-info">
                 {t("cost.correct")}
-                <InfoTip text={t("cost.correctHint")} testId="cost-correct" />
+                <InfoTip text={t(cost.rate === null ? "cost.correctHintSet" : "cost.correctHint")} testId="cost-correct" />
               </span>
               <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} data-testid="cost-minutes">
                 {choices.map((m) => (

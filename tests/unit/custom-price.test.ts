@@ -68,6 +68,13 @@ describe("the price of a YOLO event and a custom payment (2.12.2)", () => {
     expect(request("dad", "nanny", 50 * 60)).toMatchObject({ price: 120, rate: 40, contractId: c.id });
   });
 
+  it("prices a YOLO event at Childcare's list price only while Childcare is enabled (the form shows the same)", () => {
+    const off: EngineConfig = { ...CFG, services: SERVICES.map((e) => (e.id === "childcare" ? { ...e, enabled: false } : e)) };
+    const input = { serviceId: "yolo_halloween", providerId: pub("nanny"), startsAt: now + 26 * 60 * MIN, durationMin: 180, place: HOME, note: "" };
+    expect(new Engine(db, off, now).requestService("dad", input)).toMatchObject({ price: null, rate: null, customPrice: false });
+    expect(request("dad", "nanny", 30 * 60)).toMatchObject({ price: 150, rate: 50 });
+  });
+
   it("a custom payment replaces the rate, for every occurrence; it is checked", () => {
     for (const bad of [0, 0.99, 10000.01, Number.NaN, Number.POSITIVE_INFINITY]) expect(code(() => request("dad", "nanny", 26 * 60, { custom: bad })), String(bad)).toBe("bad_input");
     expect(request("dad", "nanny", 26 * 60, { custom: 199.999 })).toMatchObject({ price: 200, rate: null, contractId: null, customPrice: true });
