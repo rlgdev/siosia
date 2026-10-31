@@ -645,6 +645,8 @@ alter table public.rides add column if not exists settled_at timestamptz;
 alter table public.rides add column if not exists settlement_id uuid;
 -- … and how much it came to then: a later tip, corrected time or contract makes the difference due.
 alter table public.appointments add column if not exists settled_amount numeric(10, 2);
+-- 2.13: the price is the client's custom payment for the occurrence — no contract reprices it.
+alter table public.appointments add column if not exists price_custom boolean not null default false;
 alter table public.rides add column if not exists settled_amount numeric(10, 2);
 -- 2.8 (FR-301, V69): personal invite links into Siosia (the token's SHA-256 only), 14 days, once.
 create table if not exists public.member_invites (
@@ -977,6 +979,7 @@ returns jsonb language sql immutable as $$
     'total', case when a.rate is not null then round(a.rate * coalesce(a.actual_min, a.duration_min) / 60.0, 2) else a.price end,
     'currency', a.currency,
     'source', case when a.contract_id is not null then 'contract' when a.rate is not null then 'catalog'
+                   when a.price is not null and a.price_custom then 'custom'
                    when a.price is not null then 'fixed' else 'none' end,
     'corrected', a.actual_min is not null) end;
 $$;
@@ -1240,6 +1243,8 @@ returns jsonb language sql stable security definer set search_path = public as $
     -- 2.6 (FR-262, FR-270–272): where the price came from and, once done, what it cost.
     'rate', a.rate,
     'contractId', case when v.sees then a.contract_id end,
+    -- 2.13: the price is the client's custom payment.
+    'customPrice', a.price_custom,
     'actualMin', a.actual_min,
     'cost', case when v.sees then siosia_cost_json(a) end,
     -- 2.9 (FR-314): the tip — the parties and their families see it.
@@ -3519,12 +3524,16 @@ end $$;
 -- every other rule and limit the same, only the checks of a provider skipped.
 -- 2.3 (FR-201): p_kids = the client's own kids to attach, to every occurrence of a series (the
 -- 2.0 signature below passes none; cached apps keep working).
+-- 2.13: p_custom_price = the client's custom payment per occurrence (1 … 10000) instead of the
+-- rate; null = the rate (a contract's, else the price list's — an entry without a price of its
+-- own takes its base's: a YOLO event the Childcare price). The 2.3 signature passes none.
 create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
                                                          p_duration int, p_place jsonb, p_note text, p_repeat jsonb,
-                                                         p_kids uuid[])
+                                                         p_kids uuid[], p_custom_price numeric)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   v_err text := siosia_guard(true); v_uid uuid := auth.uid(); c app_config; e jsonb; d jsonb; v_prov uuid; v_kids uuid[];
+  v_list jsonb; v_custom numeric := round(p_custom_price, 2);
   v_note text := btrim(coalesce(p_note, '')); v_price numeric; v_rate numeric; v_contract uuid; v_every int; v_count int; v_until timestamptz;
   v_starts timestamptz[] := '{}'; v_t timestamptz; k int; s appointment_series; a appointments; v_first appointments;
   v_place jsonb := case when p_place is null or jsonb_typeof(p_place) = 'null' then null else p_place end; u record;
@@ -3564,15 +3573,23 @@ begin
   -- The kids to attach are the caller's own, each once (bad_input otherwise); none = an empty list.
   v_kids := siosia_own_kids(v_uid, p_kids);
   if v_kids is null then return siosia_err('bad_input'); end if;
-  v_price := case when jsonb_typeof(e -> 'price' -> 'perHour') = 'number'
-                    then round((e -> 'price' ->> 'perHour')::numeric * p_duration / 60, 2)
-                  when jsonb_typeof(e -> 'price' -> 'fixed') = 'number' then (e -> 'price' ->> 'fixed')::numeric end;
+  if p_custom_price is not null and (v_custom < 1 or v_custom > 10000) then return siosia_err('bad_input'); end if;
+  -- The price list's: the entry's own, else (2.13) its base's — a YOLO event takes Childcare's.
+  v_list := case when jsonb_typeof(e -> 'price') = 'object' then e -> 'price'
+                 when e ->> 'base' is not null and jsonb_typeof(siosia_service(e ->> 'base') -> 'price') = 'object'
+                   then siosia_service(e ->> 'base') -> 'price' end;
+  v_price := case when jsonb_typeof(v_list -> 'perHour') = 'number'
+                    then round((v_list ->> 'perHour')::numeric * p_duration / 60, 2)
+                  when jsonb_typeof(v_list -> 'fixed') = 'number' then (v_list ->> 'fixed')::numeric end;
   -- 2.6 (FR-262, V62): an active contract between my family and the provider sets the rate.
   select r.contract_id, r.per_hour into v_contract, v_rate from siosia_contract_rate(v_uid, v_prov, p_service) r;
-  if v_contract is not null then
+  if p_custom_price is not null then
+    -- 2.13: the custom payment replaces the rate.
+    v_price := v_custom; v_rate := null; v_contract := null;
+  elsif v_contract is not null then
     v_price := round(v_rate * p_duration / 60.0, 2);
   else
-    v_rate := case when jsonb_typeof(e -> 'price' -> 'perHour') = 'number' then (e -> 'price' ->> 'perHour')::numeric end;
+    v_rate := case when jsonb_typeof(v_list -> 'perHour') = 'number' then (v_list ->> 'perHour')::numeric end;
   end if;
   -- The occurrences: one, or a weekly / every-2-weeks series (2…seriesMaxCount, within seriesMaxDays).
   if p_repeat is null or jsonb_typeof(p_repeat) = 'null' then
@@ -3631,10 +3648,11 @@ begin
   end if;
   for k in 1 .. cardinality(v_starts) loop
     insert into appointments (client_id, provider_id, service_id, starts_at, duration_min, place_lat, place_lng, place_label,
-                              note, price, currency, series_id, seq, rate, contract_id)
+                              note, price, currency, series_id, seq, rate, contract_id, price_custom)
     values (v_uid, v_prov, p_service, v_starts[k], p_duration,
             (v_place ->> 'lat')::float8, (v_place ->> 'lng')::float8, left(btrim(v_place ->> 'label'), 120),
-            v_note, v_price, c.currency, s.id, case when s.id is null then null else k end, v_rate, v_contract)
+            v_note, v_price, c.currency, s.id, case when s.id is null then null else k end, v_rate, v_contract,
+            p_custom_price is not null)
     returning * into a;
     insert into appointment_kids (appointment_id, kid_id) select a.id, x from unnest(v_kids) x;
     if k = 1 then v_first := a; end if;
@@ -3652,12 +3670,21 @@ begin
   return siosia_ok(siosia_appointment_json(v_first, v_uid));
 end $$;
 
+-- The 2.3 call (NFR-18: cached apps): the same request at the rate.
+create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
+                                                         p_duration int, p_place jsonb, p_note text, p_repeat jsonb,
+                                                         p_kids uuid[])
+returns jsonb language plpgsql security definer set search_path = public as $$
+begin
+  return siosia_request_service(p_service, p_provider, p_starts_at, p_duration, p_place, p_note, p_repeat, p_kids, null::numeric);
+end $$;
+
 -- The 2.0 call (NFR-18: cached apps): the same request, no kids.
 create or replace function public.siosia_request_service(p_service text, p_provider text, p_starts_at timestamptz,
                                                          p_duration int, p_place jsonb, p_note text, p_repeat jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 begin
-  return siosia_request_service(p_service, p_provider, p_starts_at, p_duration, p_place, p_note, p_repeat, null::uuid[]);
+  return siosia_request_service(p_service, p_provider, p_starts_at, p_duration, p_place, p_note, p_repeat, null::uuid[], null::numeric);
 end $$;
 
 -- The answer itself (V5, V24), for siosia_answer_appointment and siosia_take_request: only the
@@ -3781,11 +3808,12 @@ begin
   exception when raise_exception then
     return siosia_err(sqlerrm);
   end;
-  -- 2.6 (FR-262): the taker's contract with the client's family reprices what was accepted.
+  -- 2.6 (FR-262): the taker's contract with the client's family reprices what was accepted —
+  -- 2.13: not a custom payment, which stays as the client set it.
   update appointments x set rate = r.per_hour, contract_id = r.contract_id, price = round(r.per_hour * x.duration_min / 60.0, 2)
     from siosia_contract_rate(a.client_id, v_uid, a.service_id) r
-   where (x.id = a.id or x.series_id = a.series_id) and x.provider_id = v_uid and x.status = 'accepted';
-  if a.series_id is not null then
+   where (x.id = a.id or x.series_id = a.series_id) and x.provider_id = v_uid and x.status = 'accepted' and not x.price_custom;
+  if a.series_id is not null and not a.price_custom then
     update appointment_series s set price = round(r.per_hour * s.duration_min / 60.0, 2)
       from siosia_contract_rate(a.client_id, v_uid, a.service_id) r where s.id = a.series_id;
   end if;
@@ -5075,6 +5103,28 @@ begin
   return siosia_ok(siosia_contract_json(k, v_uid));
 end $$;
 
+-- 2.13: a contract that becomes active prices the coming appointments between its family and its
+-- provider that have no price yet (nor a custom payment) — at its rate for the service or its base.
+create or replace function public.siosia_price_unpriced(k public.contracts)
+returns void language plpgsql security definer set search_path = public as $$
+declare a appointments; v_rate numeric;
+begin
+  for a in select * from appointments x
+            where x.price is null and not x.price_custom and x.status in ('requested', 'accepted') and x.starts_at > now()
+              and siosia_family_of(x.client_id) = k.family_id and siosia_same_person(x.provider_id, k.provider_id)
+            for update loop
+    v_rate := null;
+    select (r ->> 'perHour')::numeric into v_rate from jsonb_array_elements(k.rates) r
+     where r ->> 'serviceId' = a.service_id or r ->> 'serviceId' = siosia_service(a.service_id) ->> 'base'
+     order by (r ->> 'serviceId' = a.service_id) desc limit 1;
+    continue when v_rate is null;
+    update appointments set rate = v_rate, contract_id = k.id, price = round(v_rate * duration_min / 60.0, 2) where id = a.id;
+    if a.series_id is not null then
+      update appointment_series set price = round(v_rate * duration_min / 60.0, 2) where id = a.series_id and price is null;
+    end if;
+  end loop;
+end $$;
+
 -- The other side accepts (binding; an active contract of the pair is replaced) or declines (FR-261).
 create or replace function public.siosia_answer_contract(p_id uuid, p_decision text)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -5090,6 +5140,7 @@ begin
     update contracts set status = 'replaced', ended_at = now(), ended_by = v_uid
      where family_id = k.family_id and siosia_same_person(provider_id, k.provider_id) and status = 'active' and id <> k.id;
     update contracts set status = 'active', answered_at = now() where id = k.id returning * into k;
+    perform siosia_price_unpriced(k);
   else
     update contracts set status = 'declined', answered_at = now() where id = k.id returning * into k;
   end if;
@@ -5162,7 +5213,7 @@ begin
   if v_from > v_today or v_from < v_today - 365 then return siosia_err('bad_input'); end if;
   v_start := v_from::timestamp at time zone c.timezone;
   for a in select * from appointments x
-            where x.status = 'done' and x.starts_at >= v_start and x.starts_at < now()
+            where x.status = 'done' and x.starts_at >= v_start and x.starts_at < now() and not x.price_custom
               and siosia_family_of(x.client_id) = k.family_id and siosia_same_person(x.provider_id, k.provider_id)
             for update loop
     select (r ->> 'perHour')::numeric into v_rate from jsonb_array_elements(k.rates) r
@@ -6086,6 +6137,33 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
+-- 2.13: coming appointments without a price take the one they would get today (idempotent: only
+-- rows still without a price, never a custom payment) — first an active contract of the pair, then
+-- the price list (an entry without a price of its own: its base's — a YOLO event, Childcare's).
+-- ---------------------------------------------------------------------------------------------
+do $$
+declare k public.contracts;
+begin
+  for k in select * from public.contracts where status = 'active' loop
+    perform public.siosia_price_unpriced(k);
+  end loop;
+  update public.appointments x
+     set rate = case when jsonb_typeof(l.p -> 'perHour') = 'number' then (l.p ->> 'perHour')::numeric end,
+         price = case when jsonb_typeof(l.p -> 'perHour') = 'number' then round((l.p ->> 'perHour')::numeric * x.duration_min / 60.0, 2)
+                      else (l.p ->> 'fixed')::numeric end
+    from (select e ->> 'id' as id,
+                 case when jsonb_typeof(e -> 'price') = 'object' then e -> 'price'
+                      when e ->> 'base' is not null then public.siosia_service(e ->> 'base') -> 'price' end as p
+            from public.app_config c, jsonb_array_elements(coalesce(c.services, '[]'::jsonb)) e where c.id = 1) l
+   where l.id = x.service_id and jsonb_typeof(l.p) = 'object'
+     and (jsonb_typeof(l.p -> 'perHour') = 'number' or jsonb_typeof(l.p -> 'fixed') = 'number')
+     and x.price is null and not x.price_custom and x.status in ('requested', 'accepted') and x.starts_at > now();
+  update public.appointment_series s
+     set price = (select x.price from public.appointments x where x.series_id = s.id and x.price is not null order by x.seq limit 1)
+   where s.price is null and exists (select 1 from public.appointments x where x.series_id = s.id and x.price is not null);
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
 -- Function privileges: clients get the API above, nothing else.
 -- ---------------------------------------------------------------------------------------------
 
@@ -6141,6 +6219,7 @@ grant execute on function public.siosia_take_request(uuid) to authenticated;
 grant execute on function public.siosia_set_car_colour(text, text) to authenticated;
 -- 2.3
 grant execute on function public.siosia_request_service(text, text, timestamptz, int, jsonb, text, jsonb, uuid[]) to authenticated;
+grant execute on function public.siosia_request_service(text, text, timestamptz, int, jsonb, text, jsonb, uuid[], numeric) to authenticated;
 grant execute on function public.siosia_kids() to authenticated;
 grant execute on function public.siosia_add_kid(jsonb) to authenticated;
 grant execute on function public.siosia_update_kid(uuid, jsonb) to authenticated;

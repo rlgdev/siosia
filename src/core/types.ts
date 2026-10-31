@@ -248,6 +248,8 @@ export interface AppointmentView {
   rate: number | null;
   /** 2.6 (FR-262): the contract that set the price, if any. */
   contractId: string | null;
+  /** 2.13: the price is the client's custom payment (kept as set: no contract reprices it). */
+  customPrice: boolean;
   /** 2.6 (FR-272): the provider's correction of the time, in minutes; null = as booked. */
   actualMin: number | null;
   /** 2.6 (FR-270): what it cost — done appointments only (parties and family). */
@@ -266,7 +268,7 @@ export interface CostSummary {
   /** null = no price agreed. */
   total: number | null;
   currency: string;
-  source: "contract" | "catalog" | "fixed" | "none";
+  source: "contract" | "catalog" | "fixed" | "custom" | "none";
   corrected: boolean;
 }
 
@@ -447,6 +449,11 @@ export interface ServiceRequestInput {
   place: Place | null;
   note: string;
   repeat?: RepeatInput;
+  /**
+   * 2.13: a custom payment the client sets for each occurrence (a total, not per hour) instead of
+   * the rate (contract or price list; a YOLO event: the Childcare rate). null/absent = the rate.
+   */
+  customPrice?: number | null;
 }
 
 export interface RideTemplateInput {

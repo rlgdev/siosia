@@ -258,6 +258,7 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     coming: null,
     rate: null,
     contractId: null,
+    customPrice: false,
     actualMin: null,
     cost: null,
     tip: null,
@@ -1688,5 +1689,61 @@ describe("2.5 C3: the session feed and heading home (FR-230–233, FR-240–241,
     await userEvent.selectOptions(screen.getByTestId("coming-pick"), "30");
     await userEvent.click(screen.getByTestId("coming-send"));
     await waitFor(() => expect(comingHome).toHaveBeenLastCalledWith("a1", 30));
+  });
+});
+
+describe("2.13 the price of an appointment: a YOLO event at the Childcare rate, a custom amount, est. in Planned", () => {
+  const YOLO = DEFAULT_SERVICES.find((e) => e.id === "yolo_halloween")!;
+  const priced = DEFAULT_SERVICES.map((e) => (e.id === "childcare" ? { ...e, price: { perHour: 50 } } : e));
+  const deployment = { ...DEFAULT_CONFIG, services: priced };
+
+  it("prices a YOLO event at the Childcare rate, or sends the custom amount typed instead", async () => {
+    const requestService = vi.fn(async () => ({}) as never);
+    setup("en", <RequestPanel />, { catalog: async () => [{ ...YOLO, providers: [SIOSIA] }], requestService }, { panel: "request", panelArg: "yolo_halloween", deployment });
+    const send = await screen.findByTestId("request-send");
+    expect(screen.getByTestId("request-pay-rate")).toBeChecked();
+    expect(screen.getByTestId("request-price")).toHaveTextContent(/150[,.]00/);
+    expect(screen.getByTestId("request-list-rate")).toHaveTextContent(/Childcare rate: .*50[,.]00\/h/);
+    await userEvent.click(screen.getByTestId("request-pay-custom"));
+    expect(send).toBeDisabled();
+    expect(screen.getByTestId("request-problem")).toHaveTextContent("Enter an amount from 1 to 10000.");
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "0.5" } });
+    expect(send).toBeDisabled();
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "200" } });
+    expect(screen.getByTestId("request-price")).toHaveTextContent(/200[,.]00/);
+    expect(screen.getByTestId("request-custom")).toHaveTextContent("custom amount");
+    expect(send).toBeEnabled();
+    await userEvent.click(send);
+    await waitFor(() => expect(requestService).toHaveBeenCalled());
+    expect(requestService).toHaveBeenCalledWith(expect.objectContaining({ serviceId: "yolo_halloween", providerId: "pub-siosia", durationMin: 180, customPrice: 200 }));
+  });
+
+  it("says when there is no rate yet and offers the custom amount, in Polish", async () => {
+    setup("pl", <RequestPanel />, { catalog: async () => [{ ...YOLO, providers: [SIOSIA] }] }, { panel: "request", panelArg: "yolo_halloween" });
+    expect(await screen.findByTestId("request-no-rate")).toHaveTextContent("Nie ma jeszcze stawki");
+    expect(screen.queryByTestId("request-price")).toBeNull();
+    await userEvent.click(screen.getByTestId("request-pay-custom"));
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "120,5" } });
+    expect(screen.getByTestId("request-price")).toHaveTextContent(/120[,.]50/);
+  });
+
+  it("shows every appointment's price in Planned: est. at a rate, a custom amount as set, or no price set", async () => {
+    const now = Date.now();
+    const planned = vi.fn(async () => ({
+      appointments: [
+        appt({ id: "a1", startsAt: now + 26 * 3600_000, price: 150, rate: 50 }),
+        appt({ id: "a2", startsAt: now + 27 * 3600_000, price: 200, rate: null, customPrice: true }),
+        appt({ id: "a3", startsAt: now + 28 * 3600_000, price: null, rate: null })
+      ],
+      rides: [],
+      open: []
+    }));
+    setup("en", <Planned />, { planned });
+    await screen.findAllByTestId("planned-appointment");
+    const items = screen.getAllByTestId("planned-appointment");
+    expect(within(items[0]).getByTestId("appt-price")).toHaveTextContent(/^est\. .*150[,.]00/);
+    expect(within(items[1]).getByTestId("appt-price")).not.toHaveTextContent("est.");
+    expect(within(items[1]).getByTestId("appt-price")).toHaveTextContent(/200[,.]00/);
+    expect(within(items[2]).getByTestId("appt-price-none")).toHaveTextContent("no price set");
   });
 });

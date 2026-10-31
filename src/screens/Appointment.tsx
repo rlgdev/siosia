@@ -166,6 +166,14 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
               <small className="muted">
                 {" · "}
                 {t("cost.planned", { rate: money(a.rate, a.currency, locale), source: t(a.contractId ? "cost.source.contract" : "cost.source.catalog") })}
+                {" · "}
+                {t("common.estimate")}
+              </small>
+            )}
+            {a.customPrice && (
+              <small className="muted" data-testid="appt-price-custom">
+                {" · "}
+                {t("cost.source.custom")}
               </small>
             )}
           </p>

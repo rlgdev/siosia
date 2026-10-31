@@ -21,3 +21,6 @@ export function formatMoney(amount: number, currency: string, locale: string): s
     return `${amount.toFixed(2)} ${currency}`;
   }
 }
+
+/** 2.13: a custom payment per occurrence of an appointment, 1 … 10000 (twin of siosia_request_service). */
+export const CUSTOM_PRICE_MAX = 10000;

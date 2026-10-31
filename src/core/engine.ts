@@ -12,7 +12,7 @@
 
 import type { PushKind, PushParams } from "../../supabase/functions/_shared/push-text";
 import { DEFAULT_CONFIG, SERVER } from "./defaults";
-import { computeFare } from "./fare";
+import { computeFare, CUSTOM_PRICE_MAX } from "./fare";
 import { haversineKm, isValidLatLng } from "./geo";
 import { isActive } from "./lifecycle";
 import { summarizeRatings } from "./rating";
@@ -235,6 +235,8 @@ export interface ApptRow {
   contractId?: string | null;
   actualMin?: number | null;
   summarySent?: boolean;
+  /** 2.13: the price is the client's custom payment — no contract reprices it. */
+  customPrice?: boolean;
   /** 2.9 (FR-314): the client side's tip to the provider — how much, who gave it, when. */
   tip?: number | null;
   tipBy?: string | null;
@@ -2236,8 +2238,11 @@ export class Engine {
       throw new ServerError("bad_input");
     // 2.3 (FR-201): the client's own kids come along, on every occurrence of a series.
     const kidIds = input.kidIds == null ? [] : this.ownKidIds(uid, input.kidIds);
+    // 2.13: a custom payment per occurrence (1 … 10000, two decimals) replaces the rate.
+    const custom = input.customPrice == null ? null : round2(Number(input.customPrice));
+    if (custom !== null && (!Number.isFinite(custom) || custom < 1 || custom > CUSTOM_PRICE_MAX)) throw new ServerError("bad_input");
     // 2.6 (FR-262, V62): an active contract between my family and the provider sets the rate.
-    const { rate, price, contractId } = this.priceFor(e, uid, provider?.id ?? null, d);
+    const { rate, price, contractId } = custom !== null ? { rate: null, price: custom, contractId: null } : this.priceFor(e, uid, provider?.id ?? null, d);
     // The occurrences: one, or a series at the same wall-clock time every 1 or 2 weeks.
     const tz = this.cfg.timezone;
     const { seriesMaxCount, seriesMaxDays } = this.cfg.appointment;
@@ -2292,7 +2297,7 @@ export class Engine {
       currency: this.cfg.tariff.currency
     };
     let series: SeriesRow | null = null;
-    const priced = { rate, contractId, actualMin: null, summarySent: false };
+    const priced = { rate, contractId, actualMin: null, summarySent: false, customPrice: custom !== null };
     if (starts.length > 1) {
       series = {
         ...base,
@@ -2382,7 +2387,8 @@ export class Engine {
     this.settle(uid, a, "accept");
     // 2.6 (FR-262): the taker's contract with the client's family reprices what was accepted.
     const e = this.service(a.serviceId);
-    const p = e ? this.priceFor(e, a.clientId, uid, a.durationMin) : null;
+    // 2.13: a custom payment stays as the client set it.
+    const p = e && !a.customPrice ? this.priceFor(e, a.clientId, uid, a.durationMin) : null;
     if (p?.contractId) {
       for (const o of a.seriesId ? this.occurrences(a.seriesId) : [a])
         if (o.providerId === uid && o.status === "accepted") Object.assign(o, { rate: p.rate, contractId: p.contractId, price: round2((p.rate! * o.durationMin) / 60) });
@@ -3392,6 +3398,7 @@ export class Engine {
       // 2.6 (FR-262, FR-270–272): where the price came from and, once done, what it cost.
       rate: a.rate ?? null,
       contractId: candidate ? null : a.contractId ?? null,
+      customPrice: a.customPrice === true,
       actualMin: a.actualMin ?? null,
       cost: candidate ? null : this.costOf(a),
       // 2.9 (FR-314): the tip — the parties and their families see it.
@@ -3733,11 +3740,31 @@ export class Engine {
       for (const x of Object.values(this.db.contracts ?? {}))
         if (x !== c && x.familyId === c.familyId && this.samePerson(x.providerId, c.providerId) && x.status === "active") this.closeContract(x, "replaced", uid);
       c.status = "active";
+      this.priceUnpriced(c);
     } else c.status = "declined";
     c.answeredAt = this.now;
     for (const m of this.proposingSide(c)) this.pushPlain(m, decision === "accept" ? "contract_accepted" : "contract_declined", { sender: this.nick(uid) });
     this.notifyContract(c);
     return this.contractView(c, uid);
+  }
+
+  /**
+   * 2.13: a contract that becomes active prices the coming appointments between its family and its
+   * provider that have no price yet (nor a custom payment) — at its rate for the service or its base.
+   */
+  private priceUnpriced(c: ContractRow): void {
+    for (const a of Object.values(this.db.appointments ?? {})) {
+      if (a.price !== null || a.customPrice || (a.status !== "requested" && a.status !== "accepted") || a.startsAt <= this.now) continue;
+      if (this.familyOf(a.clientId) !== c.familyId || !this.samePerson(a.providerId, c.providerId)) continue;
+      const base = this.service(a.serviceId)?.base ?? null;
+      const line = c.rates.find((r) => r.serviceId === a.serviceId) ?? (base ? c.rates.find((r) => r.serviceId === base) : undefined);
+      if (!line) continue;
+      a.rate = line.perHour;
+      a.contractId = c.id;
+      a.price = round2((line.perHour * a.durationMin) / 60);
+      if (a.seriesId && this.db.series?.[a.seriesId]?.price === null) this.db.series[a.seriesId].price = a.price;
+      this.notifyAppt(a);
+    }
   }
 
   /** The proposing side takes back a proposal that still waits. */
@@ -3778,7 +3805,8 @@ export class Engine {
     const start = localMidnight(from, tz);
     let count = 0;
     for (const a of Object.values(this.db.appointments ?? {})) {
-      if (a.status !== "done" || a.startsAt < start || a.startsAt >= this.now) continue;
+      // 2.13: a custom payment stays as the client set it.
+      if (a.status !== "done" || a.startsAt < start || a.startsAt >= this.now || a.customPrice) continue;
       if (this.familyOf(a.clientId) !== c.familyId || !this.samePerson(a.providerId, c.providerId)) continue;
       const base = this.service(a.serviceId)?.base ?? null;
       const line = c.rates.find((r) => r.serviceId === a.serviceId) ?? (base ? c.rates.find((r) => r.serviceId === base) : undefined);
@@ -3884,12 +3912,16 @@ export class Engine {
     return offers.includes(e.id) || (!!e.base && offers.includes(e.base));
   }
 
-  /** The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed price. */
+  /**
+   * The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed
+   * price — 2.13: an entry without a price of its own takes its base's (a YOLO event: Childcare's).
+   */
   private priceFor(e: CatalogEntry, client: string, provider: string | null, minutes: number): { rate: number | null; price: number | null; contractId: string | null } {
     const c = this.contractRate(client, provider, e.id);
     if (c) return { rate: c.perHour, price: round2((c.perHour * minutes) / 60), contractId: c.contractId };
-    if (e.price && "perHour" in e.price) return { rate: e.price.perHour, price: round2((e.price.perHour * minutes) / 60), contractId: null };
-    return { rate: null, price: e.price && "fixed" in e.price ? e.price.fixed : null, contractId: null };
+    const list = e.price ?? (e.base ? (this.service(e.base)?.price ?? null) : null);
+    if (list && "perHour" in list) return { rate: list.perHour, price: round2((list.perHour * minutes) / 60), contractId: null };
+    return { rate: null, price: list && "fixed" in list ? list.fixed : null, contractId: null };
   }
 
   // ---------- 2.6: cost summary (FR-270–273, V63) ----------
@@ -3905,7 +3937,7 @@ export class Engine {
       rate,
       total,
       currency: a.currency,
-      source: a.contractId ? "contract" : rate !== null ? "catalog" : a.price !== null ? "fixed" : "none",
+      source: a.contractId ? "contract" : rate !== null ? "catalog" : a.price !== null ? (a.customPrice ? "custom" : "fixed") : "none",
       corrected: a.actualMin != null
     };
   }

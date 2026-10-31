@@ -77,7 +77,7 @@ describe("an active contract applied to past appointments (FR-319, V76)", () => 
     expect((await appt("mum", older.id)).cost).toMatchObject({ total: 120, source: "contract" });
     expect(await sent()).toEqual(["contract_applied>dad", "contract_applied>mum"]);
     expect((await appt("dad", lesson.id)).rate).toBeNull();
-    expect((await appt("dad", later.id)).rate).toBeNull(); // not done yet
+    expect(await appt("dad", later.id)).toMatchObject({ rate: 40, price: 120, contractId: k.id }); // 2.13: coming, unpriced — priced when the contract became active
     await h.admin("delete from public.push_outbox");
     expect(await apply("dad", k.id, fromOlder)).toEqual({ count: 0 });
     expect(await sent()).toEqual([]);
