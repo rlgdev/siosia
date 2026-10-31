@@ -1852,6 +1852,25 @@ describe("2.12.3 reactions and saving a photo (FR-330, FR-332, FR-333)", () => {
     expect(screen.queryByTestId("feed-react-add")).toBeNull();
   });
 
+  it("on a database not migrated yet (no features): no Payment choice, no Childcare-rate preview, no ☺ (V89)", async () => {
+    const YOLO = DEFAULT_SERVICES.find((e) => e.id === "yolo_halloween")!;
+    const old = { ...DEFAULT_CONFIG, features: undefined, services: DEFAULT_SERVICES.map((e) => (e.id === "childcare" ? { ...e, price: { perHour: 50 } } : e)) };
+    const requestService = vi.fn(async () => ({}) as never);
+    const { unmount } = setup("en", <RequestPanel />, { catalog: async () => [{ ...YOLO, providers: [SIOSIA_PARTY as never] }], requestService }, { panel: "request", panelArg: "yolo_halloween", deployment: old });
+    await screen.findByTestId("request-form");
+    expect(screen.queryByTestId("request-pay")).toBeNull();
+    expect(screen.queryByTestId("request-price")).toBeNull(); // the old server would freeze no price
+    unmount();
+    const { unmount: u2 } = setup("en", <ChatPanel />, { chat: async () => thread([{ ...msg(), reactions: undefined as never }]), myState }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    expect(await screen.findByTestId("chat-msg-theirs")).toHaveTextContent("Hi!");
+    expect(screen.queryByTestId("chat-react-add")).toBeNull();
+    u2();
+    const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates: vi.fn(async () => ({ appointmentId: "a1", open: true, items: [{ ...update(), reactions: undefined as never }] })), myState }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("feed-photo")).toBeInTheDocument(); // Save photo needs nothing new
+    expect(screen.queryByTestId("feed-react-add")).toBeNull();
+  });
+
   it("the picker comes into view, focus goes back to ☺ after a pick, and it closes once the item turns read-only", async () => {
     const seen = vi.fn();
     const original = Element.prototype.scrollIntoView;

@@ -2077,7 +2077,9 @@ returns jsonb language sql stable security definer set search_path = public as $
     'authMode', auth_mode,
     'emailSignIn', email_sign_in,
     'googleSignIn', google_sign_in,
-    'membershipMode', membership_mode)
+    'membershipMode', membership_mode,
+    -- What this database can do beyond 2.12.1: the app turns those parts on only then (V89).
+    'features', jsonb_build_array('customPrice', 'reactions'))
   from app_config where id = 1;
 $$;
 

@@ -521,7 +521,19 @@ export interface DeploymentConfig {
   googleSignIn?: GoogleSignIn;
   /** 2.12 (FR-329): "invite" = the invite code or a #join= link makes a member; "open" = every signed-in account. */
   membershipMode?: MembershipMode;
+  /**
+   * What the database can do beyond 2.12.1 (siosia_config): "customPrice" (2.12.2: a custom payment,
+   * a YOLO event at the Childcare list price), "reactions" (2.12.3). A database not migrated yet sends
+   * none, so the app published first leaves those out until the SQL runs (V89).
+   */
+  features?: ServerFeature[];
 }
+
+/** The parts of the app that need a newer database (see DeploymentConfig.features). */
+export type ServerFeature = "customPrice" | "reactions";
+
+/** Whether the database behind this app does `f` (V89). */
+export const hasFeature = (dep: { features?: ServerFeature[] } | null | undefined, f: ServerFeature): boolean => !!dep?.features?.includes(f);
 
 export type AuthMode = "anonymous" | "accounts";
 export type GoogleSignIn = "off" | "no_standalone" | "no_ios" | "on";

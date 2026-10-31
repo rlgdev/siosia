@@ -17,7 +17,7 @@ import { PlaceInput } from "../components/PlaceInput";
 import { durationText, EntryIcon, localText } from "./Catalog";
 import { Money, Panel, RatingBadge, useBusy } from "../components/ui";
 import { CUSTOM_PRICE_MAX } from "../core/fare";
-import type { CatalogItem, Place, RepeatInput } from "../core/types";
+import { hasFeature, type CatalogItem, type Place, type RepeatInput } from "../core/types";
 import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
 
@@ -107,7 +107,8 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   const [kids] = useMyKids();
   const [kidIds, setKidIds] = useState<string[]>([]);
   // 2.12.2: a custom amount for the whole event instead of the rate.
-  const [custom, setCustom] = useState(false);
+  const [customPicked, setCustom] = useState(false);
+  const custom = customPicked && hasFeature(app.deployment, "customPrice");
   const [amount, setAmount] = useState("");
 
   const startMs = fromInput(start);
@@ -122,9 +123,11 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   // 2.6 (FR-262): my family's contract with the chosen provider sets the rate (the server freezes the same).
   const chosen = open ? null : (entry.providers.find((p) => p.publicId === provider) ?? null);
   const contractRate = chosen?.contractRate ?? null;
-  // 2.12.2: an entry without a price of its own takes its base's (a YOLO event: the Childcare price).
+  // 2.12.2: an entry without a price of its own takes its base's (a YOLO event: the Childcare price)
+  // — on a database that does so (V89); custom amounts likewise.
+  const priced = hasFeature(dep, "customPrice");
   const baseEntry = entry.base ? (dep.services.find((x) => x.id === entry.base) ?? null) : null;
-  const list = entry.price ?? baseEntry?.price ?? null;
+  const list = entry.price ?? (priced ? (baseEntry?.price ?? null) : null);
   const fromBase = !entry.price && !!baseEntry?.price;
   const ratePrice =
     contractRate !== null
@@ -298,43 +301,45 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
         <textarea value={note} maxLength={200} rows={3} onChange={(e) => setNote(e.target.value)} placeholder={t("request.notePlaceholder")} data-testid="request-note" />
         <small>{t("request.noteLeft", { n: 200 - note.length })}</small>
       </label>
-      <fieldset className="field" data-testid="request-pay">
-        <legend>
-          <span className="with-info">
-            {t("request.pay")}
-            <InfoTip text={t("request.payCustomHint")} testId="request-pay" />
-          </span>
-        </legend>
-        <label className="switch-row">
-          <input type="radio" name="pay" checked={!custom} onChange={() => setCustom(false)} data-testid="request-pay-rate" />
-          <span>{t("request.payRate")}</span>
-        </label>
-        <label className="switch-row">
-          <input type="radio" name="pay" checked={custom} onChange={() => setCustom(true)} data-testid="request-pay-custom" />
-          <span>{t("request.payCustom")}</span>
-        </label>
-        {custom && (
-          <label className="field">
-            <span>
-              {t("request.customAmount")} ({dep.tariff.currency})
+      {priced && (
+        <fieldset className="field" data-testid="request-pay">
+          <legend>
+            <span className="with-info">
+              {t("request.pay")}
+              <InfoTip text={t("request.payCustomHint")} testId="request-pay" />
             </span>
-            <input
-              type="text"
-              inputMode="decimal"
-              autoComplete="off"
-              className="narrow-input"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              data-testid="request-custom-price"
-            />
+          </legend>
+          <label className="switch-row">
+            <input type="radio" name="pay" checked={!custom} onChange={() => setCustom(false)} data-testid="request-pay-rate" />
+            <span>{t("request.payRate")}</span>
           </label>
-        )}
-        {!custom && ratePrice === null && (
-          <small className="muted" data-testid="request-no-rate">
-            {t("request.noRate")}
-          </small>
-        )}
-      </fieldset>
+          <label className="switch-row">
+            <input type="radio" name="pay" checked={custom} onChange={() => setCustom(true)} data-testid="request-pay-custom" />
+            <span>{t("request.payCustom")}</span>
+          </label>
+          {custom && (
+            <label className="field">
+              <span>
+                {t("request.customAmount")} ({dep.tariff.currency})
+              </span>
+              <input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                className="narrow-input"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                data-testid="request-custom-price"
+              />
+            </label>
+          )}
+          {!custom && ratePrice === null && (
+            <small className="muted" data-testid="request-no-rate">
+              {t("request.noRate")}
+            </small>
+          )}
+        </fieldset>
+      )}
       {price !== null && (
         <p className="estimate" data-testid="request-price">
           <span>{durationText(duration, t)}</span>

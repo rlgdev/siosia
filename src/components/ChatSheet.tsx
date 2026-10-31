@@ -176,7 +176,8 @@ export function ChatSheet({ room }: { room: ChatRoom }) {
                     </span>
                   )}
                 </span>
-                <Reactions reactions={m.reactions} onReact={thread.open ? (e) => react(m, e) : undefined} testId="chat-react" />
+                {/* (a database before 2.12.3 sends no reactions: nothing to show or set — V89) */}
+                <Reactions reactions={m.reactions} onReact={thread.open && m.reactions ? (e) => react(m, e) : undefined} testId="chat-react" />
               </li>
             ))}
             <li ref={end} className="chat-end" aria-hidden="true" />

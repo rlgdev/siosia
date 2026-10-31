@@ -236,7 +236,8 @@ export function UpdateList({
                 </button>
               )}
               <div className="feed-actions">
-                <Reactions reactions={u.reactions} onReact={onReact ? (e) => onReact(u, e) : undefined} testId="feed-react" />
+                {/* (a database before 2.12.3 sends no reactions: nothing to show or set — V89) */}
+              <Reactions reactions={u.reactions} onReact={onReact && u.reactions ? (e) => onReact(u, e) : undefined} testId="feed-react" />
                 {u.mine && onDelete && (
                   <button type="button" className="btn btn-link btn-small feed-delete" disabled={busy} onClick={() => setToDelete(u)} data-testid="feed-delete">
                     {t("feed.delete")}

@@ -62,7 +62,9 @@ export const DEFAULT_CONFIG: DeploymentConfig = {
   authMode: "anonymous",
   emailSignIn: false,
   googleSignIn: "off",
-  membershipMode: "invite"
+  membershipMode: "invite",
+  // the demo's engine does everything this app knows
+  features: ["customPrice", "reactions"]
 };
 
 /** Internal server constants (not deployment config). Mirrored in supabase/migrations. */

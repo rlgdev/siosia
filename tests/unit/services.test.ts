@@ -479,6 +479,23 @@ describe("SupabaseBackend adapter: photos (2.3, C2, C17)", () => {
   }
   const state = (ride: unknown) => ({ ok: { serverNow: Date.now(), ride, offer: null, hasProfile: true } });
 
+  it("tells the app what the database can do: nothing beyond 2.12.1 until the SQL runs (V89)", async () => {
+    const old = adapter(() => ({ ok: { tariff: {}, services: [] } }));
+    expect((await old.b.getConfig()).features).toEqual([]);
+    const now = adapter(() => ({ ok: { tariff: {}, services: [], features: ["customPrice", "reactions"] } }));
+    expect((await now.b.getConfig()).features).toEqual(["customPrice", "reactions"]);
+  });
+
+  it("refuses a custom amount that is not a number before calling (JSON would send null: a rate request)", async () => {
+    const { b, calls } = adapter(() => ({ ok: {} }));
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(b.requestService({ serviceId: "childcare", providerId: "p", startsAt: Date.now(), durationMin: 60, place: null, note: "", customPrice: bad })).rejects.toMatchObject({ code: "bad_input" });
+    }
+    expect(calls).toEqual([]);
+    await b.requestService({ serviceId: "childcare", providerId: "p", startsAt: Date.now(), durationMin: 60, place: null, note: "", customPrice: 80 });
+    expect(calls[0][1]).toMatchObject({ p_kids: [], p_custom_price: 80 });
+  });
+
   it("deleteProfile asks the server about an active ride before any photo object goes; without one the objects go, then the profile (C2)", async () => {
     let ride: unknown = { id: "r1", status: "accepted", role: "rider" };
     const { b, storage, names } = adapter((fn) => {

@@ -250,6 +250,10 @@ describe("reactions and the account (2.12.3: V88 with V49, V82)", () => {
     expect(await rows()).toEqual([]);
   });
 
+  it("tells the app what this database can do (V89)", async () => {
+    expect((await h.asAnonRole<Json>("select public.siosia_config()")).features).toEqual(["customPrice", "reactions"]);
+  });
+
   it("an older push-dispatch (no kinds) never claims a reaction; a 2.12.3 one claims the kinds it knows", async () => {
     await h.admin(
       "insert into public.push_outbox (user_id, kind, params, lang, tz) values ($1, 'chat_message', '{}', 'en', 'Europe/Warsaw'), ($1, 'reaction', '{}', 'en', 'Europe/Warsaw')",

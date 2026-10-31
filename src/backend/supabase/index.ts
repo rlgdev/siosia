@@ -345,7 +345,9 @@ export class SupabaseBackend implements Backend {
       booking: { ...DEFAULT_CONFIG.booking, ...(c.booking ?? {}) },
       services: c.services ?? DEFAULT_CONFIG.services.filter((e) => e.kind === "ride"),
       appointment: c.appointment ?? DEFAULT_CONFIG.appointment,
-      calendarUrl: c.calendarUrl ?? null
+      calendarUrl: c.calendarUrl ?? null,
+      // A database not migrated to 2.12.2 / 2.12.3 yet: none of what needs it (V89).
+      features: Array.isArray(c.features) ? c.features : []
     };
   }
   isMember(deviceId: string) {
