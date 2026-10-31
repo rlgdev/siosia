@@ -13,10 +13,12 @@ const U = {
   mum: "00000000-0000-4000-8000-000000000703",
   kasia: "00000000-0000-4000-8000-000000000704",
   other: "00000000-0000-4000-8000-000000000705",
-  app: "00000000-0000-4000-8000-000000000706"
+  app: "00000000-0000-4000-8000-000000000706",
+  d1: "00000000-0000-4000-8000-000000000707",
+  d2: "00000000-0000-4000-8000-000000000708"
 };
 type Who = keyof typeof U;
-const NAMES: Record<Who, string> = { client: "Toria", siosia: "Siosia", mum: "Anna", kasia: "Kasia", other: "Ewa", app: "" };
+const NAMES: Record<Who, string> = { client: "Toria", siosia: "Siosia", mum: "Anna", kasia: "Kasia", other: "Ewa", app: "", d1: "D1", d2: "D2" };
 const HOME = { lat: 52.2504843, lng: 20.8253459, label: "Warszawska 269" };
 
 let h: SqlHarness;
@@ -68,13 +70,13 @@ beforeAll(async () => {
 beforeEach(async () => {
   // Every case starts from fresh people (a merge or a deletion leaves its mark on the profiles).
   await h.db.exec(
-    "delete from public.reactions; delete from public.messages; delete from public.appointment_updates; delete from public.appointments;" +
+    "delete from public.reactions; delete from public.messages; delete from public.appointment_updates; delete from public.appointments; delete from public.rides;" +
       "delete from public.push_outbox; delete from realtime.messages; delete from public.chat_presence; delete from public.family_members;" +
       "delete from public.family_invites; delete from public.families; delete from public.memberships; delete from public.profiles;" +
       "delete from public.account_transfers; delete from public.push_subscriptions;"
   );
-  for (const k of ["client", "siosia", "mum", "kasia", "other"] as Who[]) {
-    await h.onboard(U[k], NAMES[k]);
+  for (const k of ["client", "siosia", "mum", "kasia", "other", "d1", "d2"] as Who[]) {
+    await h.onboard(U[k], NAMES[k], k === "d1" || k === "d2");
     pub[k] = String((await call<Json>(k, "siosia_get_profile")).publicId);
     // Push on: the outbox shows who would be told.
     await call(k, "siosia_save_push", [`https://web.push.apple.com/${k}`, "p".repeat(40), "a".repeat(16)]);
@@ -150,8 +152,14 @@ describe("reactions on chat messages (2.12.3: FR-330, FR-331, V88)", () => {
     for (const id of ids.slice(0, 60)) await reactM("siosia", id, "❤️");
     expect(await code(reactM("siosia", ids[60], "❤️"))).toBe("too_many");
     expect(((await reactM("siosia", ids[0], "👍")).reactions as Json[])[0].emoji).toBe("👍");
-    await h.admin("update public.reactions set set_at = set_at - interval '10 minutes 1 second'");
+    await h.admin("update public.reactions set set_at = set_at - interval '10 minutes 1 second', created_at = created_at - interval '10 minutes 1 second'");
     expect(((await reactM("siosia", ids[60], "❤️")).reactions as Json[])[0].emoji).toBe("❤️");
+    // Later, changing or taking back the old ones is no new item: a new one is still welcome.
+    await h.admin("update public.reactions set set_at = set_at - interval '11 minutes', created_at = created_at - interval '11 minutes'");
+    for (const id of ids.slice(0, 60)) await reactM("siosia", id, null);
+    // (inserted as above: the 61 messages already use up the sender's own chat rate)
+    const fresh = (await h.admin("insert into public.messages (room, appointment_id, sender, text) values ($1, $2, $3, 'new') returning id", [room, a.id, U.client])).rows[0];
+    expect(((await reactM("siosia", fresh.id, "😮")).reactions as Json[])[0].emoji).toBe("😮");
   });
 });
 
@@ -184,6 +192,13 @@ describe("reactions on session updates (2.12.3: FR-330, FR-331, V88)", () => {
     expect(await pushes()).toEqual([]);
     await call("siosia", "siosia_delete_update", [u2.id]);
     expect((await h.admin("select count(*)::int n from public.reactions where update_id = $1", [u2.id])).rows[0].n).toBe(0);
+    // Someone who left the family is not told of reactions on what they wrote (they no longer see the feed).
+    const note = await post("mum", a.id, "Hello from granny");
+    await call("mum", "siosia_family_leave");
+    await quiet();
+    await reactU("client", note.id, "❤️");
+    expect(await pushes()).toEqual([]);
+    expect(await code(feed("mum", a.id))).toBe("not_found");
     await endedAgo(a.id, 7 * 24 * 60 + 1);
     expect(await code(reactU("client", u.id, "👍"))).toBe("illegal_transition");
     expect((((await feed("client", a.id)).items as Json[])[0].reactions as Json[])[0].count).toBe(2);
@@ -208,6 +223,30 @@ describe("reactions and the account (2.12.3: V88 with V49, V82)", () => {
     await reactM("siosia", m.id, "🙏");
     expect(await rows()).toHaveLength(3);
     await call("siosia", "siosia_delete_profile");
+    expect(await rows()).toEqual([]);
+  });
+
+  it("a ride's thread that starts afresh for a new driver, and the 12-month retention, take the reactions along", async () => {
+    const at = (min: number) => new Date(Date.now() + min * 60_000).toISOString();
+    const b = await call<Json>("client", "siosia_book_ride", [HOME, { lat: 52.2663, lng: 20.8143, label: "School" }, 3, 8, false, at(120)]);
+    await call("d1", "siosia_claim_booking", [b.id]);
+    const room = `ride:${b.id}`;
+    const m = await send("client", room, "Gate 2, please");
+    await reactM("d1", m.id, "👍");
+    expect(await rows()).toHaveLength(1);
+    await call("d1", "siosia_release_booking", [b.id]);
+    await call("d2", "siosia_claim_booking", [b.id]);
+    expect((await chat("d2", room)).messages).toEqual([]);
+    expect(await rows()).toEqual([]);
+    // An appointment older than 12 months goes with its thread, its feed and their reactions.
+    const a = await session();
+    const m2 = await send("client", `appt:${a.id}`, "Thanks");
+    const u = await post("siosia", a.id, "Bye");
+    await reactM("siosia", m2.id, "🙏");
+    await reactU("client", u.id, "❤️");
+    expect(await rows()).toHaveLength(2);
+    await h.admin("update public.appointments set status = 'done', starts_at = now() - interval '13 months', ended_at = now() - interval '13 months' where id = $1", [a.id]);
+    await h.admin("select public.siosia_retention()");
     expect(await rows()).toEqual([]);
   });
 

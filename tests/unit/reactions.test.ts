@@ -147,6 +147,11 @@ describe("reactions on chat messages (2.12.3: FR-330, FR-331, V88)", () => {
     expect(reactM("siosia", ids[0], "👍").reactions[0].emoji).toBe("👍");
     now += 10 * MIN + 1;
     expect(reactM("siosia", ids[60], "❤️").reactions[0].emoji).toBe("❤️");
+    // Later, changing or taking back the old ones is no new item: a new one is still welcome.
+    now += 11 * MIN;
+    for (const id of ids.slice(0, 60)) reactM("siosia", id, null);
+    db.messages!.push({ id: "m-rate-new", room, sender: "client", text: "new", sentAt: now, readAt: null });
+    expect(reactM("siosia", "m-rate-new", "😮").reactions[0].emoji).toBe("😮");
   });
 });
 
@@ -181,6 +186,13 @@ describe("reactions on session updates (2.12.3: FR-330, FR-331, V88)", () => {
     // Deleting the update takes its reactions.
     at((e) => e.deleteUpdate("siosia", u2.id));
     expect(db.reactions!.some((r) => r.updateId === u2.id)).toBe(false);
+    // Someone who left the family is not told of reactions on what they wrote (they no longer see the feed).
+    const note = post("mum", a.id, "Hello from granny");
+    at((e) => e.leaveFamily("mum"));
+    pushes = [];
+    reactU("client", note.id, "❤️");
+    expect(pushes).toEqual([]);
+    expect(code(() => feed("mum", a.id))).toBe("not_found");
     // The feed closes 7 days after the end: reactions with it.
     now = a.endsAt;
     at((e) => e.sweep());
@@ -217,10 +229,19 @@ describe("reactions and the account (2.12.3: V88 with V49, V82)", () => {
 
   it("a ride's thread that starts afresh for a new driver takes the reactions with its words", () => {
     // The engine has no foreign keys: resetRoom prunes by hand (SQL: on delete cascade).
-    db.messages!.push({ id: "m-r", room: "ride:r1", sender: "client", text: "Hi", sentAt: now, readAt: null });
-    db.reactions!.push({ messageId: "m-r", userId: "siosia", emoji: "❤️", createdAt: now, at: now });
-    db.messages = db.messages!.filter((m) => m.id !== "m-r");
-    at((e) => (e as unknown as { pruneReactions(): void }).pruneReactions());
+    for (const d of ["d1", "d2"]) {
+      user(d, d.toUpperCase());
+      at((e) => e.saveVehicle(d, { make: "Skoda", model: "Fabia", colour: "Blue", plate: `WX ${d}`, seats: 4 }));
+    }
+    const b = at((e) => e.bookRide("client", { pickup: HOME, dropoff: { lat: 52.2663, lng: 20.8143, label: "School" }, estKm: 3, estMin: 8, fareIsEstimate: false, scheduledFor: now + 120 * MIN }));
+    at((e) => e.claimBooking("d1", b.id));
+    const room: ChatRoom = `ride:${b.id}`;
+    const m = send("client", room, "Gate 2, please");
+    reactM("d1", m.id, "👍");
+    expect(db.reactions).toHaveLength(1);
+    at((e) => e.releaseBooking("d1", b.id));
+    at((e) => e.claimBooking("d2", b.id));
+    expect(chat("d2", room).messages).toEqual([]);
     expect(db.reactions).toEqual([]);
   });
 });

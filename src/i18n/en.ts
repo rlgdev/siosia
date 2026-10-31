@@ -615,7 +615,7 @@ export const en = {
   "react.closed": "Reactions are closed here now.",
   "feed.savePhoto": "Save photo",
   "feed.saved": "Saved",
-  "feed.saveFailed": "Couldn't get the photo. Close it and open it again.",
+  "feed.saveFailed": "Couldn't get the photo — check the connection and try again.",
   "feed.saveHintIos": "In the sheet, choose “Save Image”.",
   "feed.closePhoto": "Close",
   "feed.history": "Session updates · {n}",

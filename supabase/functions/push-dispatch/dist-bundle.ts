@@ -302,6 +302,18 @@ function pushUrl(kind, params, appointmentId) {
 }
 
 // supabase/functions/push-dispatch/dispatch.ts
+var missingFunction = (e) => {
+  const err = e;
+  return err?.code === "PGRST202" || /could not find the function/i.test(String(err?.message ?? ""));
+};
+async function claimRows(rpc, limit) {
+  const two = await rpc("siosia_claim_push", { p_limit: limit, p_kinds: PUSH_KINDS });
+  if (!two.error) return two.data ?? [];
+  if (!missingFunction(two.error)) throw two.error;
+  const one = await rpc("siosia_claim_push", { p_limit: limit });
+  if (one.error) throw one.error;
+  return one.data ?? [];
+}
 var openUrl = (kind, params, appointmentId) => pushUrl(kind, params, appointmentId);
 var MAX_ATTEMPTS = 5;
 var CHAT_GRACE_MS = 2e3;
@@ -384,9 +396,7 @@ Deno.serve(async (req) => {
   webpush.setVapidDetails(subject, pub, priv);
   const result = await dispatch({
     async pending(limit) {
-      const { data, error } = await db.rpc("siosia_claim_push", { p_limit: limit, p_kinds: PUSH_KINDS });
-      if (error) throw error;
-      return data ?? [];
+      return claimRows((fn, args) => db.rpc(fn, args), limit);
     },
     async subscriptions(userId) {
       const { data, error } = await db.from("push_subscriptions").select("endpoint, p256dh, auth").eq("user_id", userId);

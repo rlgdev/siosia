@@ -598,7 +598,8 @@ alter table public.reactions drop constraint if exists reactions_emoji_ok;
 alter table public.reactions add constraint reactions_emoji_ok check (public.siosia_reaction_ok(emoji));
 create unique index if not exists reactions_message_user_uq on public.reactions (message_id, user_id) where message_id is not null;
 create unique index if not exists reactions_update_user_uq on public.reactions (update_id, user_id) where update_id is not null;
-create index if not exists reactions_user_idx on public.reactions (user_id, set_at desc);
+drop index if exists public.reactions_user_idx;
+create index if not exists reactions_user_created_idx on public.reactions (user_id, created_at desc);
 -- 2.5 (FR-240–242): the client's heading-home notice — when they said so and when they expect to be there.
 alter table public.appointments add column if not exists coming_at timestamptz;
 alter table public.appointments add column if not exists eta_at timestamptz;
@@ -4777,7 +4778,8 @@ begin
     return 'kept';
   end if;
   if p_emoji is null then return 'kept'; end if;
-  if (select count(*) from reactions x where x.user_id = p_uid and x.set_at > now() - interval '10 minutes') >= 60 then
+  -- new items only: a change or a take-back never counts (first set = created_at)
+  if (select count(*) from reactions x where x.user_id = p_uid and x.created_at > now() - interval '10 minutes') >= 60 then
     return 'too_many';
   end if;
   insert into reactions (message_id, update_id, user_id, emoji) values (p_message, p_update, p_uid, p_emoji)
@@ -4841,7 +4843,8 @@ begin
   if v_res = 'too_many' then return siosia_err('too_many'); end if;
   perform siosia_notify_household(a.client_id);
   perform siosia_notify_household(a.provider_id);
-  if v_res = 'first' and u.author <> v_uid
+  -- (an author who no longer sees this feed — they left the family — is not told)
+  if v_res = 'first' and u.author <> v_uid and siosia_sees(u.author, a)
      and not exists (select 1 from rides x where x.driver_id = u.author and x.status = 'in_progress')
      and not exists (select 1 from chat_presence c where c.user_id = u.author and c.room = 'feed:' || a.id::text
                       and c.seen_at > now() - interval '45 seconds') then

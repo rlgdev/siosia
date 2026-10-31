@@ -2,7 +2,7 @@
 // Pure logic with injected I/O (database, web-push), so it is unit-tested in Node
 // (tests/unit/push.test.ts) and wired to Supabase + web-push in index.ts (Deno).
 
-import { pushText, pushUrl, type PushKind, type PushParams } from "../_shared/push-text.ts";
+import { PUSH_KINDS, pushText, pushUrl, type PushKind, type PushParams } from "../_shared/push-text.ts";
 
 export interface OutboxRow {
   id: number;
@@ -58,6 +58,28 @@ export interface DispatchResult {
  *  "./" is S1; 2.1: appt_open's I can do it too, FR-162); ride ones open the app (the active ride
  *  shows). A held ride / D1 still wins on launch. 2.3: a chat message opens its room (FR-222) — the
  *  room comes from params; without one, the app. */
+/** A database call as supabase-js makes it (`db.rpc(fn, args)` resolves to { data, error }). */
+export type Rpc = (fn: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: unknown }>;
+
+const missingFunction = (e: unknown): boolean => {
+  const err = e as { code?: string; message?: string } | null;
+  return err?.code === "PGRST202" || /could not find the function/i.test(String(err?.message ?? ""));
+};
+
+/**
+ * 2.12.3: claims the queued rows of the kinds this push-text words (siosia_claim_push(limit, kinds));
+ * a database not migrated to 2.12.3 yet has only the 1-argument claim — used then, so a dispatch
+ * redeployed before the SQL still sends everything (such a database queues no newer kinds).
+ */
+export async function claimRows(rpc: Rpc, limit: number): Promise<OutboxRow[]> {
+  const two = await rpc("siosia_claim_push", { p_limit: limit, p_kinds: PUSH_KINDS });
+  if (!two.error) return (two.data as OutboxRow[] | null) ?? [];
+  if (!missingFunction(two.error)) throw two.error;
+  const one = await rpc("siosia_claim_push", { p_limit: limit });
+  if (one.error) throw one.error;
+  return (one.data as OutboxRow[] | null) ?? [];
+}
+
 export const openUrl = (kind: PushKind, params?: PushParams, appointmentId?: string | null): string => pushUrl(kind, params, appointmentId);
 
 /** A message is claimed at most this many times (= runs); then it is given up. */

@@ -125,6 +125,8 @@ export function SessionFeedSection({ a }: { a: AppointmentView }) {
     const x = await store.api.reactUpdate(u.id, emoji);
     setFeed((f) => (f ? { ...f, items: f.items.map((y) => (y.id === x.id ? x : y)) } : f));
   };
+  // Save photo's fresh links (FR-333): the feed again.
+  const refresh = useCallback(() => void load(visible()), [load]);
   // Who may post may react (FR-330): the two parties and the client's family.
   const canWrite = a.role !== "family" || a.family?.side === "client";
 
@@ -145,7 +147,7 @@ export function SessionFeedSection({ a }: { a: AppointmentView }) {
         <p className="muted">{t("common.loading")}</p>
       ) : (
         <>
-          <UpdateList items={feed.items} onDelete={feed.open ? remove : undefined} onReact={feed.open && canWrite ? react : undefined} />
+          <UpdateList items={feed.items} onDelete={feed.open ? remove : undefined} onReact={feed.open && canWrite ? react : undefined} onRefresh={refresh} />
           {feed.open && canWrite ? (
             <Composer
               a={a}
@@ -172,15 +174,20 @@ export function SessionFeedSection({ a }: { a: AppointmentView }) {
 export function UpdateList({
   items,
   onDelete,
-  onReact
+  onReact,
+  onRefresh
 }: {
   items: SessionUpdate[];
   onDelete?: (u: SessionUpdate) => Promise<void>;
   onReact?: (u: SessionUpdate, emoji: string | null) => Promise<void>;
+  /** Fetches the feed again (its photos signed afresh) — Save photo asks for it when a link has expired. */
+  onRefresh?: () => void;
 }) {
   const { t, locale } = useI18n();
   const store = useStore();
-  const [open, setOpen] = useState<SessionUpdate | null>(null);
+  // The photo shown full size, by id: a reload hands it its freshly signed link.
+  const [openId, setOpen] = useState<string | null>(null);
+  const open = openId === null ? null : (items.find((x) => x.id === openId) ?? null);
   const [toDelete, setToDelete] = useState<SessionUpdate | null>(null);
   const [busy, run, error] = useBusy();
   const now = store.serverNow();
@@ -224,7 +231,7 @@ export function UpdateList({
                 </p>
               )}
               {u.photo && (
-                <button type="button" className="feed-photo" onClick={() => setOpen(u)} aria-label={t("feed.viewPhoto")} data-testid="feed-photo">
+                <button type="button" className="feed-photo" onClick={() => setOpen(u.id)} aria-label={t("feed.viewPhoto")} data-testid="feed-photo">
                   <img src={u.photo} alt={t("feed.photoAlt", { name: u.mine ? t("feed.you") : u.author.nickname })} />
                 </button>
               )}
@@ -245,7 +252,7 @@ export function UpdateList({
           {error}
         </p>
       )}
-      {open && open.photo && <Lightbox u={open} onClose={() => setOpen(null)} />}
+      {open && open.photo && <Lightbox u={open} onClose={() => setOpen(null)} onRefresh={onRefresh} />}
       <Confirm
         open={!!toDelete && !!onDelete}
         message={t("feed.deleteConfirm")}
@@ -262,14 +269,21 @@ export function UpdateList({
   );
 }
 
+/** How long Save photo waits for the feed's fresh links before it offers Try again. */
+const REFRESH_WAIT_MS = 2500;
+
 /**
  * The photo full size (FR-231) with Save photo (FR-333). The file is fetched as the photo opens, so
  * the tap on Save hands it to the share sheet at once (iPhone allows that only right after a tap).
  */
-function Lightbox({ u, onClose }: { u: SessionUpdate; onClose: () => void }) {
+function Lightbox({ u, onClose, onRefresh }: { u: SessionUpdate; onClose: () => void; onRefresh?: () => void }) {
   const { t } = useI18n();
   const [file, setFile] = useState<File | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "saved" | "failed">("loading");
+  const [attempt, setAttempt] = useState(0);
+  // A link signed over an hour ago no longer opens: the first failure asks the feed for fresh links
+  // (the new link starts the fetch again); a failure after that offers Try again.
+  const refreshed = useRef(false);
   useEffect(() => {
     let live = true;
     setFile(null);
@@ -281,14 +295,29 @@ function Lightbox({ u, onClose }: { u: SessionUpdate; onClose: () => void }) {
         setState("ready");
       },
       () => {
-        if (live) setState("failed");
+        if (!live) return;
+        if (onRefresh && !refreshed.current) {
+          refreshed.current = true;
+          onRefresh();
+          // A new link restarts this effect (and ends this one); the same link again: give up.
+          setTimeout(() => {
+            if (live) setState("failed");
+          }, REFRESH_WAIT_MS);
+          return;
+        }
+        setState("failed");
       }
     );
     return () => {
       live = false;
     };
-  }, [u.photo, u.createdAt]);
+  }, [u.photo, u.createdAt, attempt, onRefresh]);
   const save = () => {
+    if (state === "failed") {
+      refreshed.current = false;
+      setAttempt((n) => n + 1);
+      return;
+    }
     if (!file) return;
     void saveFile(file).then((r) => {
       if (r !== "cancelled") setState("saved");
@@ -301,14 +330,14 @@ function Lightbox({ u, onClose }: { u: SessionUpdate; onClose: () => void }) {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={!file}
+          disabled={!file && state !== "failed"}
           onClick={(e) => {
             e.stopPropagation();
             save();
           }}
           data-testid="feed-lightbox-save"
         >
-          <Icon name="download" className="ico-inline" /> {t("feed.savePhoto")}
+          <Icon name="download" className="ico-inline" /> {state === "failed" ? t("common.retry") : t("feed.savePhoto")}
         </button>
         <button
           type="button"
@@ -448,14 +477,23 @@ export function HistoryFeed({ a }: { a: AppointmentView }) {
   const [open, setOpen] = useState(false);
   const [feed, setFeed] = useState<SessionFeed | null>(null);
   const [failed, setFailed] = useState(false);
+  // Fetched on every expand (2.12.3: photo links are signed for an hour; History may stay open longer).
+  const load = useCallback(() => {
+    store.api.updates(a.id, false).then(
+      (f) => {
+        setFeed(f);
+        setFailed(false);
+      },
+      () => setFailed(true)
+    ); // read-only: no presence stamp
+  }, [store, a.id]);
   useEffect(() => {
-    if (!open || feed) return;
-    store.api.updates(a.id, false).then(setFeed, () => setFailed(true)); // read-only: no presence stamp
-  }, [open, feed, store, a.id]);
+    if (open) load();
+  }, [open, load]);
   return (
     <details className="feed-details" onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)} data-testid="history-feed">
       <summary data-testid="history-feed-summary">{t("feed.history", { n: a.updateCount })}</summary>
-      {open && (failed ? <p className="form-error">{t("feed.error")}</p> : !feed ? <p className="muted">{t("common.loading")}</p> : <UpdateList items={feed.items} />)}
+      {open && (failed && !feed ? <p className="form-error">{t("feed.error")}</p> : !feed ? <p className="muted">{t("common.loading")}</p> : <UpdateList items={feed.items} onRefresh={load} />)}
     </details>
   );
 }

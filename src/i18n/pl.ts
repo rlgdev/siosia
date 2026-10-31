@@ -617,7 +617,7 @@ export const pl: Record<MessageKey, string> = {
   "react.closed": "Tu nie można już reagować.",
   "feed.savePhoto": "Zapisz zdjęcie",
   "feed.saved": "Zapisano",
-  "feed.saveFailed": "Nie udało się pobrać zdjęcia. Zamknij je i otwórz ponownie.",
+  "feed.saveFailed": "Nie udało się pobrać zdjęcia — sprawdź połączenie i spróbuj ponownie.",
   "feed.saveHintIos": "W okienku wybierz „Zachowaj obraz”.",
   "feed.closePhoto": "Zamknij",
   "feed.history": "Relacja · {n}",

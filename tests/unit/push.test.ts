@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { disablePush, enablePush, pushState } from "../../src/services/push";
 import { apptStatusText, CHAT_PUSH_CHARS, kidsText, leadText, PUSH_KINDS, pushText, rideLineText } from "../../supabase/functions/_shared/push-text";
-import { CHAT_GRACE_MS, dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
+import { CHAT_GRACE_MS, claimRows, dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
 
 const AT = Date.UTC(2026, 9, 12, 12, 30); // 14:30 in Warsaw (CEST)
 
@@ -847,8 +847,31 @@ describe("2.12.3 reaction texts (FR-331, V88)", () => {
     for (const s of ['reaction: ["{sender} reacted {emoji}"', 'reaction: ["{sender} reaguje {emoji}"', "reaction:${", "Something new for you"]) expect(bundle, s).toContain(s);
     // The dispatch claims only the kinds it can word (an older one leaves the newer kinds waiting).
     expect(bundle).toContain("p_kinds: PUSH_KINDS");
+    expect(bundle).toContain("PGRST202");
     expect(PUSH_KINDS).toContain("reaction");
     expect(PUSH_KINDS).toContain("chat_message");
     expect(new Set(PUSH_KINDS).size).toBe(PUSH_KINDS.length);
+  });
+});
+
+describe("2.12.3 push-dispatch claims the kinds it words — and still works on a database not migrated yet", () => {
+  const row = { id: 1, user_id: "u", kind: "chat_message" } as OutboxRow;
+  it("passes its kinds to the 2-argument claim", async () => {
+    const rpc = vi.fn(async (_fn: string, _args: Record<string, unknown>) => ({ data: [row], error: null }));
+    expect(await claimRows(rpc, 50)).toEqual([row]);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc.mock.calls[0][1]).toEqual({ p_limit: 50, p_kinds: PUSH_KINDS });
+  });
+  it("falls back to the 1-argument claim when the database has no 2-argument one (redeployed before the SQL)", async () => {
+    const rpc = vi
+      .fn(async (_fn: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({ data: [row], error: null }))
+      .mockResolvedValueOnce({ data: null, error: { code: "PGRST202", message: "Could not find the function public.siosia_claim_push(p_kinds, p_limit)" } });
+    expect(await claimRows(rpc, 50)).toEqual([row]);
+    expect(rpc.mock.calls[1][1]).toEqual({ p_limit: 50 });
+  });
+  it("any other error stops the run (as before)", async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { code: "57014", message: "timeout" } }));
+    await expect(claimRows(rpc, 50)).rejects.toMatchObject({ code: "57014" });
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

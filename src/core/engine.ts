@@ -3119,7 +3119,8 @@ export class Engine {
       return false;
     }
     if (emoji === null) return false;
-    if (all.filter((r) => r.userId === uid && r.at > this.now - REACT_RATE_MS).length >= REACT_RATE_N) throw new ServerError("too_many");
+    // New items only: a change or a take-back never counts (createdAt = first set).
+    if (all.filter((r) => r.userId === uid && r.createdAt > this.now - REACT_RATE_MS).length >= REACT_RATE_N) throw new ServerError("too_many");
     all.push({ ...item, userId: uid, emoji, createdAt: this.now, at: this.now });
     return true;
   }
@@ -3165,7 +3166,8 @@ export class Engine {
     if (!this.feedOpen(a)) throw new ServerError("illegal_transition");
     const first = this.setReaction(uid, { updateId: u.id }, emoji);
     this.notifyAppt(a);
-    if (first && u.author !== uid && this.isMember(u.author) && !this.driving(u.author) && !this.inRoom(u.author, `feed:${a.id}`))
+    // (an author who no longer sees this feed — they left the family — is not told)
+    if (first && u.author !== uid && this.sees(u.author, a) && this.isMember(u.author) && !this.driving(u.author) && !this.inRoom(u.author, `feed:${a.id}`))
       this.effects.push.push({
         userId: u.author,
         kind: "reaction",

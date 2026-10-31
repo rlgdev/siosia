@@ -44,6 +44,7 @@ import { HistoryScreen } from "../../src/screens/HistoryScreen";
 import { Planned } from "../../src/screens/Planned";
 import { ProfilePanel } from "../../src/screens/Profile";
 import { RequestPanel } from "../../src/screens/RequestForm";
+import { Reactions } from "../../src/components/Reactions";
 import { AppStore, StoreContext } from "../../src/state/store";
 
 // No network in tests: a fixed road route.
@@ -1851,6 +1852,34 @@ describe("2.12.3 reactions and saving a photo (FR-330, FR-332, FR-333)", () => {
     expect(screen.queryByTestId("feed-react-add")).toBeNull();
   });
 
+  it("the picker comes into view, focus goes back to ☺ after a pick, and it closes once the item turns read-only", async () => {
+    const seen = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = seen;
+    try {
+      const onReact = vi.fn(async () => {});
+      const { rerender } = setup("en", <Reactions reactions={[]} onReact={onReact} testId="r" />, {});
+      await userEvent.click(screen.getByTestId("r-add"));
+      expect(seen).toHaveBeenCalledWith({ block: "nearest" });
+      screen.getByRole("button", { name: "🙏" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() => expect(onReact).toHaveBeenCalledWith("🙏"));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("r-add")));
+      await userEvent.click(screen.getByTestId("r-add"));
+      expect(screen.getByTestId("r-picker")).toBeInTheDocument();
+      rerender(
+        <StoreContext.Provider value={new AppStore()}>
+          <I18nProvider lang="en">
+            <Reactions reactions={[]} onReact={undefined} testId="r" />
+          </I18nProvider>
+        </StoreContext.Provider>
+      );
+      expect(screen.queryByTestId("r-picker")).toBeNull();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   describe("Save photo in the full-size view (FR-333)", () => {
     const create = vi.fn<(b: Blob) => string>(() => "blob:siosia");
     const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL, ua: navigator.userAgent };
@@ -1913,11 +1942,35 @@ describe("2.12.3 reactions and saving a photo (FR-330, FR-332, FR-333)", () => {
       expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("W okienku wybierz");
     });
 
-    it("an expired or removed photo cannot be saved and says so", async () => {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("gone", { status: 400 }));
-      const save = await openPhoto("en", { photo: "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=t" });
-      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Couldn't get the photo.");
-      expect(save).toBeDisabled();
+    it("an expired link: the feed is fetched again and the fresh link saves; a photo still unreachable offers Try again", async () => {
+      URL.createObjectURL = create as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = vi.fn();
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      const OLD = "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=old";
+      const NEW = "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=new";
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+        String(url) === NEW ? new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200, headers: { "content-type": "image/jpeg" } }) : new Response("gone", { status: 400 })
+      );
+      const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+      const updates = vi
+        .fn(async () => ({ appointmentId: "a1", open: true, items: [update({ photo: NEW })] }))
+        .mockResolvedValueOnce({ appointmentId: "a1", open: true, items: [update({ photo: OLD })] });
+      setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates, myState }, { panel: "appointment", panelArg: "a1" });
+      await userEvent.click(await screen.findByTestId("feed-photo"));
+      await waitFor(() => expect(screen.getByTestId("feed-lightbox-save")).toBeEnabled());
+      expect(fetch.mock.calls.map((c) => String(c[0]))).toEqual([OLD, NEW]);
+      expect(screen.getByTestId("feed-lightbox").querySelector("img")).toHaveAttribute("src", NEW);
+      await userEvent.click(screen.getByTestId("feed-lightbox-save"));
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Saved");
     });
+
+    it("a photo that stays unreachable says so and offers Try again", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("gone", { status: 400 }));
+      await openPhoto("en", { photo: "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=t" });
+      await waitFor(() => expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("Couldn't get the photo — check the connection and try again."), { timeout: 4000 });
+      const retry = screen.getByTestId("feed-lightbox-save");
+      expect(retry).toHaveTextContent("Retry");
+      expect(retry).toBeEnabled();
+    }, 10_000);
   });
 });
