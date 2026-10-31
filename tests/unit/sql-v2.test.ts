@@ -1580,7 +1580,7 @@ describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () =>
     expect(await errorOf(send(U.client, rr, "   "))).toBe("bad_input");
     expect(await errorOf(send(U.client, rr, "x".repeat(501)))).toBe("bad_input");
     const m1 = await send(U.client, rr, "  I will wait at the gate  ");
-    expect(m1).toEqual({ id: expect.any(String), room: rr, mine: true, text: "I will wait at the gate", sentAt: expect.any(Number), readAt: null });
+    expect(m1).toEqual({ id: expect.any(String), room: rr, mine: true, text: "I will wait at the gate", sentAt: expect.any(Number), readAt: null, reactions: [] });
     const m2 = await send(U.driver, rr, "On my way");
     // Both see the thread oldest first; `mine` follows the viewer; unread counts the other's.
     const mine = await chat(U.client, rr);

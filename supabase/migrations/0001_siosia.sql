@@ -570,6 +570,35 @@ create table if not exists public.appointment_updates (
 create index if not exists appointment_updates_appt_idx on public.appointment_updates (appointment_id, created_at);
 create index if not exists appointment_updates_author_idx on public.appointment_updates (author, created_at desc);
 create index if not exists appointment_updates_photo_path_idx on public.appointment_updates (photo_path) where photo_path is not null;
+
+-- 2.12.3 (FR-330–332): reactions — one emoji per person per chat message or session update, from a
+-- fixed set (the engine's REACTIONS, src/core/reactions.ts — keep both in step). emoji null = taken
+-- back: the row stays, so setting one again never notifies the author a second time (FR-331). The
+-- item's deletion takes its reactions (cascade); the person's are re-pointed by an account move or
+-- merge and deleted with the profile.
+create or replace function public.siosia_reaction_set()
+returns text[] language sql immutable as $$
+  select array['❤️', '👍', '😂', '😮', '😢', '🙏'];
+$$;
+create or replace function public.siosia_reaction_ok(p_emoji text)
+returns boolean language sql immutable set search_path = public as $$
+  select p_emoji is null or p_emoji = any (siosia_reaction_set());
+$$;
+create table if not exists public.reactions (
+  id         uuid primary key default gen_random_uuid(),
+  message_id uuid references public.messages (id) on delete cascade,
+  update_id  uuid references public.appointment_updates (id) on delete cascade,
+  user_id    uuid not null references auth.users (id) on delete cascade,
+  emoji      text,
+  created_at timestamptz not null default now(),
+  set_at     timestamptz not null default now(),
+  check ((message_id is null) <> (update_id is null))
+);
+alter table public.reactions drop constraint if exists reactions_emoji_ok;
+alter table public.reactions add constraint reactions_emoji_ok check (public.siosia_reaction_ok(emoji));
+create unique index if not exists reactions_message_user_uq on public.reactions (message_id, user_id) where message_id is not null;
+create unique index if not exists reactions_update_user_uq on public.reactions (update_id, user_id) where update_id is not null;
+create index if not exists reactions_user_idx on public.reactions (user_id, set_at desc);
 -- 2.5 (FR-240–242): the client's heading-home notice — when they said so and when they expect to be there.
 alter table public.appointments add column if not exists coming_at timestamptz;
 alter table public.appointments add column if not exists eta_at timestamptz;
@@ -726,6 +755,7 @@ alter table public.kid_ratings enable row level security;
 alter table public.messages enable row level security;
 alter table public.chat_presence enable row level security;
 alter table public.appointment_updates enable row level security;
+alter table public.reactions enable row level security; -- 2.12.3
 alter table public.families enable row level security;
 alter table public.family_members enable row level security;
 alter table public.family_invites enable row level security;
@@ -743,7 +773,7 @@ revoke all on public.app_config, public.app_secrets, public.profiles, public.veh
               public.master_profiles, public.account_transfers, public.push_subscriptions, public.push_outbox,
               public.appointments, public.appointment_series,
               public.kids, public.appointment_kids, public.kid_ratings, public.messages, public.chat_presence,
-              public.appointment_updates,
+              public.appointment_updates, public.reactions,
               public.families, public.family_members, public.family_invites, public.contracts,
               public.member_invites, public.notifications, public.settlements
   from anon, authenticated;
@@ -1105,12 +1135,32 @@ returns int language sql stable security definer set search_path = public as $$
           or (a.id is not null and (a.client_id = p_user or a.provider_id = p_user)));
 $$;
 
+-- 2.12.3 (FR-330): the reactions on a message or an update as one viewer sees them — per emoji in
+-- the fixed order: how many, whether I am one, the others by nickname (first come first).
+-- (plpgsql: siosia_nick comes later in this file and is looked up when called, not when created)
+create or replace function public.siosia_reactions_json(p_message uuid, p_update uuid, p_viewer uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  return (select coalesce(jsonb_agg(jsonb_build_object('emoji', g.emoji, 'count', g.n, 'mine', g.mine, 'names', g.names)
+                            order by g.ord), '[]'::jsonb)
+    from (select r.emoji, array_position(siosia_reaction_set(), r.emoji) as ord, count(*)::int as n,
+                 bool_or(r.user_id = p_viewer) as mine,
+                 coalesce(jsonb_agg(siosia_nick(r.user_id) order by r.set_at, r.user_id)
+                            filter (where r.user_id is distinct from p_viewer), '[]'::jsonb) as names
+            from reactions r
+           where r.emoji is not null
+             and ((p_message is not null and r.message_id = p_message) or (p_update is not null and r.update_id = p_update))
+           group by r.emoji) g);
+end $$;
+
 -- ChatMessage as one party sees it (FR-224: readAt tells a sender their message was read).
 create or replace function public.siosia_message_json(m public.messages, p_viewer uuid)
 returns jsonb language sql stable set search_path = public as $$
   select jsonb_build_object('id', m.id, 'room', m.room, 'mine', m.sender = p_viewer, 'text', m.text,
-                            'sentAt', siosia_ms(m.sent_at), 'readAt', siosia_ms(m.read_at));
+                            'sentAt', siosia_ms(m.sent_at), 'readAt', siosia_ms(m.read_at),
+                            'reactions', siosia_reactions_json(m.id, null, p_viewer));
 $$;
+
 
 -- `weeks` weeks after `t`, keeping the wall-clock time in the deployment's time zone (DST-safe).
 create or replace function public.siosia_add_weeks(t timestamptz, weeks int, tz text)
@@ -1438,11 +1488,26 @@ end $$;
 
 -- The sender takes a batch atomically (overlapping runs never send a row twice): each claim counts
 -- as an attempt; a claim older than 2 minutes (crashed run) is taken again. Service role only.
+-- 2.12.3: p_kinds = the kinds the calling push-dispatch can word (it passes its push-text list); a
+-- row of another kind waits for a push-dispatch that knows it (retention drops it after 2 days).
+create or replace function public.siosia_claim_push(p_limit int, p_kinds text[])
+returns setof public.push_outbox language sql security definer set search_path = public as $$
+  update push_outbox set attempts = attempts + 1, claimed_at = now()
+   where id in (select id from push_outbox
+                 where sent_at is null and attempts < 5 and kind = any (p_kinds)
+                   and (claimed_at is null or claimed_at < now() - interval '2 minutes')
+                 order by id limit greatest(1, least(coalesce(p_limit, 100), 500))
+                 for update skip locked)
+  returning *;
+$$;
+
+-- The claim of a push-dispatch from before 2.12.3 (no kinds passed): everything but the kinds it
+-- would word as a booking ('reaction'); those wait for its redeploy instead of a wrong text.
 create or replace function public.siosia_claim_push(p_limit int)
 returns setof public.push_outbox language sql security definer set search_path = public as $$
   update push_outbox set attempts = attempts + 1, claimed_at = now()
    where id in (select id from push_outbox
-                 where sent_at is null and attempts < 5
+                 where sent_at is null and attempts < 5 and kind <> 'reaction'
                    and (claimed_at is null or claimed_at < now() - interval '2 minutes')
                  order by id limit greatest(1, least(coalesce(p_limit, 100), 500))
                  for update skip locked)
@@ -2281,6 +2346,10 @@ begin
   update kid_ratings set from_user = v_uid where from_user = v_old;
   update messages set sender = v_uid where sender = v_old;
   update appointment_updates set author = v_uid where author = v_old; -- 2.5 (FR-235)
+  -- 2.12.3: the reactions too; on an item both reacted to, the new account's stays.
+  delete from reactions o using reactions n where o.user_id = v_old and n.user_id = v_uid and n.message_id = o.message_id;
+  delete from reactions o using reactions n where o.user_id = v_old and n.user_id = v_uid and n.update_id = o.update_id;
+  update reactions set user_id = v_uid where user_id = v_old;
   -- 2.6: a replaced profile leaves its family first (as a deleted one would); then the family, the
   -- invitations and the contracts follow the account.
   if exists (select 1 from profiles where user_id = v_uid and not deleted) then perform siosia_drop_from_families(v_uid); end if;
@@ -2528,6 +2597,7 @@ begin
   delete from kids where owner_id = v_uid;
   delete from messages where sender = v_uid;
   delete from appointment_updates where author = v_uid; -- 2.5 (FR-235): my updates and their photos (dropped above)
+  delete from reactions where user_id = v_uid; -- 2.12.3: mine (those on my messages and updates went with them)
   delete from chat_presence where user_id = v_uid;
   update profiles set nickname = 'Deleted user', deleted = true, master_id = null, offers = '{}', home = null, photo_path = null
    where user_id = v_uid;
@@ -4558,7 +4628,8 @@ returns jsonb language sql stable security definer set search_path = public as $
     'mine', u.author = p_viewer,
     'kid', case when u.kid_name is null then null else jsonb_build_object('id', u.kid_id, 'name', u.kid_name) end,
     'text', u.text, 'photo', null,
-    'createdAt', siosia_ms(u.created_at))
+    'createdAt', siosia_ms(u.created_at),
+    'reactions', siosia_reactions_json(null, u.id, p_viewer)) -- 2.12.3
     || siosia_photo_path_json(u.photo_path, true);
 $$;
 
@@ -4667,6 +4738,118 @@ begin
   perform siosia_notify_household(a.client_id);
   perform siosia_notify_household(a.provider_id);
   return siosia_ok(to_jsonb(u.photo_path));
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- Siosia 2.12.3: reactions (FR-330–332, SPEC V88). Twin of the Engine's reactMessage / reactUpdate.
+-- ---------------------------------------------------------------------------------------------
+
+-- Queues a push of a kind to one user with push on, tagged with the ride and/or the appointment —
+-- no bell entry (a reaction is a push only, like a chat message: V73).
+create or replace function public.siosia_push_item(p_user uuid, p_kind text, p_ride uuid, p_appt uuid, p_params jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p_user is null or not exists (select 1 from push_subscriptions where user_id = p_user)
+     or not siosia_member_ok(p_user) then
+    return;
+  end if;
+  insert into push_outbox (user_id, kind, ride_id, appointment_id, params, lang, tz)
+  values (p_user, p_kind, p_ride, p_appt, coalesce(p_params, '{}'::jsonb),
+          coalesce((select language from profiles where user_id = p_user), 'en'),
+          coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
+  perform siosia_kick_push();
+end $$;
+
+-- Sets (or with null takes back) p_uid's one reaction on a message or an update (exactly one of
+-- p_message / p_update): 'first' = the first ever on it (the one that notifies the author),
+-- 'kept' = a change or nothing to do, 'too_many' = more than 60 items reacted to in 10 minutes.
+create or replace function public.siosia_set_reaction(p_uid uuid, p_message uuid, p_update uuid, p_emoji text)
+returns text language plpgsql security definer set search_path = public as $$
+declare r reactions;
+begin
+  select * into r from reactions x
+   where x.user_id = p_uid and ((p_message is not null and x.message_id = p_message) or (p_update is not null and x.update_id = p_update))
+   for update;
+  if r.id is not null then
+    if r.emoji is distinct from p_emoji then
+      update reactions set emoji = p_emoji, set_at = now() where id = r.id;
+    end if;
+    return 'kept';
+  end if;
+  if p_emoji is null then return 'kept'; end if;
+  if (select count(*) from reactions x where x.user_id = p_uid and x.set_at > now() - interval '10 minutes') >= 60 then
+    return 'too_many';
+  end if;
+  insert into reactions (message_id, update_id, user_id, emoji) values (p_message, p_update, p_uid, p_emoji)
+  on conflict do nothing; -- the same first reaction racing itself: one row, one notification
+  return case when found then 'first' else 'kept' end;
+end $$;
+
+-- React to a message of a room I am a party to (FR-330): not_found outside it, illegal_transition
+-- once the room is read-only (as sending), bad_input for an emoji outside the set, too_many past the
+-- rate. Both parties refetch; the author is told once (FR-331) — unless it is me, they are driving
+-- or they have the thread open (as a chat message, V48).
+create or replace function public.siosia_react_message(p_id uuid, p_emoji text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); m messages; rm record; v_res text;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into m from messages where id = p_id;
+  if m.id is null then return siosia_err('not_found'); end if;
+  select * into rm from siosia_room(m.room);
+  if rm.party_a is null or (v_uid is distinct from rm.party_a and v_uid is distinct from rm.party_b) then
+    return siosia_err('not_found');
+  end if;
+  if not rm.open then return siosia_err('illegal_transition'); end if;
+  if not siosia_reaction_ok(p_emoji) then return siosia_err('bad_input'); end if;
+  v_res := siosia_set_reaction(v_uid, m.id, null, p_emoji);
+  if v_res = 'too_many' then return siosia_err('too_many'); end if;
+  perform siosia_notify(rm.party_a);
+  perform siosia_notify(rm.party_b);
+  if v_res = 'first' and m.sender <> v_uid
+     and not exists (select 1 from rides x where x.driver_id = m.sender and x.status = 'in_progress')
+     and not exists (select 1 from chat_presence c where c.user_id = m.sender and c.room = m.room
+                      and c.seen_at > now() - interval '45 seconds') then
+    perform siosia_push_item(m.sender, 'reaction', rm.ride_id, rm.appointment_id,
+                             jsonb_build_object('sender', siosia_nick(v_uid), 'emoji', p_emoji, 'text', m.text,
+                                                'room', m.room, 'messageId', m.id));
+  end if;
+  return siosia_ok(siosia_message_json(m, v_uid));
+end $$;
+
+-- React to a session update (FR-330): who may post may react — the two parties and the client's
+-- family (forbidden for the provider's family; not_found for anyone else) — while the feed is open
+-- (illegal_transition after); bad_input, too_many as above. Every viewer refetches; the author is
+-- told once — unless it is me, they are driving or they have the feed in front (V55).
+create or replace function public.siosia_react_update(p_id uuid, p_emoji text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); u appointment_updates; a appointments; v_res text;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select * into u from appointment_updates where id = p_id;
+  if u.id is null then return siosia_err('not_found'); end if;
+  a := siosia_feed_appt(u.appointment_id, v_uid);
+  if a.id is null then return siosia_err('not_found'); end if;
+  if a.client_id <> v_uid and a.provider_id <> v_uid and not siosia_same_family(v_uid, a.client_id) then
+    return siosia_err('forbidden');
+  end if;
+  if not siosia_feed_open(a) then return siosia_err('illegal_transition'); end if;
+  if not siosia_reaction_ok(p_emoji) then return siosia_err('bad_input'); end if;
+  v_res := siosia_set_reaction(v_uid, null, u.id, p_emoji);
+  if v_res = 'too_many' then return siosia_err('too_many'); end if;
+  perform siosia_notify_household(a.client_id);
+  perform siosia_notify_household(a.provider_id);
+  if v_res = 'first' and u.author <> v_uid
+     and not exists (select 1 from rides x where x.driver_id = u.author and x.status = 'in_progress')
+     and not exists (select 1 from chat_presence c where c.user_id = u.author and c.room = 'feed:' || a.id::text
+                      and c.seen_at > now() - interval '45 seconds') then
+    perform siosia_push_item(u.author, 'reaction', null, a.id,
+                             jsonb_build_object('sender', siosia_nick(v_uid), 'emoji', p_emoji, 'text', u.text,
+                                                'photo', u.photo_path is not null, 'kid', u.kid_name, 'updateId', u.id));
+  end if;
+  return siosia_ok(siosia_update_json(u, v_uid));
 end $$;
 
 -- The client is heading home (FR-240–242): minutes 0–600 — the app computed them from its own
@@ -5973,6 +6156,10 @@ begin
   update kid_ratings set from_user = p_into where from_user = p_from;
   update messages set sender = p_into where sender = p_from;
   update appointment_updates set author = p_into where author = p_from;
+  -- 2.12.3: the reactions too; on an item both reacted to, p_into's stays.
+  delete from reactions g using reactions n where g.user_id = p_from and n.user_id = p_into and n.message_id = g.message_id;
+  delete from reactions g using reactions n where g.user_id = p_from and n.user_id = p_into and n.update_id = g.update_id;
+  update reactions set user_id = p_into where user_id = p_from;
   -- The family seat moves (both in the same family: one seat stays) — never through leaving, which
   -- could end the family's contracts.
   if v_ff is not null then
@@ -6262,6 +6449,9 @@ grant execute on function public.siosia_send_message(text, text) to authenticate
 grant execute on function public.siosia_updates(uuid, boolean) to authenticated;
 grant execute on function public.siosia_post_update(uuid, text, uuid, text) to authenticated;
 grant execute on function public.siosia_delete_update(uuid) to authenticated;
+-- 2.12.3: reactions
+grant execute on function public.siosia_react_message(uuid, text) to authenticated;
+grant execute on function public.siosia_react_update(uuid, text) to authenticated;
 grant execute on function public.siosia_coming_home(uuid, int) to authenticated;
 -- 2.6
 grant execute on function public.siosia_family() to authenticated;
@@ -6303,6 +6493,7 @@ do $$
 begin
   if exists (select 1 from pg_roles where rolname = 'service_role') then
     grant execute on function public.siosia_claim_push(int) to service_role;
+    grant execute on function public.siosia_claim_push(int, text[]) to service_role; -- 2.12.3
     grant execute on function public.siosia_calendar_view(text, uuid, text, text) to service_role;
   end if;
 end $$;

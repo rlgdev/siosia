@@ -228,6 +228,10 @@ export interface Backend {
   postUpdate(appointmentId: string, input: UpdateInput, jpeg?: Blob | null): Promise<SessionUpdate>;
   /** Removes my own update (its photo goes too). */
   deleteUpdate(id: string): Promise<void>;
+  /** 2.12.3 (FR-330): sets my one reaction (one of REACTIONS) on a chat message, or takes it back (null). */
+  reactMessage(messageId: string, emoji: string | null): Promise<ChatMessage>;
+  /** 2.12.3 (FR-330): the same on a session update. */
+  reactUpdate(updateId: string, emoji: string | null): Promise<SessionUpdate>;
   /** 2.5 (FR-240): the client is heading home, about this many minutes away (computed on the phone). */
   comingHome(appointmentId: string, minutes: number): Promise<AppointmentView>;
 

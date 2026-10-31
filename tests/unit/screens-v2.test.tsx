@@ -1403,7 +1403,7 @@ describe("2.3 P1: the kids line and the chat of an item (FR-202, FR-221)", () =>
 
 describe("2.3 the chat sheet (FR-220–225)", () => {
   const ROOM = "appt:a1" as const;
-  const msg = (over: Partial<ChatMessage>): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, ...over });
+  const msg = (over: Partial<ChatMessage>): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, reactions: [], ...over });
   const thread = (over: Partial<ChatThread> = {}): ChatThread => ({
     room: ROOM,
     other: { nickname: "Ewa", rating: { mean: 5, count: 2 }, icon: null, photo: "data:image/jpeg;base64,/9j/EWA" },
@@ -1573,6 +1573,7 @@ describe("2.5 C3: the session feed and heading home (FR-230–233, FR-240–241,
     text: "Zosia is drawing",
     photo: null,
     createdAt: Date.now() - 60_000,
+    reactions: [],
     ...over
   });
   const myState = async () => ({ ...MY, serverNow: Date.now() });
@@ -1773,5 +1774,150 @@ describe("2.12.2 the price of an appointment: a YOLO event at the Childcare rate
     expect(within(items[1]).getByTestId("appt-price")).not.toHaveTextContent("est.");
     expect(within(items[1]).getByTestId("appt-price")).toHaveTextContent(/200[,.]00/);
     expect(within(items[2]).getByTestId("appt-price-none")).toHaveTextContent("no price set");
+  });
+});
+
+describe("2.12.3 reactions and saving a photo (FR-330, FR-332, FR-333)", () => {
+  const ROOM = "appt:a1" as const;
+  const EWA_PARTY = { nickname: "Ewa", rating: { mean: 5, count: 2 }, icon: null, photo: null };
+  const SIOSIA_PARTY = { nickname: "Siosia", rating: { mean: 4.8, count: 5 }, icon: null, photo: null };
+  const msg = (over: Partial<ChatMessage> = {}): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, reactions: [], ...over });
+  const thread = (messages: ChatMessage[], open = true): ChatThread => ({ room: ROOM, other: EWA_PARTY, messages, open, unread: 0 });
+  const update = (over: Partial<SessionUpdate> = {}): SessionUpdate => ({
+    id: "u1",
+    appointmentId: "a1",
+    author: SIOSIA_PARTY,
+    mine: false,
+    kid: null,
+    text: "",
+    photo: "data:image/jpeg;base64,/9j/4AAQ",
+    createdAt: new Date(2026, 9, 31, 14, 30).getTime(),
+    reactions: [],
+    ...over
+  });
+  const myState = async () => ({ ...MY, serverNow: Date.now() });
+  const HEART = { emoji: "❤️", count: 1, mine: false, names: ["Ewa"] };
+
+  it("chat: shows who reacted, picks one of the six, takes mine back by tapping its chip", async () => {
+    const reactMessage = vi.fn<Backend["reactMessage"]>(async (_id, emoji) => msg({ reactions: emoji ? [{ emoji, count: 2, mine: true, names: ["Ewa"] }] : [HEART] }));
+    setup("en", <ChatPanel />, { chat: async () => thread([msg({ reactions: [HEART] })]), myState, reactMessage }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    const chip = await screen.findByTestId("chat-react-chip");
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(chip).toHaveAccessibleName("❤️: Ewa");
+    expect(chip).toHaveTextContent("❤️1");
+    await userEvent.click(screen.getByTestId("chat-react-add"));
+    const picks = within(screen.getByTestId("chat-react-picker")).getAllByRole("button");
+    expect(picks.map((b) => b.textContent)).toEqual(["❤️", "👍", "😂", "😮", "😢", "🙏"]);
+    await userEvent.click(picks[0]);
+    await waitFor(() => expect(reactMessage).toHaveBeenCalledWith("m1", "❤️"));
+    await waitFor(() => expect(screen.getByTestId("chat-react-chip")).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByTestId("chat-react-chip")).toHaveAccessibleName("❤️: you, Ewa");
+    expect(screen.queryByTestId("chat-react-picker")).toBeNull();
+    await userEvent.click(screen.getByTestId("chat-react-chip"));
+    await waitFor(() => expect(reactMessage).toHaveBeenLastCalledWith("m1", null));
+    await waitFor(() => expect(screen.getByTestId("chat-react-chip")).toHaveAttribute("aria-pressed", "false"));
+  });
+
+  it("chat: too many says so; a closed room shows the reactions but nothing to tap — in Polish", async () => {
+    const reactMessage = vi.fn<Backend["reactMessage"]>(async () => {
+      throw new ServerError("too_many");
+    });
+    const { unmount } = setup("en", <ChatPanel />, { chat: async () => thread([msg()]), myState, reactMessage }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    await userEvent.click(await screen.findByTestId("chat-react-add"));
+    await userEvent.click(within(screen.getByTestId("chat-react-picker")).getAllByRole("button")[1]);
+    expect(await screen.findByRole("alert")).toHaveTextContent("That's a lot of reactions at once");
+    unmount();
+    setup("pl", <ChatPanel />, { chat: async () => thread([msg({ reactions: [{ ...HEART, mine: true, count: 2 }] })], false), myState }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    const chip = await screen.findByTestId("chat-react-chip");
+    expect(chip.tagName).toBe("SPAN");
+    expect(chip).toHaveAccessibleName("❤️: Ty, Ewa");
+    expect(screen.queryByTestId("chat-react-add")).toBeNull();
+  });
+
+  it("feed: reacts to a photo; the provider's family reads the reactions without reacting", async () => {
+    const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+    const reactUpdate = vi.fn<Backend["reactUpdate"]>(async (_id, emoji) => update({ reactions: [{ emoji: emoji!, count: 1, mine: true, names: [] }] }));
+    const updates = vi.fn(async () => ({ appointmentId: "a1", open: true, items: [update()] }));
+    const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates, myState, reactUpdate }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("feed-react-add"));
+    await userEvent.click(within(screen.getByTestId("feed-react-picker")).getByRole("button", { name: "👍" }));
+    await waitFor(() => expect(reactUpdate).toHaveBeenCalledWith("u1", "👍"));
+    await waitFor(() => expect(screen.getByTestId("feed-react-chip")).toHaveAccessibleName("👍: you"));
+    unmount();
+    const kin = appt({ role: "family", family: { side: "provider", member: "Siosia" }, feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+    const seen = vi.fn(async () => ({ appointmentId: "a1", open: true, items: [update({ reactions: [{ emoji: "😂", count: 2, mine: false, names: ["Toria", "Anna"] }] })] }));
+    setup("en", <AppointmentPanel />, { getAppointment: async () => kin, updates: seen, myState }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("feed-react-chip")).toHaveAccessibleName("😂: Toria, Anna");
+    expect(screen.queryByTestId("feed-react-add")).toBeNull();
+  });
+
+  describe("Save photo in the full-size view (FR-333)", () => {
+    const create = vi.fn<(b: Blob) => string>(() => "blob:siosia");
+    const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL, ua: navigator.userAgent };
+    afterEach(() => {
+      URL.createObjectURL = original.create;
+      URL.revokeObjectURL = original.revoke;
+      Object.defineProperty(navigator, "userAgent", { value: original.ua, configurable: true });
+      delete (navigator as { share?: unknown }).share;
+      delete (navigator as { canShare?: unknown }).canShare;
+      vi.restoreAllMocks();
+      create.mockClear();
+    });
+    const openPhoto = async (lang: Lang = "en", over: Partial<SessionUpdate> = {}) => {
+      const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+      setup(lang, <AppointmentPanel />, { getAppointment: async () => live, updates: vi.fn(async () => ({ appointmentId: "a1", open: true, items: [update(over)] })), myState }, { panel: "appointment", panelArg: "a1" });
+      await userEvent.click(await screen.findByTestId("feed-photo"));
+      return screen.getByTestId("feed-lightbox-save");
+    };
+
+    it("downloads the JPEG named by the time it was posted (Android, desktop); the view stays open", async () => {
+      URL.createObjectURL = create as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = vi.fn();
+      const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      const save = await openPhoto();
+      await waitFor(() => expect(save).toBeEnabled());
+      await userEvent.click(save);
+      await waitFor(() => expect(click).toHaveBeenCalled());
+      const file = create.mock.calls[0][0] as File;
+      expect(file.name).toBe("siosia-2026-10-31-1430.jpg");
+      expect(file.type).toBe("image/jpeg");
+      // jsdom's Blob only reads through a FileReader.
+      const bytes = await new Promise<ArrayBuffer>((ok) => {
+        const r = new FileReader();
+        r.onload = () => ok(r.result as ArrayBuffer);
+        r.readAsArrayBuffer(file);
+      });
+      expect(Array.from(new Uint8Array(bytes).slice(0, 3))).toEqual([0xff, 0xd8, 0xff]);
+      expect(click.mock.contexts[0]).toMatchObject({ download: "siosia-2026-10-31-1430.jpg", href: "blob:siosia" });
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Saved");
+      expect(screen.getByTestId("feed-lightbox")).toBeInTheDocument();
+    });
+
+    it("on iPhone hands the photo to the share sheet (Save Image) and says how — in Polish; a closed sheet saves nothing", async () => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15", configurable: true });
+      const share = vi.fn(async (_d: ShareData) => {});
+      Object.assign(navigator, { share, canShare: () => true });
+      const save = await openPhoto("pl");
+      expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("W okienku wybierz „Zachowaj obraz”.");
+      await waitFor(() => expect(save).toBeEnabled());
+      expect(save).toHaveTextContent("Zapisz zdjęcie");
+      await userEvent.click(save);
+      await waitFor(() => expect(share).toHaveBeenCalledWith({ files: [expect.any(File)] }));
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Zapisano");
+      share.mockRejectedValueOnce(Object.assign(new Error("closed"), { name: "AbortError" }));
+      await userEvent.click(screen.getByTestId("feed-lightbox-close"));
+      await userEvent.click(screen.getByTestId("feed-photo"));
+      await waitFor(() => expect(screen.getByTestId("feed-lightbox-save")).toBeEnabled());
+      await userEvent.click(screen.getByTestId("feed-lightbox-save"));
+      await waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("W okienku wybierz");
+    });
+
+    it("an expired or removed photo cannot be saved and says so", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("gone", { status: 400 }));
+      const save = await openPhoto("en", { photo: "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=t" });
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Couldn't get the photo.");
+      expect(save).toBeDisabled();
+    });
   });
 });

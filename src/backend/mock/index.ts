@@ -318,6 +318,13 @@ export class MockBackend implements Backend {
   deleteUpdate(id: string) {
     return this.call((e) => e.deleteUpdate(this.uid, id));
   }
+  // ---------- 2.12.3: reactions ----------
+  reactMessage(messageId: string, emoji: string | null) {
+    return this.call((e) => e.reactMessage(this.uid, messageId, emoji));
+  }
+  reactUpdate(updateId: string, emoji: string | null) {
+    return this.call((e) => e.reactUpdate(this.uid, updateId, emoji));
+  }
   comingHome(appointmentId: string, minutes: number) {
     return this.call((e) => e.comingHome(this.uid, appointmentId, minutes));
   }

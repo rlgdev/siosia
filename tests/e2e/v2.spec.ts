@@ -378,6 +378,17 @@ test("kids and chat: Toria adds Zosia and asks Ewa with her attached; Ewa sees Z
   await expect(toria.getByTestId("chat-msg-theirs")).toContainText("See you tomorrow", { timeout: 8000 });
   await expect(toria.getByTestId("chat-read")).toBeVisible({ timeout: 8000 });
   await expect(toria.getByTestId("chat-unread")).toHaveCount(0); // read while open: no badge
+
+  // 2.12.3: Ewa reacts ❤️ to Toria's Hi!; Toria sees it live on her message, and adds 👍 to Ewa's reply.
+  const hi = ewa.getByTestId("chat-msg-theirs");
+  await hi.getByTestId("chat-react-add").click();
+  await hi.getByTestId("chat-react-picker").getByRole("button", { name: "❤️" }).click();
+  await expect(hi.getByTestId("chat-react-chip")).toHaveAccessibleName("❤️: you");
+  await expect(toria.getByTestId("chat-msg-mine").getByTestId("chat-react-chip")).toHaveAccessibleName("❤️: Ewa", { timeout: 8000 });
+  const reply = toria.getByTestId("chat-msg-theirs");
+  await reply.getByTestId("chat-react-add").click();
+  await reply.getByTestId("chat-react-picker").getByRole("button", { name: "👍" }).click();
+  await expect(ewa.getByTestId("chat-msg-mine").getByTestId("chat-react-chip")).toHaveAccessibleName("👍: Toria", { timeout: 8000 });
 });
 
 test("a kid's photo: picked, resized in the browser, shown on the card (FR-210)", async ({ context }) => {
@@ -455,6 +466,19 @@ test("session updates and heading home: Toria's note, Siosia's answer, a photo, 
   await expect(mine).toHaveCount(2);
   await expect(feed.getByTestId("feed-photo")).toHaveCount(1);
   expect(await feed.getByTestId("feed-photo").locator("img").getAttribute("src")).toMatch(/^data:image\/jpeg/);
+  // 2.12.3: a reaction on Siosia's update, and the photo saved from the full-size view (a download here).
+  const hers = theirs.first();
+  await hers.getByTestId("feed-react-add").click();
+  await hers.getByTestId("feed-react-picker").getByRole("button", { name: "❤️" }).click();
+  await expect(hers.getByTestId("feed-react-chip")).toHaveAttribute("aria-pressed", "true");
+  await expect(hers.getByTestId("feed-react-chip")).toHaveAccessibleName("❤️: you");
+  await feed.getByTestId("feed-photo").click();
+  const save = page.getByTestId("feed-lightbox-save");
+  await expect(save).toBeEnabled();
+  const [download] = await Promise.all([page.waitForEvent("download"), save.click()]);
+  expect(download.suggestedFilename()).toMatch(/^siosia-\d{4}-\d{2}-\d{2}-\d{4}\.jpg$/);
+  await expect(page.getByTestId("feed-lightbox-note")).toHaveText("Saved");
+  await page.getByTestId("feed-lightbox-close").click();
   // Heading home: no location in this browser → the minutes are picked; Siosia sees the notice and answers once.
   await page.getByTestId("coming-open").click();
   await expect(page.getByTestId("coming-sheet")).toBeVisible();

@@ -647,6 +647,13 @@ export class SupabaseBackend implements Backend {
     const old = await this.rpc<string | null>("siosia_delete_update", { p_id: id });
     if (old) await this.removePhotos([old]);
   }
+  // 2.12.3 (FR-330): reactions — the item comes back with its reactions (an update's photo signed as ever).
+  reactMessage(messageId: string, emoji: string | null) {
+    return this.rpc<ChatMessage>("siosia_react_message", { p_id: messageId, p_emoji: emoji });
+  }
+  reactUpdate(updateId: string, emoji: string | null) {
+    return this.rpc<SessionUpdate>("siosia_react_update", { p_id: updateId, p_emoji: emoji });
+  }
   comingHome(appointmentId: string, minutes: number) {
     return this.rpc<AppointmentView>("siosia_coming_home", { p_appt: appointmentId, p_minutes: minutes });
   }

@@ -21,6 +21,8 @@ export function notificationIcon(kind: PushKind): IconName {
   if (kind === "appt_tip" || kind === "ride_tip") return "sparkles";
   if (kind.startsWith("pay_")) return "wallet";
   if (kind === "sign_in") return "link";
+  // 2.12.3: reactions are pushes only, never in the bell — but a glyph of their own all the same.
+  if (kind === "reaction" || kind === "chat_message") return "chat";
   if (kind.startsWith("family_") || kind.startsWith("contract_"))
     return "users";
   if (kind === "weekly_report" || kind === "appt_summary") return "history";

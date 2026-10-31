@@ -53,7 +53,10 @@ export type PushKind =
   | "pay_settled"
   | "pay_comment"
   // 2.12.1: the operator asks a phone still without an account to sign in (opens ☰ → Account)
-  | "sign_in";
+  | "sign_in"
+  // 2.12.3 (FR-331): someone reacted to my chat message (opens the thread) or session update (C3);
+  // a push only, never a bell entry (like chat_message)
+  | "reaction";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -95,6 +98,8 @@ export interface PushParams {
   room?: string;
   /** The message's id: push-dispatch drops a message the recipient read before it went out (C6). */
   messageId?: string;
+  /** 2.12.3: the emoji of a reaction (text / photo / room / messageId / updateId name what it is on). */
+  emoji?: string;
   /** 2.3: the attached kids' names, for reminders and the accept text ("with Zosia and Kuba"). */
   kids?: string[];
   /** 2.5: a session update — the kid it is about (null = everyone), whether it carries a photo, its id. */
@@ -293,7 +298,9 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
     pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
     sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
-    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
+    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"],
+    // 2.12.3 (FR-331): the reaction, then what it is on (the message's or the update's words, 📷 a photo).
+    reaction: ["{sender} reacted {emoji}", "{item}"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -334,8 +341,18 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby dodać komentarz."],
     pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
     sign_in: ["Zachowaj swoje konto w Siosi", "Stuknij, aby się zalogować. Profil i historia zostaną z Tobą na każdym telefonie."],
-    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dziękujemy!"]
+    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dziękujemy!"],
+    reaction: ["{sender} reaguje {emoji}", "{item}"]
   }
+};
+
+/** 2.12.3: every kind this module words — push-dispatch claims only these (siosia_claim_push). */
+export const PUSH_KINDS = Object.keys(TEXTS.en) as PushKind[];
+
+/** A kind this module does not know (a newer server than this app or this push-dispatch): plain words, never another kind's. */
+const UNKNOWN: Record<Lang, [string, string]> = {
+  en: ["Siosia", "Something new for you — open Siosia."],
+  pl: ["Siosia", "Coś nowego dla Ciebie — otwórz Siosię."]
 };
 
 /** 2.6: money as the app shows it — "120.00 PLN" / "120,00 PLN" (two decimals, the locale's separator). */
@@ -408,7 +425,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   // 2.1: an open request has no provider (the backends send "" or nothing): its own words, never
   // "No answer from " or "With  · " (V37).
   const open = kind.startsWith("appt_") && (!!params.open || params.status === "open" || (!params.provider && params.role !== "provider"));
-  const [title, body] = (open ? OPEN_TEXTS[l][kind] : undefined) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
+  const [title, body] = (open ? OPEN_TEXTS[l][kind] : undefined) ?? TEXTS[l][kind] ?? UNKNOWN[l];
   const ms = toMs(params.at);
   const series =
     !!params.rule && (kind === "appt_new" || kind === "appt_open" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
@@ -426,6 +443,9 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
     // 2.5: an update's words, "📷" marking a photo — alone when there are no words.
     update: params.photo ? (cut ? `${cut} 📷` : l === "pl" ? "📷 Zdjęcie" : "📷 Photo") : cut,
     about: params.kid || params.service ? ` · ${params.kid || params.service}` : "",
+    // 2.12.3: a reaction — the emoji, and what it is on: a message's words in quotes, an update as above
+    emoji: params.emoji ?? "",
+    item: params.room ? (cut ? (l === "pl" ? `„${cut}”` : `“${cut}”`) : "") : params.photo ? (cut ? `${cut} 📷` : l === "pl" ? "📷 Zdjęcie" : "📷 Photo") : cut,
     minutes: params.minutes === undefined || params.minutes === null ? "" : String(params.minutes),
     duration: durationText(params.minutes, l),
     total: moneyText(params.total, params.currency, l),
@@ -472,7 +492,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   // A chat body (and an update's, 2.5) is the sender's own words: substituted and trimmed, but never
   // tidied like a template (their "..." or a leading "." stay as typed).
   const tidy = (s: string) =>
-    kind === "chat_message" || kind === "session_update" || kind === "pay_comment"
+    kind === "chat_message" || kind === "session_update" || kind === "pay_comment" || kind === "reaction"
       ? s
       : s
           .replace(/\s+([.,])/g, "$1")
@@ -499,6 +519,8 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
               ? `report:${params.week ?? ""}`
               : kind === "appt_tip" || kind === "ride_tip"
                 ? `tip:${id ?? ""}`
+              : kind === "reaction"
+                ? `reaction:${params.messageId ?? params.updateId ?? id ?? ""}`
               : kind.startsWith("family_")
                 ? "family"
                 : kind.startsWith("contract_")
@@ -526,5 +548,7 @@ export function pushUrl(kind: PushKind, params?: PushParams, appointmentId?: str
   if (kind.startsWith("pay_")) return "./?open=report";
   // 2.12.1: Profile → Account, where "Keep my account" signs in.
   if (kind === "sign_in") return "./?open=account";
+  // 2.12.3: a reaction opens what it is on — the thread (a room), else the appointment's feed (C3).
+  if (kind === "reaction") return params?.room ? `./?chat=${params.room}` : appointmentId ? `./?appointment=${appointmentId}` : "./";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }

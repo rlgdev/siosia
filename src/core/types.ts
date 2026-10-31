@@ -661,6 +661,17 @@ export interface ChatMessage {
   sentAt: number;
   /** When the other party read it (own messages), or when I read it. */
   readAt: number | null;
+  /** 2.12.3: the reactions on it, in the fixed order of REACTIONS (only emoji someone set). */
+  reactions: Reaction[];
+}
+
+/** 2.12.3 (FR-330): one emoji on a message or an update — how many, whether I am one, who else. */
+export interface Reaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+  /** The others who set it, by nickname, first come first (the viewer is `mine`, never named). */
+  names: string[];
 }
 
 export interface ChatThread {
@@ -689,6 +700,8 @@ export interface SessionUpdate {
   /** A signed URL (demo: a data URL), or null. */
   photo: string | null;
   createdAt: number;
+  /** 2.12.3: the reactions on it, in the fixed order of REACTIONS. */
+  reactions: Reaction[];
 }
 
 /** 2.5: the feed of one appointment (FR-231). */

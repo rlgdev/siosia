@@ -38,8 +38,8 @@ create schema if not exists backup_2026_11;
 do $$ declare t text; begin
   foreach t in array array['families','profiles','memberships','vehicles','driver_status','kids','appointment_series',
     'appointments','appointment_kids','rides','offers','ratings','kid_ratings','messages','chat_presence',
-    'appointment_updates','family_members','family_invites','contracts','member_invites','notifications','settlements',
-    'push_subscriptions','push_outbox','account_transfers','invite_failures','master_profiles'] loop
+    'appointment_updates','reactions','family_members','family_invites','contracts','member_invites','notifications',
+    'settlements','push_subscriptions','push_outbox','account_transfers','invite_failures','master_profiles'] loop
     execute format('drop table if exists backup_2026_11.%I', t);
     execute format('create table backup_2026_11.%I as select * from public.%I', t, t);
   end loop;
@@ -96,15 +96,17 @@ select count(*) as anonymous_left from auth.users where is_anonymous;
 do $$ declare t text;
   tabs text[] := array['families','profiles','memberships','vehicles','driver_status','kids','appointment_series',
     'appointments','appointment_kids','rides','offers','ratings','kid_ratings','messages','chat_presence',
-    'appointment_updates','family_members','family_invites','contracts','member_invites','notifications','settlements',
-    'push_subscriptions','push_outbox','account_transfers','invite_failures','master_profiles'];
+    'appointment_updates','reactions','family_members','family_invites','contracts','member_invites','notifications',
+    'settlements','push_subscriptions','push_outbox','account_transfers','invite_failures','master_profiles'];
 begin
   execute 'truncate ' || (select string_agg(format('public.%I', x), ', ') from unnest(tabs) x) || ' cascade';
   -- master profiles first (profiles and memberships point at them), then in dependency order
   foreach t in array array['master_profiles','families','profiles','memberships','vehicles','driver_status','kids',
     'appointment_series','appointments','appointment_kids','rides','offers','ratings','kid_ratings','messages',
-    'chat_presence','appointment_updates','family_members','family_invites','contracts','member_invites','notifications',
-    'settlements','push_subscriptions','push_outbox','account_transfers','invite_failures'] loop
+    'chat_presence','appointment_updates','reactions','family_members','family_invites','contracts','member_invites',
+    'notifications','settlements','push_subscriptions','push_outbox','account_transfers','invite_failures'] loop
+    -- (a snapshot taken before 2.12.3 has no reactions: nothing to put back)
+    continue when to_regclass(format('backup_2026_11.%I', t)) is null;
     execute format('insert into public.%I select * from backup_2026_11.%I', t, t);
   end loop;
 end $$;

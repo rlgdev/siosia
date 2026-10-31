@@ -51,9 +51,25 @@ export type IconName =
   // 2.9: Family & contracts (two grown-ups and a kid)
   | "family"
   // 2.11: settling up (a wallet)
-  | "wallet";
+  | "wallet"
+  // 2.12.3: add a reaction; save a photo
+  | "smile"
+  | "download";
 
 const GLYPHS: Record<IconName, ReactNode> = {
+  smile: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.6 14.2a4.4 4.4 0 0 0 6.8 0" />
+      <path d="M9.2 9.6h.01M14.8 9.6h.01" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5" />
+      <path d="M5 19.5h14" />
+    </>
+  ),
   wallet: (
     <>
       <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H17v3" />

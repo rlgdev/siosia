@@ -1146,7 +1146,7 @@ describe("kids, kid ratings, photos, chat (2.3: FR-200–225, V44–V48)", () =>
     for (const bad of ["", "   ", "x".repeat(501)]) expect(code(() => send("client", room, bad))).toBe("bad_input");
     pushes = [];
     const m1 = send("client", room, "  Zosia has a nut allergy  ");
-    expect(m1).toEqual({ id: expect.any(String), room, mine: true, text: "Zosia has a nut allergy", sentAt: now, readAt: null });
+    expect(m1).toEqual({ id: expect.any(String), room, mine: true, text: "Zosia has a nut allergy", sentAt: now, readAt: null, reactions: [] });
     expect(changed).toEqual(["client", "siosia"]); // both threads refresh live
     expect(db.messages).toEqual([{ id: m1.id, room, sender: "client", text: "Zosia has a nut allergy", sentAt: now, readAt: null }]);
     // One push to the other party: the sender, the first words, the room, the message (dispatch skips one
@@ -1491,7 +1491,8 @@ describe("session updates and heading home (2.5: FR-230–242, V54–V56)", () =
       kid: { id: z.id, name: "Zosia" },
       text: "Zosia is drawing",
       photo: null,
-      createdAt: now
+      createdAt: now,
+      reactions: []
     });
     expect(changed).toEqual(["client", "siosia"]);
     expect(pushes).toEqual([

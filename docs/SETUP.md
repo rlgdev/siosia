@@ -245,6 +245,12 @@ Chat (2.3) needs nothing new: messages live in the `messages` table and travel o
 realtime channels already set up; the `chat_message` notification goes out through `push-dispatch`
 (redeploy it after this upgrade, as for every release).
 
+Reactions and *Save photo* (2.12.3) need nothing new in Supabase either: re-run the migration (the
+`reactions` table and its functions) **before** publishing the app, then redeploy `push-dispatch`
+from `npm run push:bundle` (the new `reaction` notification kind: an older `push-dispatch` leaves
+reaction notifications waiting in the queue — up to 2 days — and sends them once it is redeployed).
+Saving a photo fetches the signed photo URL in the app, which Supabase Storage allows from any origin.
+
 ## 4. Authentication settings (4 min, + 15 min for email codes and Google)
 
 Since 2.12 a person signs in with a **6-digit code by email** or with **Google** and has **one

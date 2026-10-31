@@ -13,6 +13,7 @@
 import type { PushKind, PushParams } from "../../supabase/functions/_shared/push-text";
 import { DEFAULT_CONFIG, SERVER } from "./defaults";
 import { computeFare, CUSTOM_PRICE_MAX } from "./fare";
+import { isReaction, REACT_RATE_MS, REACT_RATE_N, REACTIONS } from "./reactions";
 import { haversineKm, isValidLatLng } from "./geo";
 import { isActive } from "./lifecycle";
 import { summarizeRatings } from "./rating";
@@ -53,6 +54,7 @@ import {
   type PartyRole,
   type Planned,
   type PublicParty,
+  type Reaction,
   type PublicProvider,
   type RideTemplateInput,
   type ServiceRequestInput,
@@ -335,6 +337,21 @@ export interface MessageRow {
   readAt: number | null;
 }
 
+/**
+ * 2.12.3 (FR-330): one person's reaction on one chat message or one session update — exactly one
+ * of messageId / updateId (Supabase: reactions). emoji null = taken back: the row stays, so taking
+ * it back and setting it again never notifies the author a second time (FR-331).
+ */
+export interface ReactionRow {
+  messageId?: string;
+  updateId?: string;
+  userId: string;
+  emoji: string | null;
+  /** When it was first set, and when it last changed. */
+  createdAt: number;
+  at: number;
+}
+
 /** 2.5 (FR-230): a session update (Supabase: appointment_updates). */
 export interface UpdateRow {
   id: string;
@@ -415,6 +432,8 @@ export interface DbState {
   chatPresence?: Record<string, Record<string, number>>;
   /** 2.5 (optional: demo databases saved before 2.5 lack it) */
   updates?: UpdateRow[];
+  /** 2.12.3 (optional: demo databases saved before 2.12.3 lack it) */
+  reactions?: ReactionRow[];
   /** 2.6 (optional: demo databases saved before 2.6 lack them) */
   families?: Record<string, FamilyRow>;
   /** user id → their family (a member is in at most one). */
@@ -514,6 +533,7 @@ export function emptyDb(): DbState {
     photos: {},
     chatPresence: {},
     updates: [],
+    reactions: [],
     families: {},
     familyMembers: {},
     familyInvites: [],
@@ -853,6 +873,7 @@ export class Engine {
     for (const g of this.db.kidRatings ?? []) if (g.fromUser === old) g.fromUser = uid;
     for (const m of this.db.messages ?? []) if (m.sender === old) m.sender = uid;
     for (const u of this.db.updates ?? []) if (u.author === old) u.author = uid; // 2.5 (FR-235)
+    this.moveReactions(old, uid); // 2.12.3: the new account's reaction on the same item stays
     // 2.6: a replaced profile leaves its family first (as a deleted one would); then the family,
     // the invitations and the contracts follow the account.
     if (mine && !mine.deleted) this.dropFromFamilies(uid);
@@ -1093,6 +1114,7 @@ export class Engine {
     for (const g of this.db.kidRatings ?? []) if (g.fromUser === from) g.fromUser = into;
     for (const m of this.db.messages ?? []) if (m.sender === from) m.sender = into;
     for (const u of this.db.updates ?? []) if (u.author === from) u.author = into;
+    this.moveReactions(from, into); // 2.12.3: into's reaction on the same item stays
     // The family seat moves (both in the same family: one seat stays) — never by leaving.
     if (ff) {
       if (!tf) fm[into] = fm[from];
@@ -1434,6 +1456,9 @@ export class Engine {
     // 2.5 (FR-235): my session updates and their photos.
     for (const x of (this.db.updates ?? []).filter((u) => u.author === uid)) if (x.photoPath) delete this.db.photos?.[x.photoPath];
     if (this.db.updates?.length) this.db.updates = this.db.updates.filter((u) => u.author !== uid);
+    // 2.12.3: my reactions, and the reactions on what I wrote (SQL: the foreign keys cascade).
+    if (this.db.reactions?.length) this.db.reactions = this.db.reactions.filter((r) => r.userId !== uid);
+    this.pruneReactions();
     delete this.db.chatPresence?.[uid];
     this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null, offers: [], home: null, photoPath: null };
   }
@@ -2901,7 +2926,8 @@ export class Engine {
       kid: u.kidName === null ? null : { id: u.kidId, name: u.kidName },
       text: u.text,
       photo: this.signedUrl(u.photoPath),
-      createdAt: u.createdAt
+      createdAt: u.createdAt,
+      reactions: this.reactionsOn({ updateId: u.id }, viewer)
     };
   }
 
@@ -2973,6 +2999,7 @@ export class Engine {
     if (!a || !this.feedOpen(a)) throw new ServerError("illegal_transition");
     this.db.updates = all.filter((x) => x !== u);
     if (u.photoPath) delete this.db.photos?.[u.photoPath];
+    this.pruneReactions(); // 2.12.3: its reactions go with it
     this.notifyAppt(a);
   }
 
@@ -3044,6 +3071,7 @@ export class Engine {
    */
   private resetRoom(r: RideRow): void {
     if (this.db.messages?.length) this.db.messages = this.db.messages.filter((m) => m.room !== `ride:${r.id}`);
+    this.pruneReactions(); // 2.12.3: and the reactions on those words
   }
 
   /** The driver of a ride under way right now (FR-222). */
@@ -3057,7 +3085,112 @@ export class Engine {
   }
 
   private messageView(m: MessageRow, viewer: string): ChatMessage {
-    return { id: m.id, room: m.room, mine: m.sender === viewer, text: m.text, sentAt: m.sentAt, readAt: m.readAt };
+    return { id: m.id, room: m.room, mine: m.sender === viewer, text: m.text, sentAt: m.sentAt, readAt: m.readAt, reactions: this.reactionsOn({ messageId: m.id }, viewer) };
+  }
+
+  // ---------- 2.12.3: reactions (FR-330–332) ----------
+
+  /** The reactions on one item as a viewer sees them: per emoji in the fixed order, mine, the others by nickname. */
+  private reactionsOn(item: { messageId: string } | { updateId: string }, viewer: string): Reaction[] {
+    const rows = (this.db.reactions ?? [])
+      .filter((r) => r.emoji !== null && ("messageId" in item ? r.messageId === item.messageId : r.updateId === item.updateId))
+      .sort((x, y) => x.at - y.at || (x.userId < y.userId ? -1 : 1));
+    return REACTIONS.flatMap((emoji) => {
+      const set = rows.filter((r) => r.emoji === emoji);
+      if (!set.length) return [];
+      return [{ emoji, count: set.length, mine: set.some((r) => r.userId === viewer), names: set.filter((r) => r.userId !== viewer).map((r) => this.nick(r.userId)) }];
+    });
+  }
+
+  /**
+   * Sets (or with null takes back) my one reaction on an item (FR-330): an emoji outside REACTIONS
+   * is bad_input; reacting to more than REACT_RATE_N items in REACT_RATE_MS is too_many. Returns
+   * whether this is my first reaction on it ever — the one that notifies its author (FR-331).
+   */
+  private setReaction(uid: string, item: { messageId: string } | { updateId: string }, emoji: unknown): boolean {
+    if (emoji !== null && !isReaction(emoji)) throw new ServerError("bad_input");
+    const all = (this.db.reactions ??= []);
+    const same = (r: ReactionRow) => r.userId === uid && ("messageId" in item ? r.messageId === item.messageId : r.updateId === item.updateId);
+    const row = all.find(same);
+    if (row) {
+      if (row.emoji === emoji) return false;
+      row.emoji = emoji;
+      row.at = this.now;
+      return false;
+    }
+    if (emoji === null) return false;
+    if (all.filter((r) => r.userId === uid && r.at > this.now - REACT_RATE_MS).length >= REACT_RATE_N) throw new ServerError("too_many");
+    all.push({ ...item, userId: uid, emoji, createdAt: this.now, at: this.now });
+    return true;
+  }
+
+  /**
+   * React to a message of a room I am a party to (FR-330): not_found outside it, illegal_transition
+   * once the room is read-only (as sending). Both parties refetch; the author is told once, unless it
+   * is me, they are driving or they have the thread open (FR-331, as a chat message).
+   */
+  reactMessage(uid: string, messageId: string, emoji: string | null): ChatMessage {
+    this.requireUser(uid);
+    this.sweep();
+    const m = (this.db.messages ?? []).find((x) => x.id === messageId);
+    if (!m) throw new ServerError("not_found");
+    const info = this.room(m.room, uid);
+    if (!info.open) throw new ServerError("illegal_transition");
+    const first = this.setReaction(uid, { messageId: m.id }, emoji);
+    for (const p of info.parties) this.effects.notify.add(p);
+    if (first && m.sender !== uid && this.isMember(m.sender) && !this.driving(m.sender) && !this.inRoom(m.sender, m.room))
+      this.effects.push.push({
+        userId: m.sender,
+        kind: "reaction",
+        rideId: info.rideId,
+        appointmentId: info.appointmentId,
+        params: { sender: this.nick(uid), emoji: emoji!, text: m.text, room: m.room, messageId: m.id }
+      });
+    return this.messageView(m, uid);
+  }
+
+  /**
+   * React to a session update (FR-330): who may post may react — the two parties and the client's
+   * family (forbidden for the provider's family, not_found for anyone else) — while the feed is open
+   * (illegal_transition after). Every viewer refetches; the author is told once, unless it is me,
+   * they are driving or they have the feed in front (FR-331).
+   */
+  reactUpdate(uid: string, updateId: string, emoji: string | null): SessionUpdate {
+    this.requireUser(uid);
+    this.sweep();
+    const u = (this.db.updates ?? []).find((x) => x.id === updateId);
+    if (!u) throw new ServerError("not_found");
+    const a = this.feedAppt(uid, u.appointmentId);
+    if (a.clientId !== uid && a.providerId !== uid && !this.sameFamily(uid, a.clientId)) throw new ServerError("forbidden");
+    if (!this.feedOpen(a)) throw new ServerError("illegal_transition");
+    const first = this.setReaction(uid, { updateId: u.id }, emoji);
+    this.notifyAppt(a);
+    if (first && u.author !== uid && this.isMember(u.author) && !this.driving(u.author) && !this.inRoom(u.author, `feed:${a.id}`))
+      this.effects.push.push({
+        userId: u.author,
+        kind: "reaction",
+        rideId: null,
+        appointmentId: a.id,
+        params: { sender: this.nick(uid), emoji: emoji!, text: u.text, photo: u.photoPath !== null, kid: u.kidName, updateId: u.id }
+      });
+    return this.updateView(u, uid);
+  }
+
+  /** Account move / merge: `from`'s reactions become `to`'s; on an item both reacted to, `to`'s stays. */
+  private moveReactions(from: string, to: string): void {
+    const all = this.db.reactions ?? [];
+    const key = (r: ReactionRow) => (r.messageId ? `m:${r.messageId}` : `u:${r.updateId}`);
+    const kept = new Set(all.filter((r) => r.userId === to).map(key));
+    this.db.reactions = all.filter((r) => !(r.userId === from && kept.has(key(r))));
+    for (const r of this.db.reactions) if (r.userId === from) r.userId = to;
+  }
+
+  /** The reactions whose message or update is gone go too (SQL: on delete cascade). */
+  private pruneReactions(): void {
+    if (!this.db.reactions?.length) return;
+    const msgs = new Set((this.db.messages ?? []).map((m) => m.id));
+    const ups = new Set((this.db.updates ?? []).map((u) => u.id));
+    this.db.reactions = this.db.reactions.filter((r) => (r.messageId ? msgs.has(r.messageId) : ups.has(r.updateId!)));
   }
 
   /** The other party's messages in a room the viewer has not read yet. */

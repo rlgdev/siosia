@@ -4,6 +4,7 @@
 // live while open, and the input while the room is open (until 24 h after the end, FR-223).
 // Opening the thread marks it read (FR-224); the unread badges follow. The backend notifies and
 // pushes; nothing is sent from here but the message itself.
+// 2.12.3 (FR-330): a reaction row under every message while the room is open (read-only after).
 
 import { Icon } from "./Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -12,6 +13,7 @@ import { ServerError } from "../core/types";
 import { useI18n } from "../i18n";
 import { chatRoomOf, useApp, useListsKey, useStore } from "../state/store";
 import { Avatar, Initial } from "./ProfileIcon";
+import { Reactions } from "./Reactions";
 import { Panel, RatingBadge, useBusy } from "./ui";
 import { sameDay, timeText, whenText } from "./when";
 
@@ -99,6 +101,11 @@ export function ChatSheet({ room }: { room: ChatRoom }) {
       if (!m.mine && visible()) void load(true, true);
     });
   }, [store, room, load]);
+  // 2.12.3: the message comes back with its reactions; it replaces the one shown.
+  const react = async (m: ChatMessage, emoji: string | null) => {
+    const x = await store.api.reactMessage(m.id, emoji);
+    setThread((th) => (th ? { ...th, messages: th.messages.map((y) => (y.id === x.id ? x : y)) } : th));
+  };
   const count = thread?.messages.length ?? 0;
   useEffect(() => {
     end.current?.scrollIntoView?.({ block: "end" });
@@ -169,6 +176,7 @@ export function ChatSheet({ room }: { room: ChatRoom }) {
                     </span>
                   )}
                 </span>
+                <Reactions reactions={m.reactions} onReact={thread.open ? (e) => react(m, e) : undefined} testId="chat-react" />
               </li>
             ))}
             <li ref={end} className="chat-end" aria-hidden="true" />

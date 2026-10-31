@@ -227,6 +227,11 @@ to the other person, see when they read it, and get a notification when they wri
 are driving — the message waits in the thread). The chat stays open until a day after the ride or
 appointment ends, then becomes read-only, and is deleted with it.
 
+**Reactions.** Tap the ☺ under a message to answer with one of ❤️ 👍 😂 😮 😢 🙏; tap your own
+again to take it back, or another one to change it. The other person sees it at once and gets one
+notification the first time you react to a message (not when you change it). Each of you has one
+reaction per message.
+
 ## Session updates and heading home
 
 During childcare (or a lesson) the person with the kids can post short **session updates** — a line
@@ -235,6 +240,11 @@ and, if they like, a photo — about everyone or about one kid: open the appoint
 it) and see them live; you can answer there too. The section opens 30 minutes before the start and
 takes posts until 7 days after the end; afterwards it stays under the appointment in History,
 read-only. Only the two of you see it, and each of you can delete your own posts.
+
+You can **react** to every update — a photo included — with the same ☺ as in the chat (while the
+section takes posts); its author is told once. **Save a photo**: tap it to see it full size, then
+*Save photo* — on iPhone choose *Save Image* in the sheet and it lands in Photos; on Android it is
+downloaded and shows up in the gallery (in *Downloads*).
 
 On the way back, tap **I'm heading home** on the appointment: Siosia takes your phone's location,
 works out the driving time to the place and tells the other person "about N min — around HH:MM".
@@ -588,6 +598,11 @@ napisz do drugiej osoby, zobacz, kiedy przeczyta, i dostań powiadomienie, gdy o
 trakcie jazdy — wiadomość czeka w wątku). Czat jest otwarty do dnia po zakończeniu kursu lub
 terminu, potem można go tylko czytać, a znika razem z nim.
 
+**Reakcje.** Stuknij ☺ pod wiadomością, żeby odpowiedzieć jednym z ❤️ 👍 😂 😮 😢 🙏; stuknij swoją
+jeszcze raz, żeby ją cofnąć, albo inną, żeby ją zmienić. Druga osoba widzi ją od razu i dostaje
+jedno powiadomienie, gdy pierwszy raz zareagujesz na wiadomość (nie przy zmianie). Każde z was ma
+jedną reakcję na wiadomość.
+
 ## Relacja z opieki i „Wracam do domu”
 
 W czasie opieki (albo lekcji) osoba z dziećmi może wysyłać krótkie **wiadomości z relacji** — zdanie
@@ -596,6 +611,11 @@ i, jeśli chce, zdjęcie — o wszystkich albo o jednym dziecku: otwiera termin 
 żywo; możesz tam też odpowiedzieć. Sekcja otwiera się 30 minut przed początkiem i przyjmuje wpisy
 do 7 dni po zakończeniu; potem zostaje pod terminem w Historii, tylko do czytania. Widzicie ją
 tylko wy oboje, a każde z was może usunąć własne wpisy.
+
+Na każdy wpis — także zdjęcie — możesz **zareagować** tym samym ☺ co w czacie (dopóki sekcja
+przyjmuje wpisy); autor dostaje jedno powiadomienie. **Zapisz zdjęcie**: stuknij je, żeby zobaczyć
+w całości, potem *Zapisz zdjęcie* — na iPhonie wybierz w okienku *Zachowaj obraz* i trafi do
+Zdjęć; na Androidzie zostanie pobrane i pojawi się w galerii (w *Pobranych*).
 
 W drodze powrotnej dotknij **Wracam do domu** w terminie: Siosia bierze położenie telefonu, liczy
 czas jazdy autem na miejsce i mówi drugiej osobie „około N min — około HH:MM”. Wysyłane są tylko

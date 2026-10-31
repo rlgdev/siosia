@@ -10,6 +10,7 @@
 // Deno runtime (npm: specifiers, Deno globals): outside the app's TypeScript project; Supabase checks it at deploy.
 import { createClient } from "npm:@supabase/supabase-js@2.57.0";
 import webpush from "npm:web-push@3.6.7";
+import { PUSH_KINDS } from "../_shared/push-text.ts";
 import { dispatch } from "./dispatch.ts";
 
 Deno.serve(async (req) => {
@@ -39,7 +40,8 @@ Deno.serve(async (req) => {
   const result = await dispatch({
     async pending(limit) {
       // Atomic claim: overlapping runs never send the same row twice.
-      const { data, error } = await db.rpc("siosia_claim_push", { p_limit: limit });
+      // 2.12.3: only the kinds this push-text can word (a newer kind waits for a newer dispatch).
+      const { data, error } = await db.rpc("siosia_claim_push", { p_limit: limit, p_kinds: PUSH_KINDS });
       if (error) throw error;
       return data ?? [];
     },
