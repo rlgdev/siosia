@@ -930,6 +930,18 @@ export const en = {
   "change.lengthEntry": "Propose another length",
   "change.lengthHint": "Within 24 h after the end either of you may propose the time actually spent; once the other accepts, the total follows the rate and the family is told.",
   "change.lengthHintSet": "Within 24 h after the end either of you may propose the time actually spent; once the other accepts, the family is told. The total is a set amount and stays as it is.",
+  // 2.14.1: moving into the past (FR-342–345)
+  "change.modeLabel": "What to change",
+  "change.modeMove": "Time and place",
+  "change.modeLength": "Length only",
+  "change.hintPast": "The time may also be in the past (up to 30 days back) — to record when it really happened.",
+  "change.hintMoveDone": "{name} answers; nothing changes until they accept. Then the time and the total follow, and the cost summary goes out again as corrected.",
+  "change.tooOld": "At most 30 days back.",
+  "change.tooFar": "At most {days} days ahead.",
+  "change.inLead": "A start still ahead needs at least {min} min notice — or pick a time already past.",
+  "change.doneFuture": "It is done: the new time must end before now.",
+  "change.badTime": "That time can't be proposed — at most 30 days back, a start ahead needs the usual notice, and a done appointment stays in the past.",
+  "change.windowClosed": "Too late to change — a done appointment can be moved for 30 days after its end, its length for 24 h.",
   "err.no_change": "That is the same as now — change something first.",
   "err.ride_started": "A ride for this appointment is already on its way — it can't be moved now."
 } as const;

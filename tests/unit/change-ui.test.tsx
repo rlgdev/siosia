@@ -272,10 +272,14 @@ describe("C3 a new length (FR-335)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 10, 3, 15, 0));
     const a = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17), rate: 40, price: 120 });
-    expect(proposeKind(a, Date.now())).toBe("length");
+    // 2.14.1 (FR-345): live, a move and a new length are both allowed — the sheet offers the switch
+    expect(proposeKind(a, Date.now())).toEqual(["move", "length"]);
     const proposeChange = vi.fn(async () => a);
     setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "a1" });
     await userEvent.click(await screen.findByTestId("appt-change"));
+    expect(screen.getByTestId("change-mode-move")).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByTestId("change-mode-length"));
+    expect(screen.getByTestId("change-mode-length")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId("change-sheet")).toHaveTextContent("Propose a new length");
     expect(screen.queryByTestId("change-start")).not.toBeInTheDocument();
     await userEvent.selectOptions(screen.getByTestId("change-minutes"), "240");
@@ -341,12 +345,17 @@ describe("C3 a new length (FR-335)", () => {
     expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
   });
 
-  it("nothing to propose a day after the end", () => {
+  it("a day after the end only a move (2.14.1), 30 days after nothing", () => {
     const now = Date.now();
     const a = appt({ status: "done", startsAt: now - 30 * 3600_000, durationMin: 60, endsAt: now - 29 * 3600_000 });
-    expect(proposeKind(a, now)).toBeNull();
-    expect(proposeKind(appt(), now)).toBe("move");
-    expect(proposeKind(appt({ role: "candidate" }), now)).toBeNull();
+    expect(proposeKind(a, now)).toEqual(["move"]);
+    const old = appt({ status: "done", startsAt: now - 31 * 86_400_000, durationMin: 60, endsAt: now - 31 * 86_400_000 + 3600_000 });
+    expect(proposeKind(old, now)).toEqual([]);
+    expect(proposeKind(appt(), now)).toEqual(["move"]);
+    // accepted and already over (not yet done): still a move
+    expect(proposeKind(appt({ startsAt: now - 5 * 3600_000, endsAt: now - 2 * 3600_000 }), now)).toEqual(["move"]);
+    expect(proposeKind(appt({ role: "candidate" }), now)).toEqual([]);
+    expect(proposeKind(appt({ role: "family" }), now)).toEqual([]);
   });
 });
 
@@ -444,5 +453,218 @@ describe("2.14 review fixes (B15)", () => {
     setup("en", <AppointmentPanel />, { getAppointment: async () => mine, answerChange }, { panel: "appointment", panelArg: "a1" });
     await userEvent.click(await screen.findByTestId("change-accept"));
     expect(await screen.findByRole("alert")).toHaveTextContent(en["err.overlap"]);
+  });
+});
+
+// 2.14.1 (FR-342–345, V96): a move may go into the past — on a planned, live or done (≤ 30 d) appointment.
+describe("2.14.1 moving into the past (FR-345)", () => {
+  const doneAt = (over: Partial<AppointmentView> = {}) =>
+    appt({
+      status: "done",
+      startsAt: at(14),
+      durationMin: 180,
+      endsAt: at(17),
+      endedAt: at(17),
+      rate: 40,
+      price: 120,
+      cost: { minutes: 180, rate: 40, total: 120, currency: "PLN", source: "catalog", corrected: false },
+      ...over
+    });
+
+  it("a done appointment offers both modes and can be moved to yesterday; a new end after now is refused here", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const a = doneAt();
+    const proposeChange = vi.fn(async (_id: string, _i: ChangeInput) => a);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("appt-change"));
+    const sheet = screen.getByTestId("change-sheet");
+    expect(screen.getByTestId("change-mode-move")).toHaveTextContent("Time and place");
+    expect(screen.getByTestId("change-mode-length")).toHaveTextContent("Length only");
+    expect(screen.getByTestId("change-mode-move")).toHaveAttribute("aria-pressed", "true");
+    expect(sheet).toHaveTextContent("Propose a change");
+    // the hint behind the i (V42)
+    expect(screen.getByTestId("change-past-info")).toBeInTheDocument();
+    // as far back as 30 days, on a quarter hour
+    expect(screen.getByTestId("change-start")).toHaveAttribute("min", toLocalInput(Date.now() - 30 * 86_400_000)); // the server's bound (30 × 24 h; here across the DST change)
+    // ending after now: a done one stays in the past
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(at(16)) } });
+    expect(screen.getByTestId("change-problem")).toHaveTextContent(en["change.doneFuture"]);
+    expect(screen.getByTestId("change-send")).toBeDisabled();
+    // yesterday 9:00–12:00
+    const yesterday = new Date(2026, 10, 2, 9, 0).getTime();
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(yesterday) } });
+    expect(screen.queryByTestId("change-problem")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-preview")).toHaveTextContent("Ends 12:00");
+    expect(screen.getByTestId("change-preview")).toHaveTextContent(/New total: .*120\.00/);
+    await userEvent.click(screen.getByTestId("change-send"));
+    await waitFor(() => expect(proposeChange).toHaveBeenCalledWith("a1", { kind: "move", startsAt: yesterday, durationMin: 180, place: KIDS, pickups: [], note: "" }));
+  });
+
+  it("a done appointment three days on: a move only, no switch; past 30 days nothing — in Polish", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 6, 12, 0));
+    const a = doneAt();
+    const first = setup("pl", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("appt-change"));
+    expect(screen.getByTestId("change-sheet")).toHaveTextContent("Zaproponuj zmianę");
+    expect(screen.queryByTestId("change-mode-length")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cost-propose")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-start")).toBeInTheDocument();
+    first.unmount();
+    vi.setSystemTime(new Date(2026, 11, 4, 12, 0));
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
+    expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+  });
+
+  it("a future appointment may move into the past; a start ahead keeps the lead; 30 days back at most — in Polish", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 10, 0));
+    const a = appt({ startsAt: at(18), durationMin: 120, endsAt: at(20) });
+    const proposeChange = vi.fn(async (_id: string, _i: ChangeInput) => a);
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    // before the start: a move only
+    expect(screen.queryByTestId("change-mode-move")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-start")).toHaveAttribute("min", toLocalInput(Date.now() - 30 * 86_400_000));
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(at(10, 15)) } });
+    expect(screen.getByTestId("change-problem")).toHaveTextContent(pl["change.inLead"].replace("{min}", "30"));
+    expect(screen.getByTestId("change-send")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(new Date(2026, 9, 1, 10, 0).getTime()) } });
+    expect(screen.getByTestId("change-problem")).toHaveTextContent(pl["change.tooOld"]);
+    // yesterday afternoon: fine
+    const past = new Date(2026, 10, 2, 15, 0).getTime();
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(past) } });
+    expect(screen.queryByTestId("change-problem")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("change-send"));
+    await waitFor(() => expect(proposeChange).toHaveBeenCalledWith("a1", expect.objectContaining({ kind: "move", startsAt: past, durationMin: 120 })));
+  });
+
+  it("the server's bad_time and window_closed read as change words, not a ride's", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const a = doneAt();
+    let code = "bad_time";
+    const proposeChange = vi.fn(async () => {
+      throw new ServerError(code as "bad_time");
+    });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(at(10)) } });
+    await userEvent.click(screen.getByTestId("change-send"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(en["change.badTime"]);
+    code = "window_closed";
+    await userEvent.click(screen.getByTestId("change-send"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(en["change.windowClosed"]));
+    expect(pl["change.badTime"]).toBeTruthy();
+    expect(pl["change.windowClosed"]).toBeTruthy();
+  });
+
+  it("a live appointment: no new pickup for my ride already behind, one for the ride back still ahead", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 15, 0));
+    const a = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17) });
+    a.rides = [
+      { rideId: "r1", leg: "there", passenger: "client", mine: true, scheduledFor: at(13, 30), status: "confirmed", driver: null, pickup: PARK, dropoff: KIDS, fare: 20 },
+      { rideId: "r2", leg: "back", passenger: "client", mine: true, scheduledFor: at(17, 5), status: "confirmed", driver: null, pickup: KIDS, dropoff: PARK, fare: 20 }
+    ] as AppointmentView["rides"];
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    expect(screen.getByTestId("change-mode-move")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByTestId("change-pickup-there")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-pickup-back")).toBeInTheDocument();
+  });
+
+  it("the other party sees a done appointment's move with its new time, length and total", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const a = doneAt({ role: "provider" });
+    a.change = change(a, { by: "client", startsAt: at(9), durationMin: 120, endsAt: at(11), price: 80, expiresAt: at(9) + 7 * 86_400_000 });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    await screen.findByTestId("change-card");
+    expect(screen.getByTestId("change-when")).toHaveTextContent(/0?9:00/);
+    expect(screen.getByTestId("change-length")).toHaveTextContent("Length");
+    expect(screen.getByTestId("change-price")).toHaveTextContent("New total");
+  });
+
+  it("moving a done appointment keeps an agreed length correction unless changed; the preview shows was", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    // booked 14:00–17:00 at 40/h, an accepted length change made it 2 h 30 min (100)
+    const a = doneAt({ actualMin: 150, cost: { minutes: 150, rate: 40, total: 100, currency: "PLN", source: "catalog", corrected: true } });
+    const proposeChange = vi.fn(async (_id: string, _i: ChangeInput) => a);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    await waitFor(() => expect(screen.getByTestId("change-duration")).toHaveValue("150"));
+    const yesterday = new Date(2026, 10, 2, 14, 0).getTime();
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(yesterday) } });
+    expect(screen.getByTestId("change-preview")).toHaveTextContent(/New total: .*100\.00/);
+    expect(screen.queryByTestId("change-preview-length")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("change-preview-was")).not.toBeInTheDocument();
+    // picking the booked length shows what it undoes
+    await userEvent.selectOptions(screen.getByTestId("change-duration"), "180");
+    expect(screen.getByTestId("change-preview-length")).toHaveTextContent("was");
+    expect(screen.getByTestId("change-preview-was")).toHaveTextContent(/was .*100\.00/);
+    await userEvent.selectOptions(screen.getByTestId("change-duration"), "150");
+    await userEvent.click(screen.getByTestId("change-send"));
+    await waitFor(() => expect(proposeChange).toHaveBeenCalledWith("a1", { kind: "move", startsAt: yesterday, durationMin: 150, place: KIDS, pickups: [], note: "" }));
+  });
+
+  it("a counted length the service does not allow: the booked one, with the old length and total shown", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    // childcare goes in 30-minute steps: 2 h 45 min cannot be booked (the server's bad_duration)
+    const a = doneAt({ actualMin: 165, cost: { minutes: 165, rate: 40, total: 110, currency: "PLN", source: "catalog", corrected: true } });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    await waitFor(() => expect(screen.getByTestId("change-duration")).toHaveValue("180"));
+    expect(screen.getByTestId("change-preview-length")).toHaveTextContent("was");
+    expect(screen.getByTestId("change-preview-was")).toHaveTextContent(/was .*110\.00/);
+  });
+});
+
+describe("2.14.1 on a database still at 2.14 (no 'pastMoves', V89)", () => {
+  const old = { ...DEFAULT_CONFIG, features: ["customPrice" as const, "reactions" as const, "changes" as const] };
+
+  it("proposeKind keeps the 2.14 rules", () => {
+    const now = Date.now();
+    expect(proposeKind(appt(), now, false)).toEqual(["move"]);
+    expect(proposeKind(appt({ startsAt: now - 3600_000, endsAt: now + 3600_000, durationMin: 120 }), now, false)).toEqual(["length"]);
+    expect(proposeKind(appt({ startsAt: now - 5 * 3600_000, endsAt: now - 2 * 3600_000 }), now, false)).toEqual([]);
+    expect(proposeKind(appt({ status: "done", startsAt: now - 5 * 3600_000, endsAt: now - 2 * 3600_000 }), now, false)).toEqual(["length"]);
+    expect(proposeKind(appt({ status: "done", startsAt: now - 30 * 3600_000, durationMin: 60, endsAt: now - 29 * 3600_000 }), now, false)).toEqual([]);
+    expect(proposeKind(appt({ role: "family" }), now, false)).toEqual([]);
+  });
+
+  it("a live one opens on the length; a done one 2 days old offers nothing; a planned one starts after the lead, no past hint", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 15, 0));
+    const live = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17) });
+    const first = setup("en", <AppointmentPanel />, { getAppointment: async () => live }, { panel: "appointment", panelArg: "a1", deployment: old });
+    await userEvent.click(await screen.findByTestId("appt-change"));
+    expect(screen.getByTestId("change-minutes")).toBeInTheDocument();
+    expect(screen.queryByTestId("change-mode-move")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("change-start")).not.toBeInTheDocument();
+    first.unmount();
+    vi.setSystemTime(new Date(2026, 10, 5, 18, 0));
+    const done = appt({ status: "done", startsAt: at(14), durationMin: 180, endsAt: at(17), endedAt: at(17), rate: 40, price: 120, cost: { minutes: 180, rate: 40, total: 120, currency: "PLN", source: "catalog", corrected: false } });
+    const second = setup("en", <AppointmentPanel />, { getAppointment: async () => done }, { panel: "appointment", panelArg: "a1", deployment: old });
+    expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
+    expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+    second.unmount();
+    vi.setSystemTime(new Date(2026, 10, 3, 10, 0));
+    const planned = appt({ startsAt: at(18), durationMin: 120, endsAt: at(20) });
+    const proposeChange = vi.fn(async () => {
+      throw new ServerError("bad_time");
+    });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => planned, proposeChange }, { panel: "appointment", panelArg: "change:a1", deployment: old });
+    await screen.findByTestId("change-sheet");
+    expect(screen.queryByTestId("change-past-info")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-start")).toHaveAttribute("min", toLocalInput(at(10, 45)));
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(at(19)) } });
+    await userEvent.click(screen.getByTestId("change-send"));
+    // the 2.14 server's bad_time is not described with the 2.14.1 rules
+    expect(await screen.findByRole("alert")).not.toHaveTextContent(en["change.badTime"]);
   });
 });

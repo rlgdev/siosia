@@ -200,23 +200,31 @@ pick you up there. Only you see it.
 
 Plans change. On a confirmed appointment either of you taps **Propose a change**:
 
-- **Before it starts** — a new start, length or place, and for each of *your* rides a new pickup
-  (Siosia estimates the route again). A note (up to 200 characters) helps. The new end and price
-  show before you send.
-- **While it runs, or within 24 hours after the end** — just a new length (in 15-minute steps);
-  the new end and price (or the total) show before you send.
+- **Time and place** — a new start, length or place, and for each of *your* rides still ahead a new
+  pickup (Siosia estimates the route again). A note (up to 200 characters) helps. The new end and
+  price show before you send. The time may also be in the past, up to 30 days back — to record when
+  it really happened (a start still ahead needs the usual notice). This works before, during and
+  after the appointment, and on a done one until 30 days after its end (its new time stays in the
+  past).
+- **Length only** — while it runs, or within 24 hours after the end: just a new length (in 15-minute
+  steps); the new end and price (or the total) show before you send. When both are possible the
+  sheet shows a switch: *Time and place* or *Length only*.
 
 Nothing changes until the other person answers. They get a notification and see the proposal at the
 top of the appointment — old → new, the new price and what each ride will do — with **Accept** or
 **Decline**; **Planned → To answer** lists it too (*Change proposed*). You can **Withdraw** yours
 while it waits (*Change sent*). Proposing while theirs waits declines theirs and sends yours
-instead. A proposal no one answers lapses at the start (or 24 hours after the end).
+instead. A proposal no one answers lapses at the start (or 24 hours after the end); a move into the
+past lapses 7 days after it was sent.
 
 When it is accepted, the appointment, its price (at the rate it was booked with) and the rides move
 together: a ride there moves with the start, a ride back with the end, and the driver is told — or,
 if the new time doesn't fit their day, the ride goes back to other drivers (*no driver yet*). A ride
 that would now be too soon is cancelled; ask for a ride under **Siosia → Ride** at the time. A ride
-already on its way can't be moved.
+already on its way can't be moved. Moved wholly into the past, a confirmed appointment is done at
+once (at its new end) and the cost summary goes out; a done one takes the new time, its total
+follows the rate (a set amount stays) and the corrected summary goes out again — its rides stay as
+they were. The weekly reports follow the new date.
 
 ## Add to calendar
 
@@ -594,24 +602,32 @@ przejazd na termin. Widzisz je tylko Ty.
 
 Plany się zmieniają. W potwierdzonym terminie każde z was może dotknąć **Zaproponuj zmianę**:
 
-- **Przed początkiem** — nowy początek, czas trwania albo miejsce, a dla każdego *swojego*
-  przejazdu nowe miejsce odbioru (Siosia ponownie szacuje trasę). Przyda się notatka (do 200
-  znaków). Nowy koniec i cenę widać przed wysłaniem.
-- **W trakcie albo do 24 godzin po zakończeniu** — tylko nowa długość (co 15 minut); nowy koniec i
-  cenę (albo kwotę) widać przed wysłaniem.
+- **Czas i miejsce** — nowy początek, czas trwania albo miejsce, a dla każdego *swojego* przejazdu,
+  który jeszcze przed Tobą, nowe miejsce odbioru (Siosia ponownie szacuje trasę). Przyda się
+  notatka (do 200 znaków). Nowy koniec i cenę widać przed wysłaniem. Czas może być też w
+  przeszłości, do 30 dni wstecz — żeby zapisać, kiedy naprawdę się odbyło (początek w przyszłości
+  wymaga zwykłego wyprzedzenia). Działa przed terminem, w trakcie i po nim, a w zakończonym do 30
+  dni po końcu (nowy czas zostaje w przeszłości).
+- **Tylko długość** — w trakcie albo do 24 godzin po zakończeniu: tylko nowa długość (co 15 minut);
+  nowy koniec i cenę (albo kwotę) widać przed wysłaniem. Gdy możliwe jest jedno i drugie, arkusz
+  pokazuje przełącznik: *Czas i miejsce* albo *Tylko długość*.
 
 Nic się nie zmienia, dopóki druga osoba nie odpowie. Dostaje powiadomienie i widzi propozycję na
 górze terminu — było → będzie, nową cenę i co stanie się z każdym przejazdem — z przyciskami
 **Przyjmij zmianę** i **Odrzuć**; pokazują ją też **Zaplanowane → Do odpowiedzi** (*Propozycja
 zmiany*). Swoją możesz **Wycofać**, póki czeka (*Zmiana wysłana*). Twoja propozycja w czasie, gdy
 czeka propozycja drugiej strony, odrzuca tamtą i trafia na jej miejsce. Propozycja bez odpowiedzi
-wygasa z początkiem terminu (albo 24 godziny po zakończeniu).
+wygasa z początkiem terminu (albo 24 godziny po zakończeniu); przesunięcie w przeszłość wygasa 7
+dni po wysłaniu.
 
 Po akceptacji termin, jego cena (według stawki z rezerwacji) i przejazdy zmieniają się razem:
 przejazd tam przesuwa się z początkiem, powrotny z końcem, a kierowca dostaje informację — a jeśli
 nowa godzina mu nie pasuje, przejazd wraca do innych kierowców (*jeszcze bez kierowcy*). Przejazd,
 który byłby teraz za wcześnie, zostanie odwołany; w tym czasie zamów przejazd: **Siosia →
-Przejazd**. Przejazdu, który już jedzie, nie da się przesunąć.
+Przejazd**. Przejazdu, który już jedzie, nie da się przesunąć. Potwierdzony termin przesunięty w
+całości w przeszłość od razu się kończy (z nowym końcem) i przychodzi podsumowanie kosztów;
+zakończony dostaje nowy czas, kwota liczy się ze stawki (ustalona kwota zostaje), a poprawione
+podsumowanie przychodzi ponownie — przejazdy zostają bez zmian. Raporty tygodniowe idą za nową datą.
 
 ## Dodaj do kalendarza
 

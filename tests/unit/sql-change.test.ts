@@ -154,9 +154,9 @@ describe("who and when (FR-334–336, V90)", () => {
     // a new place is stored cleaned (V33)
     const moved = await propose("client", a.id, { kind: "move", place: { ...PARK, label: `  ${PARK.label}  `, extra: 1 } });
     expect((moved.change as Json).place).toEqual(PARK);
-    // under way: no move any more (a new length instead)
+    // 2.14.1 (FR-342, V96): under way a move is still fine
     await shift(a.id, -10);
-    expect(await code(propose("siosia", a.id, { kind: "move", startsAt: start }))).toBe("illegal_transition");
+    expect(await code(propose("siosia", a.id, { kind: "move", startsAt: start }))).toBe("no error");
   });
 
   it("a length: under way, or done within 24 h; 15–1440 on the quarter hour; the same → no_change", async () => {
@@ -680,5 +680,147 @@ describe("2.14 review fixes (B15, V19)", () => {
     expect((await h.admin("select proposed_by from public.appointment_changes where appointment_id = $1", [a.id])).rows[0].proposed_by).toBe(NEW);
     expect((await h.call<Json>(NEW, "siosia_get_appointment", [a.id])).change).toMatchObject({ mine: true, by: "client" });
     expect((await h.call<Json>(NEW, "siosia_withdraw_change", [a.id])).change).toBeNull();
+  });
+});
+
+// 2.14.1 (2026-11-03): moving an appointment into the past (FR-342–345, V96). Twins in change.test.
+describe("2.14.1 moves into the past (FR-342–345, V96)", () => {
+  const DAY = 24 * 60 * MIN;
+  const lapse = async (apptId: unknown) =>
+    (await h.admin(
+      "select extract(epoch from expires_at - created_at) as s from public.appointment_changes where appointment_id = $1 and status = 'proposed'",
+      [apptId]
+    )).rows[0]?.s;
+
+  it("the windows: accepted at any time, start within [now − 30 d, now + maxDays], a start ahead keeps the lead; done until 30 d after its end, new end ≤ now", async () => {
+    const a = await appt(2 * 24 * 60);
+    expect(await code(propose("client", a.id, { kind: "move", startsAt: Date.now() - 30 * DAY - 5 * MIN, durationMin: 120 }))).toBe("bad_time");
+    expect(await code(propose("client", a.id, { kind: "move", startsAt: Date.now() + 10 * MIN }))).toBe("bad_time");
+    expect(await code(propose("client", a.id, { kind: "move", startsAt: Date.now() - 30 * DAY + 5 * MIN, durationMin: 120 }))).toBe("no error");
+    // into the past: lapses 7 days after it was proposed (FR-344)
+    const v = await propose("client", a.id, { kind: "move", startsAt: Date.now() - 180 * MIN, durationMin: 120 });
+    expect(v.change).toMatchObject({ kind: "move", durationMin: 120, rides: [] });
+    expect(Number(await lapse(a.id))).toBe(7 * 24 * 3600);
+    // a done one
+    const b = await appt(2 * 24 * 60 + 600);
+    await endAgo(b.id, 60);
+    expect((await getAppt("client", b.id)).status).toBe("done");
+    // stays in the past: its new end ≤ now
+    expect(await code(propose("client", b.id, { kind: "move", startsAt: Date.now() - 60 * MIN, durationMin: 120 }))).toBe("bad_time");
+    expect(await code(propose("client", b.id, { kind: "move", startsAt: Date.now() + 2 * DAY }))).toBe("bad_time");
+    expect(await code(propose("client", b.id, { kind: "move", startsAt: Date.now() - 300 * MIN, durationMin: 45 }))).toBe("bad_duration");
+    // touches no rides: no pickups for it
+    expect(await code(propose("client", b.id, {
+      kind: "move", startsAt: Date.now() - 300 * MIN, pickups: [{ leg: "there", pickup: NEWHOME, estKm: 5, estMin: 12 }]
+    }))).toBe("bad_leg");
+    const d = await propose("client", b.id, { kind: "move", startsAt: Date.now() - 300 * MIN, durationMin: 120 });
+    expect(d.change).toMatchObject({ kind: "move", durationMin: 120, rides: [] });
+    expect(Number(await lapse(b.id))).toBe(7 * 24 * 3600);
+    await withdraw("client", b.id);
+    // 29 days after its end: still; 31 days: window_closed
+    await endAgo(b.id, 29 * 24 * 60);
+    expect(await code(propose("siosia", b.id, { kind: "move", startsAt: Date.now() - 29 * DAY - 300 * MIN, durationMin: 120 }))).toBe("no error");
+    await withdraw("siosia", b.id);
+    await endAgo(b.id, 31 * 24 * 60);
+    expect(await code(propose("siosia", b.id, { kind: "move", startsAt: Date.now() - 29 * DAY, durationMin: 120 }))).toBe("window_closed");
+    // neither accepted nor done
+    const r = await appt(3 * 24 * 60, { accept: false });
+    expect(await code(propose("client", r.id, { kind: "move", startsAt: Date.now() - 180 * MIN }))).toBe("illegal_transition");
+    await call("client", "siosia_cancel_appointment", [a.id, null, "one"]);
+    expect(await code(propose("client", a.id, { kind: "move", startsAt: Date.now() - 180 * MIN }))).toBe("illegal_transition");
+  });
+
+  it("an accepted one moved wholly into the past is done in the same step: its end, price, first summary; rides that cannot follow are cancelled (FR-343)", async () => {
+    const a = await appt(2 * 24 * 60);
+    const s = Number(a.startsAt);
+    await h.admin("update public.appointments set rate = 40, price = 120 where id = $1", [a.id]);
+    const there = await book("client", iso(s - 30 * MIN), a.id, "there");
+    await call("driver", "siosia_claim_booking", [there.id]);
+    const newStart = Date.now() - 240 * MIN;
+    const v = await propose("client", a.id, { kind: "move", startsAt: newStart, durationMin: 120 });
+    expect((v.change as Json).price).toBe(80);
+    expect(((v.change as Json).rides as Json[])[0]).toMatchObject({ rideId: there.id, effect: "cancel", to: null });
+    await clearOutbox();
+    const ok = await answerCh("siosia", a.id, "accept");
+    expect(ok).toMatchObject({ status: "done", durationMin: 120, price: 80, actualMin: null, change: null, cost: { minutes: 120, total: 80 } });
+    expect(Math.abs(Number(ok.startsAt) - newStart)).toBeLessThan(1000);
+    const row = (await h.admin("select starts_at, ended_at, summary_sent from public.appointments where id = $1", [a.id])).rows[0];
+    expect(ms(row.ended_at)).toBe(ms(row.starts_at) + 120 * MIN);
+    expect(row.summary_sent).toBe(true);
+    expect(await ride(there.id)).toMatchObject({ status: "cancelled", cancelled_by: "system", cancel_reason: "appointment_changed" });
+    expect(await sent()).toEqual([
+      "appt_change_accepted>client", "appt_summary>client", "appt_summary>fam", "appt_summary>siosia", "booking_cancelled>driver"
+    ]);
+    expect((await outbox()).find((r) => r.kind === "appt_summary")!.params).toMatchObject({ minutes: 120, total: 80, corrected: false });
+    // the summary once: the sweep sends none again
+    await clearOutbox();
+    await sweep();
+    expect(await sent("appt_summary")).toEqual([]);
+  });
+
+  it("the provider's time is checked only for a target still ahead or under way", async () => {
+    // (Ewa's account moved to another phone in the review cases above: Karol asks)
+    const busy = await call<Json>("driver2", "siosia_request_service", ["childcare", pub.siosia, at(4 * 24 * 60), 360, SCHOOL, "", null]);
+    await call("siosia", "siosia_answer_appointment", [busy.id, "accept"]);
+    await shift(busy.id, -300); // under way: now − 5 h … now + 1 h
+    const a = await appt(2 * 24 * 60);
+    await propose("client", a.id, { kind: "move", startsAt: Date.now() - 30 * MIN, durationMin: 120 });
+    expect(await code(answerCh("siosia", a.id, "accept"))).toBe("overlap");
+    await propose("client", a.id, { kind: "move", startsAt: Date.now() - 240 * MIN, durationMin: 120 });
+    expect(await answerCh("siosia", a.id, "accept")).toMatchObject({ status: "done", durationMin: 120 });
+  });
+
+  it("a done one: new start, length and place, its correction cleared, price by the rate, a corrected summary, no ride touched", async () => {
+    const b = await appt(2 * 24 * 60 + 600);
+    const s = Number(b.startsAt);
+    const there = await book("client", iso(s - 30 * MIN), b.id, "there");
+    await h.admin("update public.appointments set rate = 40, price = 120 where id = $1", [b.id]);
+    await endAgo(b.id, 60);
+    await h.admin("update public.appointments set actual_min = 150 where id = $1", [b.id]);
+    await clearOutbox();
+    const newStart = Date.now() - 6 * 60 * MIN;
+    const v = await propose("siosia", b.id, { kind: "move", startsAt: newStart, durationMin: 240, place: PARK });
+    expect(v.change).toMatchObject({ durationMin: 240, place: PARK, price: 160, rides: [] });
+    const done = await answerCh("client", b.id, "accept");
+    expect(done).toMatchObject({
+      status: "done", durationMin: 240, actualMin: null, place: PARK, price: 160, change: null, cost: { minutes: 240, total: 160 }
+    });
+    expect(Math.abs(Number(done.startsAt) - newStart)).toBeLessThan(1000);
+    const row = (await h.admin("select starts_at, ended_at from public.appointments where id = $1", [b.id])).rows[0];
+    expect(ms(row.ended_at)).toBe(ms(row.starts_at) + 240 * MIN);
+    expect(await sent()).toEqual(["appt_change_accepted>siosia", "appt_change_proposed>client", "appt_summary>client", "appt_summary>fam"]);
+    expect((await outbox()).find((r) => r.kind === "appt_summary")!.params).toMatchObject({ minutes: 240, total: 160, corrected: true });
+    expect(await ride(there.id)).toMatchObject({ status: "scheduled" });
+    expect(ms((await ride(there.id)).scheduled_for)).toBe(s - 30 * MIN);
+    // a fixed price stays
+    await h.admin("update public.appointments set rate = null, price = 100 where id = $1", [b.id]);
+    await propose("siosia", b.id, { kind: "move", startsAt: Date.now() - 8 * 60 * MIN, durationMin: 120 });
+    expect(await answerCh("client", b.id, "accept")).toMatchObject({ durationMin: 120, price: 100 });
+    // checked again at accepting: past 30 days after its end by now → window_closed
+    await propose("siosia", b.id, { kind: "move", startsAt: Date.now() - 10 * 60 * MIN, durationMin: 120 });
+    await h.admin("update public.appointments set ended_at = now() - interval '31 days' where id = $1", [b.id]);
+    expect(await code(answerCh("client", b.id, "accept"))).toBe("window_closed");
+  });
+
+  it("lapse and the sweep: a past move survives its appointment becoming done and is accepted then; 7 days on it expires; a move ahead of a started one lapses by its own start (FR-344)", async () => {
+    const a = await appt(2 * 24 * 60);
+    await propose("client", a.id, { kind: "move", startsAt: Date.now() - 6 * 60 * MIN, durationMin: 120 });
+    await endAgo(a.id, 10);
+    expect((await getAppt("client", a.id)).status).toBe("done");
+    expect(await changes(a.id)).toEqual(["proposed:client"]);
+    expect(await answerCh("siosia", a.id, "accept")).toMatchObject({ status: "done", durationMin: 120, actualMin: null });
+    const b = await appt(2 * 24 * 60 + 600);
+    await propose("client", b.id, { kind: "move", startsAt: Date.now() - 6 * 60 * MIN, durationMin: 120 });
+    await h.admin("update public.appointment_changes set expires_at = now() - interval '1 second' where appointment_id = $1", [b.id]);
+    await sweep();
+    expect(await changes(b.id)).toEqual(["expired:client"]);
+    // under way, moved ahead: the booking lead before the new start (never the start already past)
+    const c = await appt(3 * 24 * 60);
+    await shift(c.id, -30);
+    const next = Date.now() + 2 * DAY;
+    const v = await propose("client", c.id, { kind: "move", startsAt: next });
+    expect(Math.abs(Number((v.change as Json).expiresAt) - (next - 30 * MIN))).toBeLessThan(1000);
+    await sweep();
+    expect(await changes(c.id)).toEqual(["proposed:client"]);
   });
 });

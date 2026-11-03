@@ -2200,7 +2200,7 @@ returns jsonb language sql stable security definer set search_path = public as $
     'googleSignIn', google_sign_in,
     'membershipMode', membership_mode,
     -- What this database can do beyond 2.12.1: the app turns those parts on only then (V89).
-    'features', jsonb_build_array('customPrice', 'reactions', 'changes'))
+    'features', jsonb_build_array('customPrice', 'reactions', 'changes', 'pastMoves'))
   from app_config where id = 1;
 $$;
 
@@ -3613,6 +3613,7 @@ begin
   -- fails the sweep, which runs inside every API call (and every 10 s from pg_cron).
   -- 2.14 (FR-336, V90): a change proposal lapses unanswered (expired) at its moment, and ends
   -- (withdrawn) when its appointment is no longer accepted or done. Nobody is told; both refetch.
+  -- 2.14.1 (FR-342): a pending move survives its appointment becoming done (moves stay open 30 days).
   for ch in select x.* from appointment_changes x join appointments y on y.id = x.appointment_id
              where x.status = 'proposed' and (now() >= x.expires_at or y.status not in ('accepted', 'done'))
              for update of x skip locked loop
@@ -6542,12 +6543,21 @@ declare c app_config; e jsonb; d jsonb; p jsonb; v_leg text; v_legs text[] := '{
 begin
   select * into c from app_config where id = 1;
   if ch.kind = 'move' then
-    if a.status <> 'accepted' or now() >= a.starts_at then return 'illegal_transition'; end if;
+    -- 2.14.1 (FR-342, V96): an accepted one at any time, a done one until 30 days after its end.
+    if a.status = 'done' then
+      if now() > coalesce(a.ended_at, a.starts_at + make_interval(mins => a.duration_min)) + interval '30 days' then
+        return 'window_closed';
+      end if;
+    elsif a.status <> 'accepted' then
+      return 'illegal_transition';
+    end if;
     e := siosia_service(a.service_id);
     d := e -> 'duration';
     if jsonb_typeof(d) is distinct from 'object' then return 'bad_service'; end if;
-    if ch.starts_at is null or ch.starts_at < now() + make_interval(mins => c.booking_min_lead_min)
-       or ch.starts_at > now() + make_interval(days => c.booking_max_days) then
+    -- the start within [now − 30 d, now + maxDays]; one still ahead keeps the booking lead
+    if ch.starts_at is null or ch.starts_at < now() - interval '30 days'
+       or ch.starts_at > now() + make_interval(days => c.booking_max_days)
+       or (ch.starts_at > now() and ch.starts_at < now() + make_interval(mins => c.booking_min_lead_min)) then
       return 'bad_time';
     end if;
     if ch.duration_min is null
@@ -6555,6 +6565,8 @@ begin
        or (ch.duration_min - (d ->> 'min')::int) % (d ->> 'step')::int <> 0 then
       return 'bad_duration';
     end if;
+    -- a done one stays in the past (its new end ≤ now)
+    if a.status = 'done' and ch.starts_at + make_interval(mins => ch.duration_min) > now() then return 'bad_time'; end if;
     if (ch.place is null and coalesce((e ->> 'needsPlace')::boolean, true))
        or (ch.place is not null and (not siosia_valid_place(ch.place) or ch.place -> 'lat' is null)) then
       return 'bad_input';
@@ -6564,6 +6576,8 @@ begin
     for p in select value from jsonb_array_elements(coalesce(ch.pickups, '[]'::jsonb)) loop
       v_leg := case when jsonb_typeof(p) = 'object' then p ->> 'leg' end;
       if v_leg is null or v_leg not in ('there', 'back') then return 'bad_leg'; end if;
+      -- 2.14.1 (FR-342): a done appointment's move touches no rides, so no pickups for it
+      if a.status = 'done' then return 'bad_leg'; end if;
       if not exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg and r.rider_id = ch.proposed_by
                        and r.status in ('scheduled', 'requested', 'accepted', 'arrived')) then
         return case when exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg
@@ -6617,8 +6631,8 @@ declare
   v_effect text; v_km float8; v_min float8; v_ratio float8; v_est boolean; v_fixed numeric; v_fare numeric;
   v_ekm numeric; v_emin int; v_code text;
 begin
-  -- A done appointment's new length moves no ride.
-  if ch.kind = 'length' and a.status = 'done' then return v_out; end if;
+  -- A done appointment's change (a new length, 2.14.1 a move) touches no ride.
+  if a.status = 'done' then return v_out; end if;
   select * into c from app_config where id = 1;
   if ch.kind = 'move' then
     v_ns := ch.starts_at; v_ne := ch.starts_at + make_interval(mins => ch.duration_min);
@@ -6823,8 +6837,14 @@ begin
                      'estKm', round((p ->> 'estKm')::numeric, 3)::float8, 'estMin', round((p ->> 'estMin')::numeric, 3)::float8,
                      'fareIsEstimate', coalesce(p -> 'fareIsEstimate' = 'true'::jsonb, false)))
                      from jsonb_array_elements(ch.pickups) p), '[]'::jsonb);
-    -- when it could no longer be accepted: the current start, or the booking lead before the new one
-    ch.expires_at := least(a.starts_at, ch.starts_at - make_interval(mins => (select booking_min_lead_min from app_config where id = 1)));
+    -- when it could no longer be accepted: the current start, or the booking lead before the new one;
+    -- 2.14.1 (FR-344): a move into the past (new start ≤ now + lead) 7 days after it was proposed
+    -- (one ahead: the current start only while that is still ahead)
+    ch.expires_at := case when ch.starts_at <= now() + make_interval(mins => (select booking_min_lead_min from app_config where id = 1))
+                          then ch.created_at + interval '7 days'
+                          when a.starts_at > now()
+                          then least(a.starts_at, ch.starts_at - make_interval(mins => (select booking_min_lead_min from app_config where id = 1)))
+                          else ch.starts_at - make_interval(mins => (select booking_min_lead_min from app_config where id = 1)) end;
   elsif a.status = 'done' then
     ch.expires_at := coalesce(a.ended_at, a.starts_at + make_interval(mins => a.duration_min)) + interval '24 hours';
   else
@@ -6890,22 +6910,30 @@ begin
    order by id for update;
   v_eff := siosia_change_effects(a, ch, true);
   if jsonb_typeof(v_eff) = 'object' then return v_eff; end if;
-  if ch.kind = 'move' or a.status = 'accepted' then
-    v_start := case when ch.kind = 'move' then ch.starts_at else a.starts_at end;
-    v_min := case when ch.kind = 'move' then ch.duration_min else ch.minutes end;
+  v_start := case when ch.kind = 'move' then ch.starts_at else a.starts_at end;
+  v_min := case when ch.kind = 'move' then ch.duration_min else ch.minutes end;
+  -- 2.14.1 (FR-343, V96): a move's overlap only for a target still ahead or under way; a length as before
+  if (ch.kind = 'move' and v_start + make_interval(mins => v_min) > now()) or (ch.kind = 'length' and a.status = 'accepted') then
     if siosia_provider_busy(a.provider_id, v_start, v_min, a.id) then return siosia_err('overlap'); end if;
   end if;
   select * into c from app_config where id = 1;
   v_old := a;
   if ch.kind = 'move' then
-    -- the reminders whose moment for the new start has passed count as sent (no burst)
+    -- the reminders whose moment for the new start has passed count as sent (no burst); 2.14.1: an
+    -- accepted one whose new end is past is done in the same step, a done one is ended at its new end
+    -- and its time correction cleared (the new length is what counts)
     update appointments set starts_at = ch.starts_at, duration_min = ch.duration_min,
                             place_lat = (ch.place ->> 'lat')::float8, place_lng = (ch.place ->> 'lng')::float8,
                             place_label = ch.place ->> 'label',
                             reminded = array(select x from unnest(c.appt_reminder_min) with ordinality u(x, o)
                                               where ch.starts_at - make_interval(mins => x) <= now() order by o),
-                            price = case when rate is not null then round(rate * ch.duration_min / 60.0, 2) else price end
-     where id = a.id and status = 'accepted' returning * into a;
+                            price = case when rate is not null then round(rate * ch.duration_min / 60.0, 2) else price end,
+                            status = case when status = 'done' or ch.starts_at + make_interval(mins => ch.duration_min) <= now()
+                                          then 'done' else status end,
+                            ended_at = case when status = 'done' or ch.starts_at + make_interval(mins => ch.duration_min) <= now()
+                                            then ch.starts_at + make_interval(mins => ch.duration_min) else ended_at end,
+                            actual_min = case when status = 'done' then null else actual_min end
+     where id = a.id and status in ('accepted', 'done') returning * into a;
   elsif a.status = 'accepted' then
     update appointments set duration_min = ch.minutes,
                             price = case when rate is not null then round(rate * ch.minutes / 60.0, 2) else price end
@@ -6917,8 +6945,9 @@ begin
   if a.id is null then return siosia_err('illegal_transition'); end if;
   update appointment_changes set status = 'accepted', answered_at = now() where id = ch.id;
   perform siosia_change_apply_rides(a, v_eff);
-  -- V63: the cost of a done one goes out again, corrected.
-  if ch.kind = 'length' and v_old.status = 'done' then perform siosia_announce_cost(a, true); end if;
+  -- V63: the cost of a done one goes out again, corrected; 2.14.1: one done by this move, its first summary.
+  if v_old.status = 'done' then perform siosia_announce_cost(a, true);
+  elsif a.status = 'done' then perform siosia_announce_cost(a, false); end if;
   perform siosia_push_appt(ch.proposed_by, 'appt_change_accepted', a.id, siosia_change_params(v_old, ch, v_uid));
   perform siosia_notify_household(a.client_id);
   perform siosia_notify_household(a.provider_id);

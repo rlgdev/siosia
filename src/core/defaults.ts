@@ -64,7 +64,7 @@ export const DEFAULT_CONFIG: DeploymentConfig = {
   googleSignIn: "off",
   membershipMode: "invite",
   // the demo's engine does everything this app knows
-  features: ["customPrice", "reactions", "changes"]
+  features: ["customPrice", "reactions", "changes", "pastMoves"]
 };
 
 /** Internal server constants (not deployment config). Mirrored in supabase/migrations. */

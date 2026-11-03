@@ -17,7 +17,7 @@
 
 import { Icon } from "../components/Icon";
 import { InfoTip } from "../components/InfoTip";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { answerChangeOrBusy, apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ChatButton } from "../components/ChatSheet";
@@ -96,7 +96,11 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
   // 2.14 (FR-339): a party may propose a change (a pending one of the other side is countered by it);
   // only once the database does changes (V89: the app may go live before the SQL).
   const changes = hasFeature(dep, "changes");
-  const canPropose = changes && proposeKind(a, now) !== null && !a.change?.mine;
+  // 2.14.1 (FR-345): a move and/or a new length, whichever the appointment allows now — moves into
+  // the past only once the database does them too ("pastMoves", V89), else the 2.14 rules.
+  const pastMoves = hasFeature(dep, "pastMoves");
+  const kinds = proposeKind(a, now, pastMoves);
+  const canPropose = changes && kinds.length > 0 && !a.change?.mine;
   const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | "kids" | "change" | Leg>(
     accepting && a.status === "requested" && a.role === "provider"
       ? "accept"
@@ -106,6 +110,11 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
           ? "change"
           : "view"
   );
+  const [changeKind, setChangeKind] = useState<ChangeKind>(kinds[0] ?? "move");
+  const openChange = (k: ChangeKind) => {
+    setChangeKind(k);
+    setMode("change");
+  };
   const other = otherOf(a);
   const chip = statusChip(a, lang, t);
   const inProgress = a.status === "accepted" && a.startsAt <= now && now < a.endsAt;
@@ -235,7 +244,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
       )}
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
-      {a.cost && <CostSection a={a} reload={reload} changes={changes} onPropose={canPropose && mode === "view" ? () => setMode("change") : undefined} />}
+      {a.cost && <CostSection a={a} reload={reload} changes={changes} onPropose={canPropose && kinds.includes("length") && mode === "view" ? () => openChange("length") : undefined} />}
       <TipSection a={a} reload={reload} />
 
       {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
@@ -272,7 +281,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
       {mode === "accept" && <AcceptSheet a={a} onDone={() => setMode("view")} reload={reload} />}
       {mode === "take" && <AcceptSheet a={a} take onDone={() => setMode("view")} reload={reload} />}
       {(mode === "there" || mode === "back") && <AddRide a={a} leg={mode} onDone={() => setMode("view")} reload={reload} />}
-      {mode === "change" && <ProposeChange a={a} onDone={() => setMode("view")} reload={reload} />}
+      {mode === "change" && <ProposeChange a={a} kinds={kinds} past={pastMoves} initial={kinds.includes(changeKind) ? changeKind : (kinds[0] ?? "length")} onDone={() => setMode("view")} reload={reload} />}
 
       {mode === "cancel" && (
         <section className="card stack" data-testid="cancel-box">
@@ -338,7 +347,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
             </section>
           )}
           {canPropose && (
-            <button type="button" className="btn btn-secondary" onClick={() => setMode("change")} data-testid="appt-change">
+            <button type="button" className="btn btn-secondary" onClick={() => openChange(kinds[0] ?? "move")} data-testid="appt-change">
               <Icon name="calendar" className="ico-inline" /> {t("change.propose")}
             </button>
           )}
@@ -821,16 +830,28 @@ function RateBox({ a, onRated }: { a: AppointmentView; onRated: () => void }) {
 const DAY_MS = 24 * 3600_000;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** How far back a move may go, and how long after the end a done appointment may still be moved (FR-342). */
+const BACK_MS = 30 * DAY_MS;
+
 /**
- * What the viewer may propose now (FR-334, FR-335): a move before the start, a new length while it
- * runs or within 24 h after the end — the two parties only (not their families, V60); null = nothing.
+ * What the viewer may propose now (FR-334, FR-335, FR-342, V96), move first: a move of an accepted
+ * appointment at any time or of a done one until 30 days after its end; a new length while it runs
+ * or within 24 h after the end — the two parties only (not their families, V60); empty = nothing.
+ * A database before 2.14.1 (no "pastMoves", V89) keeps the 2.14 rules: a move before the start,
+ * a new length while it runs or within 24 h after the end.
  */
-export function proposeKind(a: AppointmentView, now: number): ChangeKind | null {
-  if (a.role !== "client" && a.role !== "provider") return null;
-  if (a.status === "accepted" && now < a.startsAt) return "move";
-  if (a.status === "accepted" && now < a.endsAt) return "length";
-  if (a.status === "done" && now <= (a.endedAt ?? a.endsAt) + DAY_MS) return "length";
-  return null;
+export function proposeKind(a: AppointmentView, now: number, pastMoves = true): ChangeKind[] {
+  if (a.role !== "client" && a.role !== "provider") return [];
+  const end = a.endedAt ?? a.endsAt;
+  const kinds: ChangeKind[] = [];
+  if (!pastMoves) {
+    if (a.status === "accepted" && now < a.startsAt) kinds.push("move");
+    else if ((a.status === "accepted" && now < a.endsAt) || (a.status === "done" && now <= end + DAY_MS)) kinds.push("length");
+    return kinds;
+  }
+  if (a.status === "accepted" || (a.status === "done" && now <= end + BACK_MS)) kinds.push("move");
+  if ((a.status === "accepted" && a.startsAt <= now && now < a.endsAt) || (a.status === "done" && now <= end + DAY_MS)) kinds.push("length");
+  return kinds;
 }
 
 const samePlace = (p: Place | null, q: Place | null) => (p === null || q === null ? p === q : p.label === q.label && p.lat === q.lat && p.lng === q.lng);
@@ -842,6 +863,8 @@ function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: Change
   const now = store.serverNow();
   const name = otherName(a, t);
   const done = a.status === "done";
+  // 2.14.1: a move of a done appointment shows its new time and length too (FR-343).
+  const move = c.kind === "move";
   const was = (old: string) => <small className="muted"> ({t("change.was", { old })})</small>;
   const timeChanged = c.startsAt !== a.startsAt || c.endsAt !== a.endsAt;
   const counted = a.cost?.minutes ?? a.actualMin ?? a.durationMin;
@@ -851,19 +874,19 @@ function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: Change
   return (
     <section className="card stack" data-testid="change-card">
       <strong>{c.mine ? t("change.cardMine", { name }) : t("change.cardTheirs", { name })}</strong>
-      {!done && timeChanged && (
+      {(move || !done) && timeChanged && (
         <p data-testid="change-when">
           {t("change.when")}: {whenText(c.startsAt, now, locale, t)} · {rangeTimes(c.startsAt, c.endsAt, locale)}
           {was(`${whenText(a.startsAt, now, locale, t)} · ${rangeTimes(a.startsAt, a.endsAt, locale)}`)}
         </p>
       )}
-      {!done && c.durationMin !== a.durationMin && (
+      {(move || !done) && c.durationMin !== (done ? counted : a.durationMin) && (
         <p data-testid="change-length">
           {t("change.length")}: {durationText(c.durationMin, t)}
-          {was(durationText(a.durationMin, t))}
+          {was(durationText(done ? counted : a.durationMin, t))}
         </p>
       )}
-      {done && c.minutes !== null && (
+      {done && !move && c.minutes !== null && (
         <p data-testid="change-length">
           {t("change.counted")}: {durationText(c.minutes, t)}
           {was(durationText(counted, t))}
@@ -985,18 +1008,21 @@ function PickupField({ leg, to, value, onChange }: { leg: Leg; to: Place | null;
 }
 
 /**
- * The Propose a change sheet (FR-334, FR-335): before the start the start, length, place, a new
- * pickup for each of my rides and a note; while it runs or within 24 h after the end the new length.
- * The new end and price (or total) show as previews; the server checks everything again.
+ * The Propose a change sheet (FR-334, FR-335, FR-345): a move — the start (as far back as 30 days),
+ * length, place, a new pickup for each of my rides still ahead and a note; while it runs or within
+ * 24 h after the end the new length; where both are allowed a switch Time and place / Length only.
+ * The new end and price (or total) show as previews; the server checks everything again (V96).
  */
-function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () => void; reload: () => void }) {
+function ProposeChange({ a, kinds, past = true, initial, onDone, reload }: { a: AppointmentView; kinds: ChangeKind[]; past?: boolean; initial: ChangeKind; onDone: () => void; reload: () => void }) {
   const { t, locale } = useI18n();
   const app = useApp();
   const store = useStore();
   const dep = app.deployment!;
-  const kind = proposeKind(a, store.serverNow()) ?? "length";
+  const [kind, setKind] = useState<ChangeKind>(initial);
   const done = a.status === "done";
-  const [busy, run, error] = useBusy();
+  const nowMs = store.serverNow();
+  const startId = useId();
+  const [busy, run, error, setError] = useBusy();
   const [entry, setEntry] = useState<CatalogItem | null>(null);
   useEffect(() => {
     let live = true;
@@ -1011,7 +1037,6 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
     };
   }, [store, a.serviceId]);
   const [start, setStart] = useState(() => toLocalInput(a.startsAt));
-  const [duration, setDuration] = useState(a.durationMin);
   const [place, setPlace] = useState<Place | null>(a.place);
   const [pickups, setPickups] = useState<Partial<Record<Leg, PickupDraft>>>({});
   const current = done ? (a.cost?.minutes ?? a.actualMin ?? a.durationMin) : a.durationMin;
@@ -1020,9 +1045,15 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
 
   // The entry's lengths (as C2 offers them), the current one always among them.
   const d = entry?.duration ?? { min: 15, max: 1440, step: 15 };
+  // A move of a done appointment starts from the length that counts (an agreed correction stays
+  // unless changed, FR-343) — when the entry allows it (the server's bad_duration), else the booked one.
+  const fits = (m: number) => m >= d.min && m <= d.max && (m - d.min) % d.step === 0;
+  const defaultDuration = done && current !== a.durationMin && fits(current) ? current : a.durationMin;
+  const [picked, setDuration] = useState<number | null>(null);
+  const duration = picked ?? defaultDuration;
   const durations: number[] = [];
   for (let m = d.min; m <= d.max; m += Math.max(5, d.step)) durations.push(m);
-  if (!durations.includes(a.durationMin)) durations.push(a.durationMin);
+  for (const m of [a.durationMin, defaultDuration]) if (!durations.includes(m)) durations.push(m);
   durations.sort((x, y) => x - y);
   // A new length in 15-minute steps around the booked one (as the 2.6 correction offered).
   const lengths: number[] = [];
@@ -1030,7 +1061,8 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
   if (!lengths.includes(current)) lengths.push(current);
   lengths.sort((x, y) => x - y);
 
-  const myRides = a.rides.filter((r) => r.mine && (r.status === "pending" || r.status === "confirmed"));
+  // A new pickup only for my rides still scheduled and ahead (a done appointment's rides are behind it).
+  const myRides = done ? [] : a.rides.filter((r) => r.mine && (r.status === "pending" || r.status === "confirmed") && r.scheduledFor !== null && r.scheduledFor > nowMs);
   const startMs = fromInput(start);
   const chosen = (Object.entries(pickups) as [Leg, PickupDraft][]).filter(([, p]) => p.pickup);
   const estimating = chosen.some(([, p]) => p.estKm === null || p.estMin === null);
@@ -1040,10 +1072,27 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
   const price = a.rate !== null ? round2((a.rate * length) / 60) : done ? (a.cost?.total ?? null) : a.price;
   const same = kind === "move" ? startMs === a.startsAt && duration === a.durationMin && samePlace(place, a.place) && chosen.length === 0 : minutes === current;
   const needsPlace = entry ? entry.needsPlace : !!a.place;
-  const blocked = busy || same || estimating || (kind === "move" && (!Number.isFinite(startMs) || (needsPlace && !place)));
+  // The server's time rules, checked here first (FR-342, V96): 30 days back at most, maxDays ahead,
+  // a start still ahead keeps the booking lead, a done appointment stays in the past.
+  const lead = dep.booking.minLeadMin * 60_000;
+  const problem: string | null =
+    !past || kind !== "move" || !Number.isFinite(startMs)
+      ? null
+      : startMs < nowMs - BACK_MS
+        ? t("change.tooOld")
+        : startMs > nowMs + dep.booking.maxDays * DAY_MS
+          ? t("change.tooFar", { days: dep.booking.maxDays })
+          : done && newEnd > nowMs
+            ? t("change.doneFuture")
+            : startMs > nowMs && startMs < nowMs + lead
+              ? t("change.inLead", { min: dep.booking.minLeadMin })
+              : null;
+  const blocked = busy || same || estimating || problem !== null || (kind === "move" && (!Number.isFinite(startMs) || (needsPlace && !place)));
 
-  const send = () =>
-    run(async () => {
+  const send = async () => {
+    // The server's bad_time / window_closed name a ride; for a change they get their own words.
+    let refused: "bad_time" | "window_closed" | null = null;
+    await run(async () => {
       try {
         const input: ChangeInput =
           kind === "move"
@@ -1056,34 +1105,68 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
                 note: note.trim()
               }
             : { kind, minutes, note: note.trim() };
-        await store.api.proposeChange(a.id, input);
+        try {
+          await store.api.proposeChange(a.id, input);
+        } catch (e) {
+          // (a database before 2.14.1 keeps the 2.14 words: those texts describe the 2.14.1 rules)
+          if (past && e instanceof ServerError && (e.code === "bad_time" || e.code === "window_closed")) {
+            refused = e.code;
+            return;
+          }
+          throw e;
+        }
         onDone();
       } finally {
         reload();
         await store.refresh().catch(() => {});
       }
     });
+    if (refused) setError(t(refused === "bad_time" ? "change.badTime" : "change.windowClosed"));
+  };
 
   return (
     <section className="card stack" data-testid="change-sheet">
       <h3 className="with-info">
         {t(kind === "move" ? "change.titleMove" : "change.titleLength")}
-        <InfoTip text={t(kind === "move" ? "change.hintMove" : "change.hintLength", { name: otherName(a, t) })} testId="change" />
+        <InfoTip text={t(kind === "move" ? (done ? "change.hintMoveDone" : "change.hintMove") : "change.hintLength", { name: otherName(a, t) })} testId="change" />
       </h3>
+      {kinds.length > 1 && (
+        <div className="segmented" role="group" aria-label={t("change.modeLabel")}>
+          {kinds.map((k) => (
+            <button
+              key={k}
+              type="button"
+              className={kind === k ? "btn btn-primary" : "btn btn-secondary"}
+              aria-pressed={kind === k}
+              onClick={() => {
+                setKind(k);
+                setError(null);
+              }}
+              data-testid={`change-mode-${k}`}
+            >
+              {t(k === "move" ? "change.modeMove" : "change.modeLength")}
+            </button>
+          ))}
+        </div>
+      )}
       {kind === "move" ? (
         <>
-          <label className="field">
-            <span>{t("change.start")}</span>
+          <div className="field">
+            <span className="with-info">
+              <label htmlFor={startId}>{t("change.start")}</label>
+              {past && <InfoTip text={t("change.hintPast")} testId="change-past" />}
+            </span>
             <input
+              id={startId}
               type="datetime-local"
               value={start}
-              min={toLocalInput(roundUp(Date.now() + (dep.booking.minLeadMin + 1) * 60_000, 15))}
-              max={toLocalInput(Date.now() + dep.booking.maxDays * 86_400_000)}
+              min={toLocalInput(past ? roundUp(nowMs - BACK_MS, 15) : roundUp(nowMs + (dep.booking.minLeadMin + 1) * 60_000, 15))}
+              max={toLocalInput(nowMs + dep.booking.maxDays * DAY_MS)}
               step={900}
               onChange={(e) => setStart(e.target.value)}
               data-testid="change-start"
             />
-          </label>
+          </div>
           <label className="field">
             <span>{t("change.duration")}</span>
             <select value={duration} onChange={(e) => setDuration(Number(e.target.value))} data-testid="change-duration">
@@ -1117,11 +1200,23 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
       </label>
       {Number.isFinite(newEnd) && (
         <p className="muted small" data-testid="change-preview">
-          {!done && t("change.ends", { time: timeText(newEnd, locale) })}
+          {(kind === "move" || !done) && t("change.ends", { time: timeText(newEnd, locale) })}
+          {done && kind === "move" && length !== current && (
+            <span data-testid="change-preview-length">
+              {" · "}
+              {t("change.length")}: {durationText(length, t)} ({t("change.was", { old: durationText(current, t) })})
+            </span>
+          )}
           {price !== null && (
             <>
-              {!done && " · "}
+              {(kind === "move" || !done) && " · "}
               {t(done ? "change.total" : "change.price")}: <Money amount={price} currency={a.currency} />
+              {done && kind === "move" && a.cost?.total != null && a.cost.total !== price && (
+                <span data-testid="change-preview-was">
+                  {" "}
+                  ({t("change.was", { old: money(a.cost.total, a.currency, locale) })})
+                </span>
+              )}
             </>
           )}
         </p>
@@ -1129,6 +1224,11 @@ function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () =
       {same && (
         <p className="hint" data-testid="change-same">
           {t("change.same")}
+        </p>
+      )}
+      {!same && problem && (
+        <p className="hint" data-testid="change-problem">
+          {problem}
         </p>
       )}
       {error && (

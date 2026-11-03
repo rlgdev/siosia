@@ -134,12 +134,12 @@ describe("who may propose, and the view per role (FR-334, V90, V93)", () => {
 });
 
 describe("move: window and checks (FR-334)", () => {
-  it("only an accepted appointment before its start", () => {
+  it("only an accepted (or done) appointment; since 2.14.1 also after its start (FR-342)", () => {
     const r = request("client", 4 * 60);
     expect(code(() => propose("client", r.id, moveBy(r.id, 60)))).toBe("illegal_transition");
     const a = planned(2 * 60);
     now += 2 * HOUR + MIN;
-    expect(code(() => propose("client", a.id, moveBy(a.id, 60)))).toBe("illegal_transition");
+    expect(code(() => propose("client", a.id, moveBy(a.id, 60)))).toBe("ok");
   });
 
   it("start, length, place and note follow the request rules; nothing different is no_change", () => {
@@ -171,7 +171,8 @@ describe("length: window and checks (FR-335)", () => {
     expect(code(() => propose("client", a.id, { kind: "length", minutes: 0 }))).toBe("bad_duration");
     expect(code(() => propose("client", a.id, { kind: "length", minutes: 1455 }))).toBe("bad_duration");
     expect(code(() => propose("client", a.id, { kind: "length", minutes: 180 }))).toBe("no_change");
-    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now + HOUR }))).toBe("illegal_transition");
+    // 2.14.1: a live one may be moved too, but a start ahead keeps the booking lead.
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now + 20 * MIN }))).toBe("bad_time");
     expect(code(() => propose("siosia", a.id, { kind: "length", minutes: 240 }))).toBe("ok");
     expect(view("client", a.id).change).toMatchObject({ kind: "length", by: "provider", durationMin: 240, minutes: null, price: 160 });
     // Done: within 24 h of the end, then window_closed.
@@ -716,5 +717,162 @@ describe("2.14 review fixes (B15)", () => {
     expect(changes()[0].proposedBy).toBe("client2");
     expect(view("client2", a.id).change).toMatchObject({ mine: true, by: "client" });
     expect(withdraw("client2", a.id).change).toBeNull();
+  });
+});
+
+describe("2.14.1 moves into the past (FR-342–345, V96)", () => {
+  const DAY = 24 * HOUR;
+
+  it("a planned appointment moved to yesterday: done at once with the first summary, its rides cancelled (FR-343)", () => {
+    const a = planned(4 * 60);
+    const there = book("client", 3 * 60, a.id, "there");
+    const y = now - DAY;
+    propose("client", a.id, { kind: "move", startsAt: y });
+    const c = view("siosia", a.id).change!;
+    expect(c).toMatchObject({ startsAt: y, endsAt: y + 3 * HOUR, expiresAt: now + 7 * DAY, price: 120 });
+    expect(c.rides).toEqual([expect.objectContaining({ rideId: there.id, effect: "cancel", to: null })]);
+    pushes = [];
+    expect(answerC("siosia", a.id)).toMatchObject({ status: "done", startsAt: y, change: null });
+    expect(appt(a.id)).toMatchObject({ status: "done", startsAt: y, endedAt: y + 3 * HOUR, actualMin: null, price: 120, summarySent: true });
+    expect(ride(there.id)).toMatchObject({ status: "cancelled", cancelledBy: "system", cancelReason: "appointment_changed" });
+    expect(kinds()).toEqual(["appt_change_accepted", "appt_summary", "appt_summary", "appt_summary"]);
+    expect(pushesOf("appt_summary").map((p) => p.userId).sort()).toEqual(["client", "mum", "siosia"]);
+    expect(pushesOf("appt_summary")[0].params).toMatchObject({ minutes: 180, total: 120, corrected: false });
+    expect(view("client", a.id).cost).toMatchObject({ minutes: 180, total: 120, corrected: false });
+    // The sweep does not send it again.
+    pushes = [];
+    at((e) => e.sweep());
+    expect(pushesOf("appt_summary")).toEqual([]);
+  });
+
+  it("a live appointment moved to an earlier start stays live; a target ahead from a live one lapses by the lead before it", () => {
+    const a = planned(60);
+    const start = appt(a.id).startsAt;
+    now = start + 30 * MIN;
+    propose("siosia", a.id, { kind: "move", startsAt: start - 30 * MIN });
+    expect(view("client", a.id).change!.expiresAt).toBe(now + 7 * DAY);
+    answerC("client", a.id);
+    expect(appt(a.id)).toMatchObject({ status: "accepted", startsAt: start - 30 * MIN, durationMin: 180, price: 120 });
+    // The current start is behind: only the booking lead before the new one bounds it.
+    propose("client", a.id, { kind: "move", startsAt: now + 2 * HOUR });
+    expect(view("client", a.id).change!.expiresAt).toBe(now + 2 * HOUR - CFG.booking.minLeadMin * MIN);
+  });
+
+  it("a done appointment moved within 30 days: new time, correction cleared, price by rate, a corrected summary, no rides, settled → due again", () => {
+    const a = planned(60);
+    const start = appt(a.id).startsAt;
+    const there = book("client", 30, a.id, "there");
+    now = start + 3 * HOUR + MIN;
+    at((e) => e.sweep());
+    expect(appt(a.id).status).toBe("done");
+    propose("siosia", a.id, { kind: "length", minutes: 150 });
+    answerC("client", a.id);
+    expect(view("client", a.id).cost).toMatchObject({ minutes: 150, total: 100, corrected: true });
+    expect(at((e) => e.settleUp("client", pub("siosia")))).toEqual({ count: 1, net: -100 });
+    now += 5 * DAY;
+    // No pickups: a done appointment's move touches no rides.
+    expect(
+      code(() => propose("client", a.id, { kind: "move", startsAt: start - 2 * HOUR, pickups: [{ leg: "there", pickup: PARK, estKm: 5, estMin: 10, fareIsEstimate: false }] }))
+    ).toBe("bad_leg");
+    const r0 = structuredClone(ride(there.id));
+    // It stays in the past: a new end ahead is bad_time.
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now - HOUR }))).toBe("bad_time");
+    const to = start - 2 * DAY;
+    propose("client", a.id, { kind: "move", startsAt: to, durationMin: 240, place: SCHOOL });
+    const c = view("siosia", a.id).change!;
+    expect(c).toMatchObject({ kind: "move", startsAt: to, durationMin: 240, endsAt: to + 4 * HOUR, price: 160, rides: [], minutes: null, expiresAt: now + 7 * DAY });
+    pushes = [];
+    answerC("siosia", a.id);
+    expect(appt(a.id)).toMatchObject({ status: "done", startsAt: to, durationMin: 240, place: SCHOOL, actualMin: null, endedAt: to + 4 * HOUR, price: 160 });
+    expect(view("client", a.id).cost).toMatchObject({ minutes: 240, total: 160, corrected: false });
+    expect(kinds()).toEqual(["appt_change_accepted", "appt_summary", "appt_summary"]);
+    expect(pushesOf("appt_summary").map((p) => p.userId).sort()).toEqual(["client", "mum"]);
+    expect(pushesOf("appt_summary")[0].params).toMatchObject({ minutes: 240, total: 160, corrected: true });
+    expect(ride(there.id)).toEqual(r0);
+    // Settled at 100: the difference is due again (V78).
+    expect(at((e) => e.report("client", null, "me")).due).toEqual([expect.objectContaining({ weOwe: { services: 60, rides: 0 } })]);
+  });
+
+  it("a fixed price stays when a done one is moved", () => {
+    const a = planned(60, { service: "learning", duration: 60 });
+    const start = appt(a.id).startsAt;
+    now = start + 2 * HOUR;
+    at((e) => e.sweep());
+    propose("client", a.id, { kind: "move", startsAt: start - HOUR, durationMin: 120 });
+    expect(view("siosia", a.id).change!.price).toBe(100);
+    answerC("siosia", a.id);
+    expect(appt(a.id)).toMatchObject({ status: "done", durationMin: 120, price: 100, endedAt: start + HOUR });
+    expect(view("client", a.id).cost).toMatchObject({ minutes: 120, total: 100 });
+  });
+
+  it("windows: a start 30 days back at most, one ahead keeps the lead, done until 30 days after its end (FR-342)", () => {
+    const a = planned(4 * 60);
+    const end = appt(a.id).startsAt + 3 * HOUR;
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now - 30 * DAY - MIN }))).toBe("bad_time");
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now + MIN }))).toBe("bad_time");
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now + 29 * MIN }))).toBe("bad_time");
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now - 30 * DAY }))).toBe("ok");
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now }))).toBe("ok");
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now + 30 * MIN }))).toBe("ok");
+    now = end + 30 * DAY;
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now - DAY }))).toBe("ok");
+    expect(appt(a.id).status).toBe("done");
+    now += MIN;
+    expect(code(() => propose("client", a.id, { kind: "move", startsAt: now - 2 * DAY }))).toBe("window_closed");
+    expect(code(() => answerC("siosia", a.id))).toBe("window_closed");
+  });
+
+  it("a move into the past lapses 7 days after it was proposed; a pending one survives the appointment becoming done (FR-344)", () => {
+    const a = planned(60);
+    const start = appt(a.id).startsAt;
+    const t0 = now;
+    propose("client", a.id, { kind: "move", startsAt: t0 - 2 * HOUR });
+    expect(changes()[0].expiresAt).toBe(t0 + 7 * DAY);
+    now = start + 3 * HOUR + MIN;
+    at((e) => e.sweep());
+    expect(appt(a.id).status).toBe("done");
+    expect(changes()[0].status).toBe("proposed");
+    pushes = [];
+    answerC("siosia", a.id);
+    expect(appt(a.id)).toMatchObject({ status: "done", startsAt: t0 - 2 * HOUR, endedAt: t0 + HOUR });
+    expect(kinds()).toEqual(["appt_change_accepted", "appt_summary", "appt_summary"]);
+    propose("siosia", a.id, { kind: "move", startsAt: t0 - 3 * HOUR });
+    const c = changes()[1];
+    expect(c.expiresAt).toBe(now + 7 * DAY);
+    now = c.expiresAt - MIN;
+    at((e) => e.sweep());
+    expect(c.status).toBe("proposed");
+    now += MIN;
+    pushes = [];
+    at((e) => e.sweep());
+    expect(c.status).toBe("expired");
+    expect(pushes.filter((p) => p.kind.startsWith("appt_change"))).toEqual([]);
+  });
+
+  it("the provider's schedule is checked only for a target still ahead or under way (FR-343)", () => {
+    const t0 = now;
+    const b = planned(60); // t0+60 … t0+240
+    const a = planned(6 * 60);
+    now = t0 + 200 * MIN;
+    propose("client", a.id, { kind: "move", startsAt: t0 + 100 * MIN, durationMin: 120 }); // ends t0+220, ahead
+    expect(code(() => answerC("siosia", a.id))).toBe("overlap");
+    propose("client", a.id, { kind: "move", startsAt: t0 + 60 * MIN, durationMin: 120 }); // ends t0+180, past
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(appt(a.id).status).toBe("done");
+    expect(appt(b.id).status).toBe("accepted");
+  });
+
+  it("the weekly report follows the new date", () => {
+    const a = planned(60);
+    const start = appt(a.id).startsAt;
+    now = start + 4 * HOUR;
+    at((e) => e.sweep());
+    const spent = (week: string | null) => at((e) => e.report("client", week, "me")).spent.servicesTotal;
+    expect(spent(null)).toBe(120);
+    expect(spent("2026-10-12")).toBe(0);
+    propose("client", a.id, { kind: "move", startsAt: start - 7 * DAY });
+    answerC("siosia", a.id);
+    expect(spent(null)).toBe(0);
+    expect(spent("2026-10-12")).toBe(120);
   });
 });

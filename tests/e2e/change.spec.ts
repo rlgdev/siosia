@@ -3,7 +3,8 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 // Siosia 2.14 on the mock backend (FR-334–339): proposing a change. Two people in two pages of one
 // context: the client moves a confirmed appointment, the provider finds it under To answer and
 // accepts, and both see the new times; then a length change of a session under way (the clock
-// moved on in both pages), accepted from C3. Map services are blocked (straight-line routes).
+// moved on in both pages), accepted from C3. 2.14.1: a move into the past, accepted by the robot
+// Siosia, shows in History as done at the new time. Map services are blocked (straight-line routes).
 
 async function isolate(context: BrowserContext) {
   await context.route(/router\.project-osrm\.org|nominatim\.openstreetmap\.org|tile\.openstreetmap\.org/, (r) => r.abort());
@@ -131,6 +132,9 @@ test("a new length of a session under way: proposed by the provider, accepted by
   await ewa.getByTestId("planned-appointment").getByTestId("open-appointment").click();
   await expect(ewa.getByTestId("appt-when")).toContainText("Now until");
   await ewa.getByTestId("appt-change").click();
+  // 2.14.1 (FR-345): under way, a move and a new length are both allowed — Length only
+  await expect(ewa.getByTestId("change-mode-move")).toHaveAttribute("aria-pressed", "true");
+  await ewa.getByTestId("change-mode-length").click();
   await expect(ewa.getByTestId("change-sheet")).toContainText("Propose a new length");
   await ewa.getByTestId("change-minutes").selectOption("240");
   const end = await shift(ewa, start, 240);
@@ -148,4 +152,47 @@ test("a new length of a session under way: proposed by the provider, accepted by
   await expect(toria.getByTestId("appt-when")).toContainText(`Now until ${end.hhmm}`);
   await expect(ewa.getByTestId("change-card")).toHaveCount(0, { timeout: 8000 });
   await expect(ewa.getByTestId("appt-when")).toContainText(`Now until ${end.hhmm}`);
+});
+
+test("a move into the past: the client moves a confirmed appointment to yesterday, the robot Siosia accepts, History shows it done at the new time (FR-342–345)", async ({ context }) => {
+  await isolate(context);
+  const toria = await context.newPage();
+  await onboard(toria, "Toria", "?robots=0"); // the robot Siosia runs in this tab
+  await requestChildcare(toria);
+  const item = toria.getByTestId("planned-appointment");
+  await expect(item.getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 10_000 });
+
+  // Yesterday at 10:00, local time; 3 h as booked.
+  const y = await toria.evaluate(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    d.setHours(10, 0, 0, 0);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return {
+      input: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T10:00`,
+      row: new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" }).format(d)
+    };
+  });
+  await item.getByTestId("open-appointment").click();
+  await toria.getByTestId("appt-change").click();
+  await expect(toria.getByTestId("change-sheet")).toBeVisible();
+  await expect(toria.getByTestId("change-past-info")).toBeVisible();
+  await toria.getByTestId("change-start").fill(y.input);
+  await expect(toria.getByTestId("change-problem")).toHaveCount(0);
+  await expect(toria.getByTestId("change-preview")).toContainText("Ends 13:00");
+  await toria.getByTestId("change-note").fill("It was yesterday after all");
+  await toria.getByTestId("change-send").click();
+
+  // Siosia accepts in a moment: the card goes and the appointment is done at 10:00–13:00.
+  await expect(toria.getByTestId("change-card")).toHaveCount(0, { timeout: 10_000 });
+  await expect(toria.getByTestId("appt-status")).toHaveText("Done", { timeout: 10_000 });
+  await expect(toria.getByTestId("appt-when")).toContainText("10:00–13:00");
+
+  await toria.getByRole("dialog").getByRole("button", { name: "Back", exact: true }).first().click();
+  await toria.getByTestId("page-back").click();
+  await toria.getByTestId("start-history").click();
+  const row = toria.getByTestId("history-appointment");
+  await expect(row).toHaveCount(1, { timeout: 10_000 });
+  await expect(row).toContainText(y.row);
+  await expect(row).toContainText("Done");
 });

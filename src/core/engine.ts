@@ -4289,24 +4289,39 @@ export class Engine {
     const effects = this.changeEffects(a, c, true);
     const t = this.changeTarget(a, c);
     const done = a.status === "done";
-    if (!done && a.providerId && this.providerBusy(a.providerId, t.start, t.durationMin, a.id)) throw new ServerError("overlap");
+    // 2.14.1 (FR-343, V96): a move's overlap only for a target still ahead or under way; a length as before.
+    const busy = c.kind === "move" ? t.end > this.now : !done;
+    if (busy && a.providerId && this.providerBusy(a.providerId, t.start, t.durationMin, a.id)) throw new ServerError("overlap");
     const params = this.changeParams(a, c, uid);
+    // 2.14.1 (FR-343): an accepted appointment moved wholly into the past is done in the same step.
+    const finished = !done && c.kind === "move" && t.end <= this.now;
     if (c.kind === "move") {
       a.startsAt = t.start;
       a.durationMin = t.durationMin;
       a.place = t.place ? { ...t.place } : null;
       // V91: the slots already past for the new start count as sent (no burst); the rest go out anew.
       a.reminded = this.cfg.appointment.reminderMin.filter((s) => t.start - s * 60_000 <= this.now);
+      // A done one: the new length is what counts (no correction), ended at the new end.
+      if (done) {
+        a.actualMin = null;
+        a.endedAt = t.end;
+      }
     } else if (!done) a.durationMin = t.durationMin;
     else a.actualMin = c.minutes === a.durationMin ? null : c.minutes;
-    // V62: the stored rate, never the contract again; a fixed price stays.
-    if (!done && a.rate != null) a.price = round2((a.rate * a.durationMin) / 60);
+    // V62: the stored rate, never the contract again; a fixed price stays (a done one's length change:
+    // the cost follows actual_min instead).
+    if ((!done || c.kind === "move") && a.rate != null) a.price = round2((a.rate * a.durationMin) / 60);
     this.applyRideEffects(effects);
+    if (finished) {
+      a.status = "done";
+      a.endedAt = t.end;
+    }
     c.status = "accepted";
     c.answeredAt = this.now;
     this.pushAppt(c.proposedBy, "appt_change_accepted", a, params);
     this.notifyAppt(a);
     if (done) this.announceCost(a, true);
+    else if (finished) this.announceCost(a, false);
     return this.apptView(a, uid);
   }
 
@@ -4370,7 +4385,14 @@ export class Engine {
    * start, or the booking lead before the new one, whichever is first; a length 24 h after the (later) end.
    */
   private changeExpiresAt(a: ApptRow, c: ChangeDraft): number {
-    if (c.kind === "move") return Math.min(a.startsAt, (c.startsAt ?? a.startsAt) - this.cfg.booking.minLeadMin * 60_000);
+    if (c.kind === "move") {
+      const lead = this.cfg.booking.minLeadMin * 60_000;
+      const start = c.startsAt ?? a.startsAt;
+      // 2.14.1 (FR-344): a move into the past (new start ≤ now + lead) lapses 7 days after proposing.
+      if (start <= this.now + lead) return this.now + CHANGE_PAST_LAPSE_MS;
+      // Ahead: the booking lead before the new start, or the current start while it is still ahead.
+      return a.startsAt > this.now ? Math.min(a.startsAt, start - lead) : start - lead;
+    }
     if (a.status === "done") return (a.endedAt ?? this.endOf(a)) + SERVER.apptRatingWindowS * 1000;
     return Math.max(this.endOf(a), a.startsAt + (c.minutes ?? a.durationMin) * 60_000) + SERVER.apptRatingWindowS * 1000;
   }
@@ -4390,21 +4412,31 @@ export class Engine {
   private checkChange(uid: string, a: ApptRow, input: ChangeInput | ChangeDraft, expiresAt?: number): ChangeDraft {
     const note = trimWs(String(input.note ?? ""));
     if (input.kind === "move") {
-      if (a.status !== "accepted" || this.now >= a.startsAt) throw new ServerError("illegal_transition");
+      // 2.14.1 (FR-342, V96): accepted at any time; done until 30 days after its end.
+      if (a.status === "done") {
+        if (this.now > (a.endedAt ?? this.endOf(a)) + CHANGE_PAST_MS) throw new ServerError("window_closed");
+      } else if (a.status !== "accepted") throw new ServerError("illegal_transition");
       const e = this.service(a.serviceId);
       if (!e?.duration) throw new ServerError("bad_service");
       const { minLeadMin, maxDays } = this.cfg.booking;
       const start = input.startsAt ?? a.startsAt;
-      if (typeof start !== "number" || !Number.isFinite(start) || start < this.now + minLeadMin * 60_000 || start > this.now + maxDays * 86_400_000)
+      // Within [now − 30 d, now + maxDays]; a start still ahead keeps the booking lead.
+      if (
+        typeof start !== "number" || !Number.isFinite(start) || start < this.now - CHANGE_PAST_MS || start > this.now + maxDays * 86_400_000 ||
+        (start > this.now && start < this.now + minLeadMin * 60_000)
+      )
         throw new ServerError("bad_time");
       const d = input.durationMin ?? a.durationMin;
       if (typeof d !== "number" || !Number.isInteger(d) || d < e.duration.min || d > e.duration.max || (d - e.duration.min) % e.duration.step !== 0)
         throw new ServerError("bad_duration");
+      // A done appointment stays in the past (its new end ≤ now).
+      if (a.status === "done" && start + d * 60_000 > this.now) throw new ServerError("bad_time");
       const place = input.place === undefined ? a.place : input.place;
       if ((place === null && e.needsPlace) || (place != null && (!isValidLatLng(place) || !String(place.label ?? "").trim()))) throw new ServerError("bad_input");
       if (note.length > NOTE_MAX) throw new ServerError("bad_input");
       if (input.pickups != null && !Array.isArray(input.pickups)) throw new ServerError("bad_input");
-      const live = this.liveRides(a);
+      // A done appointment's move touches no rides (FR-342): no pickups for it.
+      const live = a.status === "done" ? [] : this.liveRides(a);
       const pickups: ChangePickup[] = [];
       for (const p of input.pickups ?? []) {
         if (!p || (p.leg !== "there" && p.leg !== "back")) throw new ServerError("bad_leg");
@@ -4447,8 +4479,8 @@ export class Engine {
    * strict: refuse (ride_started, outside_area, too_far); otherwise the offending ride shows "keep".
    */
   private changeEffects(a: ApptRow, c: ChangeDraft & { proposedBy: string }, strict: boolean): RideEffect[] {
-    // A length change of a done appointment moves nothing.
-    if (c.kind === "length" && a.status === "done") return [];
+    // A change of a done appointment (a length, or a 2.14.1 move) moves nothing.
+    if (a.status === "done") return [];
     const t = this.changeTarget(a, c);
     const dStart = t.start - a.startsAt;
     const dEnd = t.end - this.endOf(a);
@@ -5270,6 +5302,10 @@ const round3 = (x: number) => Math.round(x * 1000) / 1000;
 const MAX_EST_MIN = 1440;
 /** 2.14 (V92): a ride within 150 m of the old place follows the new one. */
 const CHANGE_FOLLOW_KM = 0.15;
+/** 2.14.1 (FR-342, V96): a move reaches 30 days back, and a done appointment can be moved until 30 days after its end. */
+const CHANGE_PAST_MS = 30 * 86_400_000;
+/** 2.14.1 (FR-344): a move into the past lapses 7 days after it was proposed. */
+const CHANGE_PAST_LAPSE_MS = 7 * 86_400_000;
 
 /** How an attached ride stands for its appointment (§7 rule 7); null = not shown (twin of siosia_ride_summary). */
 export function rideSummary(r: Pick<RideRow, "status" | "driverId" | "cancelledBy" | "cancelReason">): AttachedStatus | null {

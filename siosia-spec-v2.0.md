@@ -1143,3 +1143,34 @@ SQL) implement each of these identically:
   appointment had none before.
 - The series view carries the series' own place; the calendar's repeating event uses it (a moved
   date keeps its own place in its override).
+
+## Amendment 2.14.1 (2026-11-03): moving an appointment into the past
+
+Operator request of 2026-11-03: someone busy may need to record that the appointment really
+happened at another time — earlier, even already behind us. That must be possible when the other
+party accepts; until now a move was refused once the appointment had started or for any start in the
+past.
+
+- **FR-342 — Moves into the past.** A move (FR-334) MAY be proposed on an `accepted` appointment at
+  any time (before, during or after its booked time while it is still accepted) and on a `done` one
+  until 30 days after its end. The new start lies within [now − 30 days, now + `booking.maxDays`];
+  a start still ahead keeps the booking lead (≥ now + `booking.minLeadMin`); a `done` appointment
+  stays in the past (its new end ≤ now), else `bad_time`. Moves of a `done` appointment touch no
+  rides. Older appointments, or later than 30 days after the end → `window_closed`.
+- **FR-343 — Accepting it.** Checked again at acceptance. An `accepted` appointment whose new end is
+  already past becomes `done` in the same step (ended at the new end, the cost summary goes out as
+  for any finished appointment); its scheduled rides that cannot follow (pickup < now + lead) are
+  cancelled as in FR-337. A `done` appointment takes the new start, length and place, its time
+  correction is cleared (`actual_min` null — the new length is what counts), the price follows the
+  rate (FR-337) and the cost summary goes out again as corrected. Overlap with the provider's
+  schedule is checked only for a target still ahead or under way. The weekly reports and To settle
+  follow the new date (a settled one leaves the difference due, V78).
+- **FR-344 — Lapse.** A move whose new start is ahead lapses as before (FR-336); one into the past
+  (new start ≤ now + lead at proposing) lapses 7 days after it was proposed.
+- **FR-345 — The app.** Propose a change offers the start (date and time, as far back as 30 days),
+  length and place on a planned, live or done (≤ 30 days) appointment; where a length-only change is
+  also allowed (live, or done ≤ 24 h), the sheet offers both: *Time and place* or *Length only*. A
+  short hint says the time may be in the past. On a done appointment the length starts at the one
+  that counts (an agreed correction), when the service allows it, and the preview shows the old
+  length and total next to the new. The app offers all this only once the database announces
+  `pastMoves` in `siosia_config.features`; before that it keeps the 2.14 rules (V89).

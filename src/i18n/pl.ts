@@ -932,6 +932,18 @@ export const pl: Record<MessageKey, string> = {
   "change.lengthEntry": "Zaproponuj inną długość",
   "change.lengthHint": "Do 24 godz. po zakończeniu każde z was może zaproponować faktyczny czas; po akceptacji drugiej strony kwota liczy się ze stawki, a rodzina dostaje powiadomienie.",
   "change.lengthHintSet": "Do 24 godz. po zakończeniu każde z was może zaproponować faktyczny czas; po akceptacji drugiej strony rodzina dostaje powiadomienie. Kwota jest ustalona i się nie zmienia.",
+  // 2.14.1: przesunięcie w przeszłość (FR-342–345)
+  "change.modeLabel": "Co zmienić",
+  "change.modeMove": "Czas i miejsce",
+  "change.modeLength": "Tylko długość",
+  "change.hintPast": "Czas może być też w przeszłości (do 30 dni wstecz) — żeby zapisać, kiedy naprawdę się odbyło.",
+  "change.hintMoveDone": "Odpowiada {name}; nic się nie zmieni przed akceptacją. Potem czas i kwota się zmienią, a podsumowanie kosztów przyjdzie ponownie jako poprawione.",
+  "change.tooOld": "Najwyżej 30 dni wstecz.",
+  "change.tooFar": "Najwyżej {days} dni naprzód.",
+  "change.inLead": "Początek w przyszłości wymaga co najmniej {min} min wyprzedzenia — albo wybierz czas, który już minął.",
+  "change.doneFuture": "To już się odbyło: nowy koniec nie może być później niż teraz.",
+  "change.badTime": "Tego czasu nie można zaproponować — najwyżej 30 dni wstecz, początek w przyszłości wymaga zwykłego wyprzedzenia, a zakończone spotkanie zostaje w przeszłości.",
+  "change.windowClosed": "Za późno na zmianę — zakończone spotkanie można przesunąć do 30 dni po końcu, jego długość do 24 godz.",
   "err.no_change": "To jest to samo co teraz — najpierw coś zmień.",
   "err.ride_started": "Przejazd do tego spotkania już jedzie — nie da się go teraz przesunąć."
 };

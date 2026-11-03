@@ -606,8 +606,8 @@ export interface DeploymentConfig {
 }
 
 /** The parts of the app that need a newer database (see DeploymentConfig.features). */
-/** 2.14: changes = change proposals (appointment_changes, siosia_propose_change …). */
-export type ServerFeature = "customPrice" | "reactions" | "changes";
+/** 2.14: changes = change proposals (appointment_changes, siosia_propose_change …); 2.14.1: pastMoves = moves into the past (FR-342). */
+export type ServerFeature = "customPrice" | "reactions" | "changes" | "pastMoves";
 
 /** Whether the database behind this app does `f` (V89). */
 export const hasFeature = (dep: { features?: ServerFeature[] } | null | undefined, f: ServerFeature): boolean => !!dep?.features?.includes(f);
