@@ -244,7 +244,7 @@ T66|x|2.14 push + calendar: 4 kinds EN/PL, tags/urls, bundle; ics overrides (REC
 T67|x|2.14 UI: C3 Propose a change sheet (move / length, pickups w/ route, previews), pending card Accept/Decline/Withdraw, P1 To answer + chip, H1 chip, Correct the time → proposal, adapters (mock, supabase), robot accepts, i18n EN/PL, component + e2e tests, USER-GUIDE|V93,FR-339,FR-341
 T68|x|release 2.14 (merged with 2.12.2/2.12.3): review, live DB migration (re-run 0001_siosia.sql: 2.12.2 backfill once + reactions + features incl. changes), push-dispatch + calendar bundles, main (V89: may go first), live check|§15,V89,V90–V95
 T69|x|2.14.1 moves into the past: engine + SQL twins (windows, accept → done / done rewrite, lapse), UI (start back 30 d, Time and place / Length only switch, hint), i18n, tests engine + sql + ui + e2e|V96,V19
-T70|.|release 2.14.1: live SQL, main, live check|§15,V96
+T70|x|release 2.14.1: live SQL, main, live check|§15,V96
 
 ## §B bugs
 
