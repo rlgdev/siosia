@@ -2053,8 +2053,123 @@ body:has(.sharing-banner) .panel-head {
 }
 .feed-lightbox img {
   max-width: 100%;
-  max-height: 80vh;
+  max-height: 72vh;
   border-radius: var(--radius-sm);
+}
+/* 2.12.3: Save photo next to Close; the note (saved / failed / iPhone hint) under them. */
+.feed-lightbox-actions {
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.feed-lightbox-note {
+  color: #fff;
+  opacity: 0.85;
+  font-size: 0.85rem;
+  min-height: 1.2em;
+  margin: 0;
+  text-align: center;
+}
+
+/* 2.12.3: an update's reactions and its Delete share one line. */
+.feed-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  width: 100%;
+}
+.feed-actions .feed-delete {
+  margin-left: auto;
+}
+/* 2.12.3 reactions: small pills inside 44 px tap targets; mine in the accent tint. */
+.reactions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-msg.mine .reactions {
+  align-items: flex-end;
+}
+.reaction-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: -6px 0;
+}
+.reaction-chip,
+.reaction-add {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font: inherit;
+}
+.reaction-chip.static {
+  cursor: default;
+}
+.reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.reaction-chip[aria-pressed="true"] .reaction-pill {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.reaction-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.reaction-add {
+  color: var(--muted);
+}
+.reaction-add .reaction-pill {
+  padding: 0 7px;
+  border-style: dashed;
+}
+.reaction-chip:disabled,
+.reaction-add:disabled {
+  opacity: 0.6;
+}
+.reaction-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow);
+  width: max-content;
+  max-width: 100%;
+}
+.reaction-pick {
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.reaction-pick[aria-pressed="true"] {
+  background: var(--accent-soft);
 }
 .feed-compose textarea {
   width: 100%;

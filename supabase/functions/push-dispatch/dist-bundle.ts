@@ -133,12 +133,14 @@ var TEXTS = {
     pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
     sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
     ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"],
-    // 2.14 (FR-334): {newrange} / {fromrange} are the new and the old date (a move) or length (a
+    // 2.14 (FR-338): {newrange} / {fromrange} are the new and the old date (a move) or length (a
     // length change); {note} is the proposer's own words, quoted.
     appt_change_proposed: ["Change proposed: {service}", "{who} proposes {newrange}{newplace} instead of {fromrange}.{note}"],
     appt_change_accepted: ["{who} accepted the change", "{service} is now {newrange}{newplace}."],
     appt_change_declined: ["{who} declined the change", "{service} stays {fromrange}."],
-    booking_moved: ["Booking moved", "From {pickup}: now {when}{was}."]
+    booking_moved: ["Booking moved", "From {pickup}: now {when}{was}."],
+    // 2.12.3 (FR-331): the reaction, then what it is on (the message's or the update's words, 📷 a photo).
+    reaction: ["{sender} reacted {emoji}", "{item}"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -183,8 +185,14 @@ var TEXTS = {
     appt_change_proposed: ["Propozycja zmiany: {service}", "{who} proponuje {newrange}{newplace} zamiast {fromrange}.{note}"],
     appt_change_accepted: ["{who} przyjmuje zmian\u0119", "{service} jest teraz {newrange}{newplace}."],
     appt_change_declined: ["{who} odrzuca zmian\u0119", "{service} bez zmian: {fromrange}."],
-    booking_moved: ["Rezerwacja przesuni\u0119ta", "Z {pickup}: teraz {when}{was}."]
+    booking_moved: ["Rezerwacja przesuni\u0119ta", "Z {pickup}: teraz {when}{was}."],
+    reaction: ["{sender} reaguje {emoji}", "{item}"]
   }
+};
+var PUSH_KINDS = Object.keys(TEXTS.en);
+var UNKNOWN = {
+  en: ["Siosia", "Something new for you \u2014 open Siosia."],
+  pl: ["Siosia", "Co\u015B nowego dla Ciebie \u2014 otw\xF3rz Siosi\u0119."]
 };
 function moneyText(amount, currency, lang) {
   const l = lang === "pl" ? "pl" : "en";
@@ -234,7 +242,7 @@ var YOUR_OPEN = { en: "Your open request", pl: "Twoja otwarta pro\u015Bba" };
 function pushText(kind, params, lang, tz, id) {
   const l = lang === "pl" ? "pl" : "en";
   const open = kind.startsWith("appt_") && (!!params.open || params.status === "open" || !params.provider && params.role !== "provider");
-  const [title, body] = (open ? OPEN_TEXTS[l][kind] : void 0) ?? (kind === "booking_moved" && params.dropped ? DROPPED_TEXTS[l] : void 0) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
+  const [title, body] = (open ? OPEN_TEXTS[l][kind] : void 0) ?? (kind === "booking_moved" && params.dropped ? DROPPED_TEXTS[l] : void 0) ?? TEXTS[l][kind] ?? UNKNOWN[l];
   const ms = toMs(params.at);
   const series = !!params.rule && (kind === "appt_new" || kind === "appt_open" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
   const status = params.status === "waiting" && open ? "open" : params.status;
@@ -255,6 +263,9 @@ function pushText(kind, params, lang, tz, id) {
     // 2.5: an update's words, "📷" marking a photo — alone when there are no words.
     update: params.photo ? cut ? `${cut} \u{1F4F7}` : l === "pl" ? "\u{1F4F7} Zdj\u0119cie" : "\u{1F4F7} Photo" : cut,
     about: params.kid || params.service ? ` \xB7 ${params.kid || params.service}` : "",
+    // 2.12.3: a reaction — the emoji, and what it is on: a message's words in quotes, an update as above
+    emoji: params.emoji ?? "",
+    item: params.room ? cut ? l === "pl" ? `\u201E${cut}\u201D` : `\u201C${cut}\u201D` : "" : params.photo ? cut ? `${cut} \u{1F4F7}` : l === "pl" ? "\u{1F4F7} Zdj\u0119cie" : "\u{1F4F7} Photo" : cut,
     minutes: params.minutes === void 0 || params.minutes === null ? "" : String(params.minutes),
     duration: durationText(params.minutes, l),
     total: moneyText(params.total, params.currency, l),
@@ -295,11 +306,11 @@ function pushText(kind, params, lang, tz, id) {
     settled: SETTLED[l][params.status === "received" || params.status === "paid" ? params.status : "even"](moneyText(params.total, params.currency, l)),
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const tidy = (s) => kind === "chat_message" || kind === "session_update" || kind === "pay_comment" || kind.startsWith("appt_change_") && !!cut ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
+  const tidy = (s) => kind === "chat_message" || kind === "session_update" || kind === "pay_comment" || kind === "reaction" || kind.startsWith("appt_change_") && !!cut ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
   const fill = (s) => tidy(
     s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
   );
-  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind === "appt_tip" || kind === "ride_tip" ? `tip:${id ?? ""}` : kind.startsWith("appt_change_") ? `change:${id ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind === "appt_tip" || kind === "ride_tip" ? `tip:${id ?? ""}` : kind.startsWith("appt_change_") ? `change:${id ?? ""}` : kind === "reaction" ? `reaction:${params.messageId ?? params.updateId ?? id ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }
 function pushUrl(kind, params, appointmentId) {
@@ -313,10 +324,23 @@ function pushUrl(kind, params, appointmentId) {
   if (kind.startsWith("appt_change_")) return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
   if (kind === "booking_moved") return "./?open=planned";
   if (kind === "sign_in") return "./?open=account";
+  if (kind === "reaction") return params?.room ? `./?chat=${params.room}` : appointmentId ? `./?appointment=${appointmentId}` : "./";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }
 
 // supabase/functions/push-dispatch/dispatch.ts
+var missingFunction = (e) => {
+  const err = e;
+  return err?.code === "PGRST202" || /could not find the function/i.test(String(err?.message ?? ""));
+};
+async function claimRows(rpc, limit) {
+  const two = await rpc("siosia_claim_push", { p_limit: limit, p_kinds: PUSH_KINDS });
+  if (!two.error) return two.data ?? [];
+  if (!missingFunction(two.error)) throw two.error;
+  const one = await rpc("siosia_claim_push", { p_limit: limit });
+  if (one.error) throw one.error;
+  return one.data ?? [];
+}
 var openUrl = (kind, params, appointmentId) => pushUrl(kind, params, appointmentId);
 var MAX_ATTEMPTS = 5;
 var CHAT_GRACE_MS = 2e3;
@@ -399,9 +423,7 @@ Deno.serve(async (req) => {
   webpush.setVapidDetails(subject, pub, priv);
   const result = await dispatch({
     async pending(limit) {
-      const { data, error } = await db.rpc("siosia_claim_push", { p_limit: limit });
-      if (error) throw error;
-      return data ?? [];
+      return claimRows((fn, args) => db.rpc(fn, args), limit);
     },
     async subscriptions(userId) {
       const { data, error } = await db.from("push_subscriptions").select("endpoint, p256dh, auth").eq("user_id", userId);

@@ -319,6 +319,13 @@ export class MockBackend implements Backend {
   deleteUpdate(id: string) {
     return this.call((e) => e.deleteUpdate(this.uid, id));
   }
+  // ---------- 2.12.3: reactions ----------
+  reactMessage(messageId: string, emoji: string | null) {
+    return this.call((e) => e.reactMessage(this.uid, messageId, emoji));
+  }
+  reactUpdate(updateId: string, emoji: string | null) {
+    return this.call((e) => e.reactUpdate(this.uid, updateId, emoji));
+  }
   comingHome(appointmentId: string, minutes: number) {
     return this.call((e) => e.comingHome(this.uid, appointmentId, minutes));
   }
@@ -373,7 +380,7 @@ export class MockBackend implements Backend {
   setActualTime(appointmentId: string, minutes: number) {
     return this.call((e) => e.setActualTime(this.uid, appointmentId, minutes));
   }
-  // 2.14 (FR-330–335): change proposals
+  // 2.14 (FR-334–339): change proposals
   proposeChange(appointmentId: string, input: ChangeInput) {
     return this.call((e) => e.proposeChange(this.uid, appointmentId, input));
   }

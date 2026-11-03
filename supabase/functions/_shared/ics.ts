@@ -7,7 +7,7 @@
 // Single events are written in UTC. A series is one VEVENT with an RRULE: its start is written as
 // local time with the deployment's TZID (and a VTIMEZONE), so every date keeps its wall-clock time
 // across a daylight-saving change, as the series itself does (§7 wall-clock rule).
-// 2.14 (FR-336, V92): the series' start and length come from the rule (first, durationMin); a date
+// 2.14 (FR-340, V95): the series' start and length come from the rule (first, durationMin); a date
 // moved by an accepted change is an override VEVENT (same UID, RECURRENCE-ID = its rule slot).
 
 import { apptStatusText, kidsText, rideLineText } from "./push-text.ts";
@@ -44,7 +44,7 @@ export interface IcsAppointment {
     starts: number[];
     /** Rule slots of the declined and cancelled dates. */
     gaps: number[];
-    /** 2.14 (FR-336): the rule's first start and length; absent (older views) → the first date's. */
+    /** 2.14 (FR-340): the rule's first start and length; absent (older views) → the first date's. */
     first?: number;
     durationMin?: number;
     /** 2.14: the series' own place; absent (older views) → the viewed date's. */
@@ -341,7 +341,7 @@ export function appointmentIcs(a: IcsAppointment, ctx: IcsContext): string {
   return calendar(ev);
 }
 
-/** 2.14 (FR-336): the rule's start and length of a series — first and durationMin from the view,
+/** 2.14 (FR-340): the rule's start and length of a series — first and durationMin from the view,
  *  else (an older view) the first date's start and the viewed date's length. */
 function seriesRule(a: IcsAppointment): { first: number; durMs: number; place: IcsPlace | null } {
   const s = a.series;
@@ -379,7 +379,7 @@ export function seriesIcs(a: IcsAppointment, ctx: IcsContext): string {
     ...placeLines(place),
     ...tail,
     "END:VEVENT",
-    // 2.14 (FR-336, V92): each moved date overrides its rule slot (RFC 5545 RECURRENCE-ID).
+    // 2.14 (FR-340, V95): each moved date overrides its rule slot (RFC 5545 RECURRENCE-ID).
     ...moved.flatMap((m) => [
       "BEGIN:VEVENT",
       `UID:${bare(s.id)}`,
@@ -438,7 +438,7 @@ function googleUrl(p: { text: string; start: number; end: number; tz: string; lo
 /** The prefilled Google Calendar event of one appointment, or of the whole series. */
 export function appointmentGoogleLink(a: IcsAppointment, ctx: IcsContext, wholeSeries = false): string {
   const s = wholeSeries ? a.series : null;
-  // 2.14 (V92): the whole series starts and lasts as its rule does.
+  // 2.14 (V95): the whole series starts and lasts as its rule does.
   const rule = s ? seriesRule(a) : { first: a.startsAt, durMs: a.endsAt - a.startsAt, place: a.place };
   return googleUrl({
     text: appointmentTitle(a, ctx.lang),

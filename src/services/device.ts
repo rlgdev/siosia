@@ -105,3 +105,65 @@ export function writePref(key: string, value: unknown): void {
     /* private mode */
   }
 }
+
+// ---------- 2.12.3: saving a file — a photo to the gallery, an .ics to the calendar ----------
+
+/**
+ * Hands a file to the phone: on iPhone / iPad the share sheet ("Save Image" puts a photo in Photos,
+ * "Add to Calendar" an .ics), elsewhere a download (Android lists a downloaded picture in its
+ * gallery). Call it straight from the tap — the share sheet needs that tap (iOS honours it ~5 s).
+ * Resolves "shared" | "downloaded" | "cancelled" (the person closed the sheet).
+ */
+export async function saveFile(file: File): Promise<"shared" | "downloaded" | "cancelled"> {
+  const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+  if (isIOS() && typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+    try {
+      await nav.share({ files: [file] });
+      return "shared";
+    } catch (e) {
+      if ((e as { name?: string })?.name === "AbortError") return "cancelled";
+      // Another refusal (e.g. the tap's permission lapsed): the download below still works.
+    }
+  }
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return "downloaded";
+}
+
+/** A data: URL's bytes, decoded at once (no fetch: the tap's permission to share stays intact). */
+function dataUrlBytes(url: string): { bytes: Uint8Array; type: string } | null {
+  const m = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(url);
+  if (!m) return null;
+  const type = m[1] || "application/octet-stream";
+  if (!m[2]) return { bytes: new TextEncoder().encode(decodeURIComponent(m[3])), type };
+  const bin = atob(m[3]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return { bytes, type };
+}
+
+/**
+ * A photo as a file to save: the demo's data: URL decoded, a signed Storage URL fetched (no
+ * cookies; an expired or removed one is an error). Every Siosia photo is a JPEG.
+ */
+export async function photoFile(url: string, name: string): Promise<File> {
+  const data = url.startsWith("data:") ? dataUrlBytes(url) : null;
+  if (data) return new File([data.bytes], name, { type: data.type || "image/jpeg" });
+  const res = await fetch(url, { credentials: "omit" });
+  if (!res.ok) throw new Error(`photo ${res.status}`);
+  const blob = await res.blob();
+  return new File([blob], name, { type: blob.type || "image/jpeg" });
+}
+
+/** "siosia-2026-10-31-1430.jpg": the moment the photo was posted, in local time. */
+export function photoName(at: number): string {
+  const d = new Date(at);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `siosia-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.jpg`;
+}

@@ -348,7 +348,9 @@ export class SupabaseBackend implements Backend {
       booking: { ...DEFAULT_CONFIG.booking, ...(c.booking ?? {}) },
       services: c.services ?? DEFAULT_CONFIG.services.filter((e) => e.kind === "ride"),
       appointment: c.appointment ?? DEFAULT_CONFIG.appointment,
-      calendarUrl: c.calendarUrl ?? null
+      calendarUrl: c.calendarUrl ?? null,
+      // A database not migrated to 2.12.2 / 2.12.3 yet: none of what needs it (V89).
+      features: Array.isArray(c.features) ? c.features : []
     };
   }
   isMember(deviceId: string) {
@@ -528,6 +530,13 @@ export class SupabaseBackend implements Backend {
     };
     // 2.3 overload (kids to attach); the 2.0 signature stays for a request without them.
     if (input.kidIds && input.kidIds.length) args.p_kids = input.kidIds;
+    // 2.12.2 overload (a custom payment): it takes the kids too (none = an empty list).
+    if (input.customPrice != null) {
+      // JSON would send NaN / Infinity as null — a rate request; refuse it like the engine twin.
+      if (!Number.isFinite(input.customPrice)) throw new ServerError("bad_input");
+      args.p_kids = input.kidIds ?? [];
+      args.p_custom_price = input.customPrice;
+    }
     return withOpen(await this.rpc<AppointmentView>("siosia_request_service", args));
   }
   takeRequest(id: string) {
@@ -643,6 +652,13 @@ export class SupabaseBackend implements Backend {
     const old = await this.rpc<string | null>("siosia_delete_update", { p_id: id });
     if (old) await this.removePhotos([old]);
   }
+  // 2.12.3 (FR-330): reactions — the item comes back with its reactions (an update's photo signed as ever).
+  reactMessage(messageId: string, emoji: string | null) {
+    return this.rpc<ChatMessage>("siosia_react_message", { p_id: messageId, p_emoji: emoji });
+  }
+  reactUpdate(updateId: string, emoji: string | null) {
+    return this.rpc<SessionUpdate>("siosia_react_update", { p_id: updateId, p_emoji: emoji });
+  }
   comingHome(appointmentId: string, minutes: number) {
     return this.rpc<AppointmentView>("siosia_coming_home", { p_appt: appointmentId, p_minutes: minutes });
   }
@@ -702,7 +718,7 @@ export class SupabaseBackend implements Backend {
   async setActualTime(appointmentId: string, minutes: number) {
     return withOpen(await this.rpc<AppointmentView>("siosia_set_actual", { p_id: appointmentId, p_minutes: minutes }));
   }
-  // 2.14 (FR-330–335): change proposals — the input as jsonb, its start as an ISO timestamp.
+  // 2.14 (FR-334–339): change proposals — the input as jsonb, its start as an ISO timestamp.
   async proposeChange(appointmentId: string, input: ChangeInput) {
     const p_input: Record<string, unknown> = { ...input };
     if (input.startsAt !== undefined) p_input.startsAt = new Date(input.startsAt).toISOString();

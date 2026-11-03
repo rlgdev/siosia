@@ -54,12 +54,15 @@ export type PushKind =
   | "pay_comment"
   // 2.12.1: the operator asks a phone still without an account to sign in (opens ☰ → Account)
   | "sign_in"
-  // 2.14 (FR-334): a change of an appointment proposed / accepted / declined (open C3), and a driver's
+  // 2.14 (FR-338): a change of an appointment proposed / accepted / declined (open C3), and a driver's
   // booking that moved with it (new time and/or pickup; dropped = it clashed and went back to the pool)
   | "appt_change_proposed"
   | "appt_change_accepted"
   | "appt_change_declined"
-  | "booking_moved";
+  | "booking_moved"
+  // 2.12.3 (FR-331): someone reacted to my chat message (opens the thread) or session update (C3);
+  // a push only, never a bell entry (like chat_message)
+  | "reaction";
 
 /** Moments are ms or ISO timestamps (as Postgres sends them). */
 type Moment = number | string | null;
@@ -101,6 +104,8 @@ export interface PushParams {
   room?: string;
   /** The message's id: push-dispatch drops a message the recipient read before it went out (C6). */
   messageId?: string;
+  /** 2.12.3: the emoji of a reaction (text / photo / room / messageId / updateId name what it is on). */
+  emoji?: string;
   /** 2.3: the attached kids' names, for reminders and the accept text ("with Zosia and Kuba"). */
   kids?: string[];
   /** 2.5: a session update — the kid it is about (null = everyone), whether it carries a photo, its id. */
@@ -136,7 +141,7 @@ export interface PushParams {
   /** Pickup time of an attached ride. */
   time?: Moment;
   repeat?: boolean;
-  /** 2.14 (FR-334): a change — the start, end and place before it ({at}, {end}, {place} = after). */
+  /** 2.14 (FR-338): a change — the start, end and place before it ({at}, {end}, {place} = after). */
   fromAt?: Moment;
   fromEnd?: Moment;
   fromPlace?: string | null;
@@ -307,12 +312,14 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
     sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
     ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"],
-    // 2.14 (FR-334): {newrange} / {fromrange} are the new and the old date (a move) or length (a
+    // 2.14 (FR-338): {newrange} / {fromrange} are the new and the old date (a move) or length (a
     // length change); {note} is the proposer's own words, quoted.
     appt_change_proposed: ["Change proposed: {service}", "{who} proposes {newrange}{newplace} instead of {fromrange}.{note}"],
     appt_change_accepted: ["{who} accepted the change", "{service} is now {newrange}{newplace}."],
     appt_change_declined: ["{who} declined the change", "{service} stays {fromrange}."],
-    booking_moved: ["Booking moved", "From {pickup}: now {when}{was}."]
+    booking_moved: ["Booking moved", "From {pickup}: now {when}{was}."],
+    // 2.12.3 (FR-331): the reaction, then what it is on (the message's or the update's words, 📷 a photo).
+    reaction: ["{sender} reacted {emoji}", "{item}"]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} → {dropoff}. Weź ją w Siosi → Rezerwacje."],
@@ -357,8 +364,18 @@ const TEXTS: Record<Lang, Record<PushKind, [string, string]>> = {
     appt_change_proposed: ["Propozycja zmiany: {service}", "{who} proponuje {newrange}{newplace} zamiast {fromrange}.{note}"],
     appt_change_accepted: ["{who} przyjmuje zmianę", "{service} jest teraz {newrange}{newplace}."],
     appt_change_declined: ["{who} odrzuca zmianę", "{service} bez zmian: {fromrange}."],
-    booking_moved: ["Rezerwacja przesunięta", "Z {pickup}: teraz {when}{was}."]
+    booking_moved: ["Rezerwacja przesunięta", "Z {pickup}: teraz {when}{was}."],
+    reaction: ["{sender} reaguje {emoji}", "{item}"]
   }
+};
+
+/** 2.12.3: every kind this module words — push-dispatch claims only these (siosia_claim_push). */
+export const PUSH_KINDS = Object.keys(TEXTS.en) as PushKind[];
+
+/** A kind this module does not know (a newer server than this app or this push-dispatch): plain words, never another kind's. */
+const UNKNOWN: Record<Lang, [string, string]> = {
+  en: ["Siosia", "Something new for you — open Siosia."],
+  pl: ["Siosia", "Coś nowego dla Ciebie — otwórz Siosię."]
 };
 
 /** 2.6: money as the app shows it — "120.00 PLN" / "120,00 PLN" (two decimals, the locale's separator). */
@@ -401,7 +418,7 @@ const OPEN_TEXTS: Record<Lang, Partial<Record<PushKind, [string, string]>>> = {
   pl: { appt_expired: ["Nikt się nie zgłosił", "Nikt nie przyjął Twojej prośby: {service} {range}."] }
 };
 
-/** 2.14 (FR-333): a booking the driver lost because its new time clashes with their other plans. */
+/** 2.14 (FR-337): a booking the driver lost because its new time clashes with their other plans. */
 const DROPPED_TEXTS: Record<Lang, [string, string]> = {
   en: ["Booking no longer yours", "{when} from {pickup}: the new time clashes with your other plans, so it went back to other drivers."],
   pl: ["Rezerwacja nie jest już Twoja", "{when} z {pickup}: nowy termin koliduje z Twoimi innymi planami, więc wraca do innych kierowców."]
@@ -438,7 +455,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   // "No answer from " or "With  · " (V37).
   const open = kind.startsWith("appt_") && (!!params.open || params.status === "open" || (!params.provider && params.role !== "provider"));
   const [title, body] =
-    (open ? OPEN_TEXTS[l][kind] : undefined) ?? (kind === "booking_moved" && params.dropped ? DROPPED_TEXTS[l] : undefined) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
+    (open ? OPEN_TEXTS[l][kind] : undefined) ?? (kind === "booking_moved" && params.dropped ? DROPPED_TEXTS[l] : undefined) ?? TEXTS[l][kind] ?? UNKNOWN[l];
   const ms = toMs(params.at);
   const series =
     !!params.rule && (kind === "appt_new" || kind === "appt_open" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
@@ -450,7 +467,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   const kids = params.role === "client" ? "" : kidsText(params.kids, l);
   const chat = (params.text ?? "").replace(/\s+/g, " ").trim();
   const cut = chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}…` : chat;
-  // 2.14 (FR-334): a change reads as dates (a move) or as lengths with the new end (a length change).
+  // 2.14 (FR-338): a change reads as dates (a move) or as lengths with the new end (a length change).
   const fromMs = toMs(params.fromAt);
   const fromLen = fromMs !== null && toMs(params.fromEnd) !== null ? ((toMs(params.fromEnd) as number) - fromMs) / 60_000 : null;
   const newLen = params.minutes ?? (ms !== null && toMs(params.end) !== null ? ((toMs(params.end) as number) - ms) / 60_000 : null);
@@ -462,6 +479,9 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
     // 2.5: an update's words, "📷" marking a photo — alone when there are no words.
     update: params.photo ? (cut ? `${cut} 📷` : l === "pl" ? "📷 Zdjęcie" : "📷 Photo") : cut,
     about: params.kid || params.service ? ` · ${params.kid || params.service}` : "",
+    // 2.12.3: a reaction — the emoji, and what it is on: a message's words in quotes, an update as above
+    emoji: params.emoji ?? "",
+    item: params.room ? (cut ? (l === "pl" ? `„${cut}”` : `“${cut}”`) : "") : params.photo ? (cut ? `${cut} 📷` : l === "pl" ? "📷 Zdjęcie" : "📷 Photo") : cut,
     minutes: params.minutes === undefined || params.minutes === null ? "" : String(params.minutes),
     duration: durationText(params.minutes, l),
     total: moneyText(params.total, params.currency, l),
@@ -514,7 +534,7 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
   // A chat body (and an update's, 2.5) is the sender's own words: substituted and trimmed, but never
   // tidied like a template (their "..." or a leading "." stay as typed). 2.14: so is a change's note.
   const tidy = (s: string) =>
-    kind === "chat_message" || kind === "session_update" || kind === "pay_comment" || (kind.startsWith("appt_change_") && !!cut)
+    kind === "chat_message" || kind === "session_update" || kind === "pay_comment" || kind === "reaction" || (kind.startsWith("appt_change_") && !!cut)
       ? s
       : s
           .replace(/\s+([.,])/g, "$1")
@@ -543,6 +563,8 @@ export function pushText(kind: PushKind, params: PushParams, lang: string, tz: s
                 ? `tip:${id ?? ""}`
               : kind.startsWith("appt_change_")
                 ? `change:${id ?? ""}`
+              : kind === "reaction"
+                ? `reaction:${params.messageId ?? params.updateId ?? id ?? ""}`
               : kind.startsWith("family_")
                 ? "family"
                 : kind.startsWith("contract_")
@@ -568,10 +590,12 @@ export function pushUrl(kind: PushKind, params?: PushParams, appointmentId?: str
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   // 2.11 (FR-322–324): what is due, the dobry Pancios and their comments are on the weekly report.
   if (kind.startsWith("pay_")) return "./?open=report";
-  // 2.14 (FR-334): a change is answered on C3 of that appointment; a moved booking is on Planned.
+  // 2.14 (FR-338): a change is answered on C3 of that appointment; a moved booking is on Planned.
   if (kind.startsWith("appt_change_")) return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
   if (kind === "booking_moved") return "./?open=planned";
   // 2.12.1: Profile → Account, where "Keep my account" signs in.
   if (kind === "sign_in") return "./?open=account";
+  // 2.12.3: a reaction opens what it is on — the thread (a room), else the appointment's feed (C3).
+  if (kind === "reaction") return params?.room ? `./?chat=${params.room}` : appointmentId ? `./?appointment=${appointmentId}` : "./";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }

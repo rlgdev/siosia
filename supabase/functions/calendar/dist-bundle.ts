@@ -29,6 +29,107 @@ function rideLineText(r, lang) {
       return `${head}: ${l === "pl" ? "nie znaleziono kierowcy" : "no driver found"}`;
   }
 }
+var TEXTS = {
+  en: {
+    booking_new: ["New booking {when}", "{pickup} \u2192 {dropoff}. Take it in Siosia \u2192 Booked rides."],
+    booking_taken: ["{driver} will drive you", "Your ride {when} has a driver."],
+    booking_released: ["Your booking needs a new driver", "{when}: we offer it to other drivers again."],
+    booking_cancelled: ["Booking cancelled", "{when} from {pickup} was cancelled by the rider."],
+    time_to_go: ["Time to go", "Pickup {time}: {rider} at {pickup}. Open Siosia."],
+    driver_coming: ["{driver} is on the way", "Your driver is heading to the pickup."],
+    driver_departed: ["{driver} has set off", "The car is moving towards your pickup \u2014 see it on the map."],
+    driver_arrived: ["{driver} is here", "Your driver has arrived at the pickup."],
+    booking_open: ["Looking for a driver", "Your booking {when} is now offered to drivers nearby."],
+    request_new: ["New ride request", "Pickup: {pickup}. Open Siosia to take it."],
+    appt_new: ["New request: {service} {when}", "{client} asks for {service}, {range}{kids}. Answer in Siosia \u2192 Planned."],
+    appt_open: ["Can you help? {service}", "{client} asks: {service} {range}{atplace}. Open Siosia to take it."],
+    appt_accepted: ["{provider} accepted", "{service} {range} is confirmed{kids}.{clashes}"],
+    appt_declined: ["{provider} can't make it", "{service} {range} was declined."],
+    appt_cancelled: ["{service} {when} cancelled", "Cancelled by {who}: {service} {range}.{remaining}"],
+    appt_expired: ["No answer from {provider}", "{service} {range} got no answer and expired."],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}{kids}. {status}.{rides}"],
+    appt_ride_added: ["{who} added a ride", "{service} {when}: ride {leg}{attime}, looking for a driver."],
+    appt_ride_taken: ["Ride confirmed: {driver}", "{service} {when}: the ride {leg} has a driver."],
+    appt_ride_lost: ["Ride needs a driver", "{service} {when}: the ride {leg} has no driver again."],
+    appt_ride_failed: ["No driver found", "{service} {when}: the ride {leg} didn't happen."],
+    // 2.3 (FR-222): the sender's own words; the tag is the room, so a newer message replaces the older.
+    chat_message: ["{sender}", "{text}"],
+    // 2.5 (FR-232, FR-241): a session update names the kid it is about (else the service); the
+    // heading-home notice says how far away the client is.
+    session_update: ["{sender}{about}", "{update}"],
+    client_coming: ["{client} is heading home", "About {minutes} min \u2014 around {eta}."],
+    family_invite: ["{sender} invites you to their family", "Share kids and appointments. Open Siosia to join."],
+    family_joined: ["{sender} joined your family", "You now see each other's kids and appointments."],
+    contract_proposed: ["{sender} proposes a contract", "Rates per hour: accept or decline in Siosia."],
+    contract_accepted: ["{sender} accepted the contract", "The rates apply to new requests."],
+    contract_declined: ["{sender} declined the contract", "Nothing changes; you can propose other rates."],
+    contract_ended: ["{sender} ended the contract", "New requests follow the price list again."],
+    contract_applied: ["{sender} applied the contract to past appointments", "Since {since}: {count} now at the contract's rates."],
+    appt_summary: ["Summary: {service} {when}", "{duration} \xB7 {total}{corrected}"],
+    weekly_report: ["Your week in Siosia", "Last week: spent {spent} \xB7 earned {earned}."],
+    appt_tip: ["{sender} left you a tip: {total}", "For {service} {when}. Thank you!"],
+    pay_remind: ["{sender} asks you to settle up", "{total} to pay since {since}. Once paid, tap \u201Cdobry Pancio\u201D on the weekly report."],
+    pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
+    pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
+    sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
+    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"],
+    // 2.14 (FR-338): {newrange} / {fromrange} are the new and the old date (a move) or length (a
+    // length change); {note} is the proposer's own words, quoted.
+    appt_change_proposed: ["Change proposed: {service}", "{who} proposes {newrange}{newplace} instead of {fromrange}.{note}"],
+    appt_change_accepted: ["{who} accepted the change", "{service} is now {newrange}{newplace}."],
+    appt_change_declined: ["{who} declined the change", "{service} stays {fromrange}."],
+    booking_moved: ["Booking moved", "From {pickup}: now {when}{was}."],
+    // 2.12.3 (FR-331): the reaction, then what it is on (the message's or the update's words, 📷 a photo).
+    reaction: ["{sender} reacted {emoji}", "{item}"]
+  },
+  pl: {
+    booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
+    booking_taken: ["{driver} Ci\u0119 zawiezie", "Tw\xF3j kurs {when} ma kierowc\u0119."],
+    booking_released: ["Rezerwacja szuka nowego kierowcy", "{when}: proponujemy j\u0105 ponownie innym kierowcom."],
+    booking_cancelled: ["Rezerwacja anulowana", "{when} z {pickup} \u2014 pasa\u017Cer anulowa\u0142."],
+    time_to_go: ["Czas jecha\u0107", "Odbi\xF3r {time}: {rider}, {pickup}. Otw\xF3rz Siosi\u0119."],
+    driver_coming: ["{driver} jest w drodze", "Kierowca jedzie do miejsca odbioru."],
+    driver_departed: ["{driver} ruszy\u0142(a)", "Auto jedzie do Twojego miejsca odbioru \u2014 zobacz je na mapie."],
+    driver_arrived: ["{driver} czeka", "Kierowca jest na miejscu odbioru."],
+    booking_open: ["Szukamy kierowcy", "Twoja rezerwacja {when} trafi\u0142a do kierowc\xF3w w pobli\u017Cu."],
+    request_new: ["Nowe zam\xF3wienie", "Odbi\xF3r: {pickup}. Otw\xF3rz Siosi\u0119, aby je przyj\u0105\u0107."],
+    appt_new: ["Nowa pro\u015Bba: {service} {when}", "{client} prosi o: {service}, {range}{kids}. Odpowiedz w Siosi \u2192 Zaplanowane."],
+    appt_open: ["Mo\u017Cesz pom\xF3c? {service}", "{client} prosi o pomoc: {service} {range}{atplace}. Otw\xF3rz Siosi\u0119, aby si\u0119 tego podj\u0105\u0107."],
+    appt_accepted: ["{provider} potwierdza", "{service} {range} \u2014 potwierdzone{kids}.{clashes}"],
+    appt_declined: ["{provider} nie mo\u017Ce", "{service} {range} \u2014 odrzucone."],
+    appt_cancelled: ["{service} {when} odwo\u0142ane", "Odwo\u0142ane przez: {who}. {service} {range}.{remaining}"],
+    appt_expired: ["Brak odpowiedzi od {provider}", "{service} {range} \u2014 bez odpowiedzi, pro\u015Bba wygas\u0142a."],
+    appt_reminder: ["{lead}: {service} {range}", "{withplace}{kids}. {status}.{rides}"],
+    appt_ride_added: ["{who} dodaje przejazd", "{service} {when}: przejazd {leg}{attime}, szukamy kierowcy."],
+    appt_ride_taken: ["Przejazd potwierdzony: {driver}", "{service} {when}: przejazd {leg} ma kierowc\u0119."],
+    appt_ride_lost: ["Przejazd szuka kierowcy", "{service} {when}: przejazd {leg} zn\xF3w bez kierowcy."],
+    appt_ride_failed: ["Nie znaleziono kierowcy", "{service} {when}: przejazd {leg} nie doszed\u0142 do skutku."],
+    chat_message: ["{sender}", "{text}"],
+    session_update: ["{sender}{about}", "{update}"],
+    client_coming: ["{client} wraca do domu", "Za oko\u0142o {minutes} min \u2014 na miejscu ok. {eta}."],
+    family_invite: ["{sender} zaprasza Ci\u0119 do rodziny", "Wsp\xF3lne dzieci i wizyty. Otw\xF3rz Siosi\u0119, aby do\u0142\u0105czy\u0107."],
+    family_joined: ["{sender} do\u0142\u0105cza do Twojej rodziny", "Widzicie teraz nawzajem swoje dzieci i wizyty."],
+    contract_proposed: ["{sender} proponuje umow\u0119", "Stawki za godzin\u0119: zaakceptuj lub odrzu\u0107 w Siosi."],
+    contract_accepted: ["{sender} akceptuje umow\u0119", "Stawki obowi\u0105zuj\u0105 dla nowych pr\xF3\u015Bb."],
+    contract_declined: ["{sender} odrzuca umow\u0119", "Nic si\u0119 nie zmienia; mo\u017Cesz zaproponowa\u0107 inne stawki."],
+    contract_ended: ["{sender} ko\u0144czy umow\u0119", "Nowe pro\u015Bby zn\xF3w wed\u0142ug cennika."],
+    contract_applied: ["{sender} stosuje umow\u0119 do minionych termin\xF3w", "Od {since}: {count} \u2014 teraz wed\u0142ug stawek z umowy."],
+    appt_summary: ["Podsumowanie: {service} {when}", "{duration} \xB7 {total}{corrected}"],
+    weekly_report: ["Tw\xF3j tydzie\u0144 w Siosi", "Ostatni tydzie\u0144: wydane {spent} \xB7 zarobione {earned}."],
+    appt_tip: ["{sender} zostawia Ci napiwek: {total}", "Za {service} {when}. Dzi\u0119kujemy!"],
+    pay_remind: ["{sender} prosi o rozliczenie", "Do zap\u0142aty {total} od {since}. Po zap\u0142acie stuknij \u201Edobry Pancio\u201D w raporcie tygodnia."],
+    pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby doda\u0107 komentarz."],
+    pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
+    sign_in: ["Zachowaj swoje konto w Siosi", "Stuknij, aby si\u0119 zalogowa\u0107. Profil i historia zostan\u0105 z Tob\u0105 na ka\u017Cdym telefonie."],
+    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dzi\u0119kujemy!"],
+    appt_change_proposed: ["Propozycja zmiany: {service}", "{who} proponuje {newrange}{newplace} zamiast {fromrange}.{note}"],
+    appt_change_accepted: ["{who} przyjmuje zmian\u0119", "{service} jest teraz {newrange}{newplace}."],
+    appt_change_declined: ["{who} odrzuca zmian\u0119", "{service} bez zmian: {fromrange}."],
+    booking_moved: ["Rezerwacja przesuni\u0119ta", "Z {pickup}: teraz {when}{was}."],
+    reaction: ["{sender} reaguje {emoji}", "{item}"]
+  }
+};
+var PUSH_KINDS = Object.keys(TEXTS.en);
 function kidsText(names, lang) {
   const l = lang === "pl" ? "pl" : "en";
   const list = (names ?? []).map((n) => String(n ?? "").trim()).filter(Boolean);
@@ -269,7 +370,7 @@ function seriesIcs(a, ctx) {
     ...placeLines(place),
     ...tail,
     "END:VEVENT",
-    // 2.14 (FR-336, V92): each moved date overrides its rule slot (RFC 5545 RECURRENCE-ID).
+    // 2.14 (FR-340, V95): each moved date overrides its rule slot (RFC 5545 RECURRENCE-ID).
     ...moved.flatMap((m) => [
       "BEGIN:VEVENT",
       `UID:${bare(s.id)}`,

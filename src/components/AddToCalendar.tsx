@@ -15,7 +15,7 @@ import {
 } from "../../supabase/functions/_shared/ics";
 import type { AppointmentView, RideView, ViewerRole } from "../core/types";
 import { useI18n } from "../i18n";
-import { isIOS } from "../services/device";
+import { saveFile } from "../services/device";
 import { useApp } from "../state/store";
 
 type Props = { appointment: AppointmentView; wholeSeries?: boolean; ride?: undefined } | { ride: RideView; appointment?: undefined; wholeSeries?: undefined };
@@ -78,18 +78,5 @@ export function AddToCalendar(props: Props) {
 
 /** The demo's .ics: shared on iPhone (Add to Calendar from the share sheet), downloaded elsewhere. */
 function download(ics: string, name: string): void {
-  const file = new File([ics], name, { type: "text/calendar" });
-  const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
-  if (isIOS() && nav.canShare?.({ files: [file] })) {
-    void navigator.share({ files: [file] }).catch(() => {});
-    return;
-  }
-  const url = URL.createObjectURL(file);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  void saveFile(new File([ics], name, { type: "text/calendar" }));
 }

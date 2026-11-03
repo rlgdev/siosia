@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../src/backend/types";
 import { disablePush, enablePush, pushState } from "../../src/services/push";
-import { apptStatusText, CHAT_PUSH_CHARS, kidsText, leadText, pushText, rideLineText } from "../../supabase/functions/_shared/push-text";
-import { CHAT_GRACE_MS, dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
+import { apptStatusText, CHAT_PUSH_CHARS, kidsText, leadText, PUSH_KINDS, pushText, rideLineText } from "../../supabase/functions/_shared/push-text";
+import { CHAT_GRACE_MS, claimRows, dispatch, MAX_ATTEMPTS, openUrl, type Deps, type OutboxRow, type Subscription } from "../../supabase/functions/push-dispatch/dispatch";
 
 const AT = Date.UTC(2026, 9, 12, 12, 30); // 14:30 in Warsaw (CEST)
 
@@ -800,12 +800,12 @@ describe("2.6 family, contract, summary and weekly report texts (FR-250–282)",
   it("ships the 2.6 kinds and their URLs in the push-dispatch bundle (B8)", () => {
     const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
     for (const s of ["family_invite", "contract_proposed", "appt_summary", "weekly_report", "./?open=family", "./?open=report", "sign_in", "./?open=account"]) expect(bundle).toContain(s);
-    // 2.14 (V43, V91): the change kinds, their tag and their URL.
+    // 2.14 (V43, V94): the change kinds, their tag and their URL.
     for (const s of ["appt_change_proposed", "appt_change_accepted", "appt_change_declined", "booking_moved", "change:", "./?appointment="]) expect(bundle).toContain(s);
   });
 });
 
-describe("2.14 change texts (FR-334, V91)", () => {
+describe("2.14 change texts (FR-338, V94)", () => {
   const TZ = "Europe/Warsaw";
   const H = 3600_000;
   // Proposed: Mon 12 Oct 14:30–16:30 → Tue 13 Oct 15:00–17:00 at a new place.
@@ -837,7 +837,7 @@ describe("2.14 change texts (FR-334, V91)", () => {
     expect(pushText("appt_change_proposed", { ...move, fromPlace: null }, "en", TZ, "a1").body).toBe(
       "Toria proposes Tue 13 Oct, 15:00–17:00 instead of Mon 12 Oct, 14:30–16:30."
     );
-    // B13: an appointment that had no place (fromPlace "") moved to one still names the new place.
+    // B15: an appointment that had no place (fromPlace "") moved to one still names the new place.
     const fromNone = { ...move, fromPlace: "", place: "Park" };
     expect(pushText("appt_change_proposed", fromNone, "en", TZ, "a1").body).toBe("Toria proposes Tue 13 Oct, 15:00–17:00 at Park instead of Mon 12 Oct, 14:30–16:30.");
     expect(pushText("appt_change_proposed", fromNone, "pl", TZ, "a1").body).toContain("15:00–17:00 (Park) zamiast");
@@ -888,5 +888,78 @@ describe("2.14 change texts (FR-334, V91)", () => {
     });
     expect(pushText("booking_moved", { ...p, dropped: true }, "pl", TZ, "r1").title).toBe("Rezerwacja nie jest już Twoja");
     expect(openUrl("booking_moved", p)).toBe("./?open=planned");
+  });
+});
+
+describe("2.12.3 reaction texts (FR-331, V88)", () => {
+  const TZ = "Europe/Warsaw";
+
+  it("says who reacted with what, quotes the message or names the update, tags per item and opens the thread or C3", () => {
+    expect(pushText("reaction", { sender: "Siosia", emoji: "❤️", text: "Kids are asleep", room: "appt:a1", messageId: "m1" }, "en", TZ, "a1")).toEqual({
+      title: "Siosia reacted ❤️",
+      body: "“Kids are asleep”",
+      tag: "reaction:m1"
+    });
+    expect(pushText("reaction", { sender: "Toria", emoji: "🙏", text: "Jadę...", room: "ride:r1", messageId: "m2" }, "pl", TZ, "r1")).toEqual({
+      title: "Toria reaguje 🙏",
+      body: "„Jadę...”",
+      tag: "reaction:m2"
+    });
+    // An update: its words, 📷 for a photo — alone without words.
+    expect(pushText("reaction", { sender: "Anna", emoji: "😂", text: "", photo: true, updateId: "u1" }, "en", TZ, "a1")).toEqual({ title: "Anna reacted 😂", body: "📷 Photo", tag: "reaction:u1" });
+    expect(pushText("reaction", { sender: "Anna", emoji: "😂", text: "Obiad", photo: true, updateId: "u1" }, "pl", TZ, "a1").body).toBe("Obiad 📷");
+    expect(pushText("reaction", { sender: "Anna", emoji: "👍", text: "Nap", updateId: "u1" }, "en", TZ, "a1").body).toBe("Nap");
+    // Cut like a chat message; no nickname → Someone; never a {placeholder} or "undefined".
+    const long = pushText("reaction", { emoji: "👍", text: "x".repeat(100), room: "appt:a1", messageId: "m1" }, "en", TZ, "a1");
+    expect(long).toEqual({ title: "Someone reacted 👍", body: `“${"x".repeat(80)}…”`, tag: "reaction:m1" });
+    for (const l of ["en", "pl"]) {
+      const t = pushText("reaction", {}, l, TZ, "a1");
+      expect(`${t.title} ${t.body}`).not.toMatch(/\{|undefined|null/);
+    }
+    // It is not a chat push (the service worker swallows those for an open thread).
+    expect(pushText("reaction", { room: "appt:a1", messageId: "m1" }, "en", TZ, "a1").tag.startsWith("chat:")).toBe(false);
+    expect(openUrl("reaction", { room: "appt:a1", messageId: "m1" }, "a1")).toBe("./?chat=appt:a1");
+    expect(openUrl("reaction", { room: "ride:r1", messageId: "m1" })).toBe("./?chat=ride:r1");
+    expect(openUrl("reaction", { updateId: "u1" }, "a1")).toBe("./?appointment=a1");
+    expect(openUrl("reaction", {})).toBe("./");
+  });
+
+  it("words a kind it does not know plainly — never as another kind (a newer server than this app)", () => {
+    const t = pushText("someday_kind" as never, { at: Date.now() }, "en", TZ, "x1");
+    expect(t).toMatchObject({ title: "Siosia", body: "Something new for you — open Siosia." });
+    expect(pushText("someday_kind" as never, {}, "pl", TZ, "x1").body).toBe("Coś nowego dla Ciebie — otwórz Siosię.");
+  });
+
+  it("ships the reaction kind, its tag and its URL in the push-dispatch bundle (B8, V43)", () => {
+    const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
+    for (const s of ['reaction: ["{sender} reacted {emoji}"', 'reaction: ["{sender} reaguje {emoji}"', "reaction:${", "Something new for you"]) expect(bundle, s).toContain(s);
+    // The dispatch claims only the kinds it can word (an older one leaves the newer kinds waiting).
+    expect(bundle).toContain("p_kinds: PUSH_KINDS");
+    expect(bundle).toContain("PGRST202");
+    expect(PUSH_KINDS).toContain("reaction");
+    expect(PUSH_KINDS).toContain("chat_message");
+    expect(new Set(PUSH_KINDS).size).toBe(PUSH_KINDS.length);
+  });
+});
+
+describe("2.12.3 push-dispatch claims the kinds it words — and still works on a database not migrated yet", () => {
+  const row = { id: 1, user_id: "u", kind: "chat_message" } as OutboxRow;
+  it("passes its kinds to the 2-argument claim", async () => {
+    const rpc = vi.fn(async (_fn: string, _args: Record<string, unknown>) => ({ data: [row], error: null }));
+    expect(await claimRows(rpc, 50)).toEqual([row]);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc.mock.calls[0][1]).toEqual({ p_limit: 50, p_kinds: PUSH_KINDS });
+  });
+  it("falls back to the 1-argument claim when the database has no 2-argument one (redeployed before the SQL)", async () => {
+    const rpc = vi
+      .fn(async (_fn: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({ data: [row], error: null }))
+      .mockResolvedValueOnce({ data: null, error: { code: "PGRST202", message: "Could not find the function public.siosia_claim_push(p_kinds, p_limit)" } });
+    expect(await claimRows(rpc, 50)).toEqual([row]);
+    expect(rpc.mock.calls[1][1]).toEqual({ p_limit: 50 });
+  });
+  it("any other error stops the run (as before)", async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { code: "57014", message: "timeout" } }));
+    await expect(claimRows(rpc, 50)).rejects.toMatchObject({ code: "57014" });
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

@@ -193,12 +193,12 @@ export interface SeriesView {
   starts: number[];
   rideTemplates: RideTemplate[];
   ics: string | null;
-  /** 2.14 (FR-336): the rule's own start of the first date and its length (calendar export of moved dates). */
+  /** 2.14 (FR-340): the rule's own start of the first date and its length (calendar export of moved dates). */
   first?: number;
   durationMin?: number;
-  /** 2.14 (FR-336): the series' own place (the calendar's repeating event; a moved date has its own). */
+  /** 2.14 (FR-340): the series' own place (the calendar's repeating event; a moved date has its own). */
   place?: Place | null;
-  /** 2.14 (FR-336): dates moved by an accepted change — the rule's slot (orig) and where it went. */
+  /** 2.14 (FR-340): dates moved by an accepted change — the rule's slot (orig) and where it went. */
   moved?: { orig: number; start: number; end: number; place: Place | null }[];
 }
 
@@ -255,6 +255,8 @@ export interface AppointmentView {
   rate: number | null;
   /** 2.6 (FR-262): the contract that set the price, if any. */
   contractId: string | null;
+  /** 2.12.2: the price is the client's custom payment (kept as set: no contract reprices it). */
+  customPrice: boolean;
   /** 2.6 (FR-272): the provider's correction of the time, in minutes; null = as booked. */
   actualMin: number | null;
   /** 2.6 (FR-270): what it cost — done appointments only (parties and family). */
@@ -263,11 +265,11 @@ export interface AppointmentView {
   tip: { amount: number; by: string; at: number } | null;
   /** 2.6 (FR-254): role "family" — whose appointment this is (that member's side and nickname). */
   family: { side: PartyRole; member: string } | null;
-  /** 2.14 (FR-330–335): the pending change proposal (the two parties only; others null). */
+  /** 2.14 (FR-334–339): the pending change proposal (the two parties only; others null). */
   change: ChangeView | null;
 }
 
-/** 2.14 (FR-330): a move of a planned appointment, or a new length of a live or just-finished one. */
+/** 2.14 (FR-334): a move of a planned appointment, or a new length of a live or just-finished one. */
 export type ChangeKind = "move" | "length";
 
 /** 2.14: what an attached ride does when the pending change is accepted. */
@@ -287,7 +289,7 @@ export interface ChangeRide {
   fare?: number;
 }
 
-/** 2.14 (FR-330–335): a pending change as one party sees it. */
+/** 2.14 (FR-334–339): a pending change as one party sees it. */
 export interface ChangeView {
   id: string;
   kind: ChangeKind;
@@ -311,7 +313,7 @@ export interface ChangeView {
   rides: ChangeRide[];
 }
 
-/** 2.14 (FR-330): a new pickup for one of my own attached rides, with the phone's route estimate. */
+/** 2.14 (FR-334): a new pickup for one of my own attached rides, with the phone's route estimate. */
 export interface ChangePickup {
   leg: Leg;
   pickup: Place;
@@ -321,7 +323,7 @@ export interface ChangePickup {
 }
 
 /**
- * 2.14 (FR-330, FR-333): a proposal. move = before the start: startsAt, durationMin, place (as the
+ * 2.14 (FR-334, FR-337): a proposal. move = before the start: startsAt, durationMin, place (as the
  * appointment has them when left out), my rides' pickups. length = live or done: minutes only.
  */
 export interface ChangeInput {
@@ -342,7 +344,7 @@ export interface CostSummary {
   /** null = no price agreed. */
   total: number | null;
   currency: string;
-  source: "contract" | "catalog" | "fixed" | "none";
+  source: "contract" | "catalog" | "fixed" | "custom" | "none";
   corrected: boolean;
 }
 
@@ -523,6 +525,11 @@ export interface ServiceRequestInput {
   place: Place | null;
   note: string;
   repeat?: RepeatInput;
+  /**
+   * 2.12.2: a custom payment the client sets for each occurrence (a total, not per hour) instead of
+   * the rate (contract or price list; a YOLO event: the Childcare rate). null/absent = the rate.
+   */
+  customPrice?: number | null;
 }
 
 export interface RideTemplateInput {
@@ -590,7 +597,20 @@ export interface DeploymentConfig {
   googleSignIn?: GoogleSignIn;
   /** 2.12 (FR-329): "invite" = the invite code or a #join= link makes a member; "open" = every signed-in account. */
   membershipMode?: MembershipMode;
+  /**
+   * What the database can do beyond 2.12.1 (siosia_config): "customPrice" (2.12.2: a custom payment,
+   * a YOLO event at the Childcare list price), "reactions" (2.12.3). A database not migrated yet sends
+   * none, so the app published first leaves those out until the SQL runs (V89).
+   */
+  features?: ServerFeature[];
 }
+
+/** The parts of the app that need a newer database (see DeploymentConfig.features). */
+/** 2.14: changes = change proposals (appointment_changes, siosia_propose_change …). */
+export type ServerFeature = "customPrice" | "reactions" | "changes";
+
+/** Whether the database behind this app does `f` (V89). */
+export const hasFeature = (dep: { features?: ServerFeature[] } | null | undefined, f: ServerFeature): boolean => !!dep?.features?.includes(f);
 
 export type AuthMode = "anonymous" | "accounts";
 export type GoogleSignIn = "off" | "no_standalone" | "no_ios" | "on";
@@ -730,6 +750,17 @@ export interface ChatMessage {
   sentAt: number;
   /** When the other party read it (own messages), or when I read it. */
   readAt: number | null;
+  /** 2.12.3: the reactions on it, in the fixed order of REACTIONS (only emoji someone set). */
+  reactions: Reaction[];
+}
+
+/** 2.12.3 (FR-330): one emoji on a message or an update — how many, whether I am one, who else. */
+export interface Reaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+  /** The others who set it, by nickname, first come first (the viewer is `mine`, never named). */
+  names: string[];
 }
 
 export interface ChatThread {
@@ -758,6 +789,8 @@ export interface SessionUpdate {
   /** A signed URL (demo: a data URL), or null. */
   photo: string | null;
   createdAt: number;
+  /** 2.12.3: the reactions on it, in the fixed order of REACTIONS. */
+  reactions: Reaction[];
 }
 
 /** 2.5: the feed of one appointment (FR-231). */

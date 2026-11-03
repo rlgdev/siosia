@@ -3,7 +3,7 @@
 // month earnings on top (v1 FR-027). A done appointment not yet rated offers Rate (C3) for 24 h.
 // Replaces the v1 Ride history and Earnings & history panels; an online driver, who keeps D1,
 // opens the same list as a panel.
-// 2.14 (FR-335): a done appointment with a pending change of its length shows the change chip.
+// 2.14 (FR-339): a done appointment with a pending change of its length shows the change chip.
 
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";

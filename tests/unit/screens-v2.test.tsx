@@ -44,6 +44,7 @@ import { HistoryScreen } from "../../src/screens/HistoryScreen";
 import { Planned } from "../../src/screens/Planned";
 import { ProfilePanel } from "../../src/screens/Profile";
 import { RequestPanel } from "../../src/screens/RequestForm";
+import { Reactions } from "../../src/components/Reactions";
 import { AppStore, StoreContext } from "../../src/state/store";
 
 // No network in tests: a fixed road route.
@@ -258,6 +259,7 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     coming: null,
     rate: null,
     contractId: null,
+    customPrice: false,
     actualMin: null,
     cost: null,
     tip: null,
@@ -1403,7 +1405,7 @@ describe("2.3 P1: the kids line and the chat of an item (FR-202, FR-221)", () =>
 
 describe("2.3 the chat sheet (FR-220–225)", () => {
   const ROOM = "appt:a1" as const;
-  const msg = (over: Partial<ChatMessage>): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, ...over });
+  const msg = (over: Partial<ChatMessage>): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, reactions: [], ...over });
   const thread = (over: Partial<ChatThread> = {}): ChatThread => ({
     room: ROOM,
     other: { nickname: "Ewa", rating: { mean: 5, count: 2 }, icon: null, photo: "data:image/jpeg;base64,/9j/EWA" },
@@ -1573,6 +1575,7 @@ describe("2.5 C3: the session feed and heading home (FR-230–233, FR-240–241,
     text: "Zosia is drawing",
     photo: null,
     createdAt: Date.now() - 60_000,
+    reactions: [],
     ...over
   });
   const myState = async () => ({ ...MY, serverNow: Date.now() });
@@ -1689,5 +1692,305 @@ describe("2.5 C3: the session feed and heading home (FR-230–233, FR-240–241,
     await userEvent.selectOptions(screen.getByTestId("coming-pick"), "30");
     await userEvent.click(screen.getByTestId("coming-send"));
     await waitFor(() => expect(comingHome).toHaveBeenLastCalledWith("a1", 30));
+  });
+});
+
+describe("2.12.2 the price of an appointment: a YOLO event at the Childcare rate, a custom amount, est. in Planned", () => {
+  const YOLO = DEFAULT_SERVICES.find((e) => e.id === "yolo_halloween")!;
+  const priced = DEFAULT_SERVICES.map((e) => (e.id === "childcare" ? { ...e, price: { perHour: 50 } } : e));
+  const deployment = { ...DEFAULT_CONFIG, services: priced };
+
+  it("prices a YOLO event at the Childcare rate, or sends the custom amount typed instead", async () => {
+    const requestService = vi.fn(async () => ({}) as never);
+    setup("en", <RequestPanel />, { catalog: async () => [{ ...YOLO, providers: [SIOSIA] }], requestService }, { panel: "request", panelArg: "yolo_halloween", deployment });
+    const send = await screen.findByTestId("request-send");
+    expect(screen.getByTestId("request-pay-rate")).toBeChecked();
+    expect(screen.getByTestId("request-price")).toHaveTextContent(/150[,.]00/);
+    expect(screen.getByTestId("request-list-rate")).toHaveTextContent(/Childcare rate: .*50[,.]00\/h/);
+    await userEvent.click(screen.getByTestId("request-pay-custom"));
+    expect(send).toBeDisabled();
+    expect(screen.getByTestId("request-problem")).toHaveTextContent("Enter an amount from 1 to 10000.");
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "0.5" } });
+    expect(send).toBeDisabled();
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "12.345" } });
+    expect(screen.getByTestId("request-problem")).toHaveTextContent("Use at most two decimals");
+    expect(send).toBeDisabled();
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "200" } });
+    expect(screen.getByTestId("request-price")).toHaveTextContent(/200[,.]00/);
+    expect(screen.getByTestId("request-custom")).toHaveTextContent("custom amount");
+    expect(send).toBeEnabled();
+    await userEvent.click(send);
+    await waitFor(() => expect(requestService).toHaveBeenCalled());
+    expect(requestService).toHaveBeenCalledWith(expect.objectContaining({ serviceId: "yolo_halloween", providerId: "pub-siosia", durationMin: 180, customPrice: 200 }));
+  });
+
+  it("says when there is no rate yet and offers the custom amount, in Polish", async () => {
+    setup("pl", <RequestPanel />, { catalog: async () => [{ ...YOLO, providers: [SIOSIA] }] }, { panel: "request", panelArg: "yolo_halloween" });
+    expect(await screen.findByTestId("request-no-rate")).toHaveTextContent("Nie ma jeszcze stawki");
+    expect(screen.queryByTestId("request-price")).toBeNull();
+    await userEvent.click(screen.getByTestId("request-pay-custom"));
+    fireEvent.change(screen.getByTestId("request-custom-price"), { target: { value: "120,5" } });
+    expect(screen.getByTestId("request-price")).toHaveTextContent(/120[,.]50/);
+  });
+
+  it("C3: 'estimate' only while it may still happen; a done custom amount says so and the correction hint keeps the total", async () => {
+    const past = Date.now() - 5 * 3600_000;
+    const cancelled = appt({ status: "cancelled", cancelledBy: "client", price: 150, rate: 50 });
+    const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => cancelled }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-price")).not.toHaveTextContent("estimate");
+    unmount();
+    const coming = appt({ price: 150, rate: 50 });
+    const second = setup("en", <AppointmentPanel />, { getAppointment: async () => coming }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-price")).toHaveTextContent("estimate");
+    second.unmount();
+    const done = appt({
+      status: "done",
+      role: "provider",
+      startsAt: past,
+      endedAt: Date.now() - 3600_000,
+      price: 200,
+      rate: null,
+      customPrice: true,
+      cost: { minutes: 180, rate: null, total: 200, currency: "PLN", source: "custom", corrected: false }
+    });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => done }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("cost-source")).toHaveTextContent("custom amount");
+    expect(screen.getByTestId("cost-total")).toHaveTextContent(/200[,.]00/);
+  });
+
+  it("shows every appointment's price in Planned: est. at a rate, a custom amount as set, or no price set", async () => {
+    const now = Date.now();
+    const planned = vi.fn(async () => ({
+      appointments: [
+        appt({ id: "a1", startsAt: now + 26 * 3600_000, price: 150, rate: 50 }),
+        appt({ id: "a2", startsAt: now + 27 * 3600_000, price: 200, rate: null, customPrice: true }),
+        appt({ id: "a3", startsAt: now + 28 * 3600_000, price: null, rate: null })
+      ],
+      rides: [],
+      open: []
+    }));
+    setup("en", <Planned />, { planned });
+    await screen.findAllByTestId("planned-appointment");
+    const items = screen.getAllByTestId("planned-appointment");
+    expect(within(items[0]).getByTestId("appt-price")).toHaveTextContent(/^est\. .*150[,.]00/);
+    expect(within(items[1]).getByTestId("appt-price")).not.toHaveTextContent("est.");
+    expect(within(items[1]).getByTestId("appt-price")).toHaveTextContent(/200[,.]00/);
+    expect(within(items[2]).getByTestId("appt-price-none")).toHaveTextContent("no price set");
+  });
+});
+
+describe("2.12.3 reactions and saving a photo (FR-330, FR-332, FR-333)", () => {
+  const ROOM = "appt:a1" as const;
+  const EWA_PARTY = { nickname: "Ewa", rating: { mean: 5, count: 2 }, icon: null, photo: null };
+  const SIOSIA_PARTY = { nickname: "Siosia", rating: { mean: 4.8, count: 5 }, icon: null, photo: null };
+  const msg = (over: Partial<ChatMessage> = {}): ChatMessage => ({ id: "m1", room: ROOM, mine: false, text: "Hi!", sentAt: Date.now() - 60_000, readAt: null, reactions: [], ...over });
+  const thread = (messages: ChatMessage[], open = true): ChatThread => ({ room: ROOM, other: EWA_PARTY, messages, open, unread: 0 });
+  const update = (over: Partial<SessionUpdate> = {}): SessionUpdate => ({
+    id: "u1",
+    appointmentId: "a1",
+    author: SIOSIA_PARTY,
+    mine: false,
+    kid: null,
+    text: "",
+    photo: "data:image/jpeg;base64,/9j/4AAQ",
+    createdAt: new Date(2026, 9, 31, 14, 30).getTime(),
+    reactions: [],
+    ...over
+  });
+  const myState = async () => ({ ...MY, serverNow: Date.now() });
+  const HEART = { emoji: "❤️", count: 1, mine: false, names: ["Ewa"] };
+
+  it("chat: shows who reacted, picks one of the six, takes mine back by tapping its chip", async () => {
+    const reactMessage = vi.fn<Backend["reactMessage"]>(async (_id, emoji) => msg({ reactions: emoji ? [{ emoji, count: 2, mine: true, names: ["Ewa"] }] : [HEART] }));
+    setup("en", <ChatPanel />, { chat: async () => thread([msg({ reactions: [HEART] })]), myState, reactMessage }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    const chip = await screen.findByTestId("chat-react-chip");
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(chip).toHaveAccessibleName("❤️: Ewa");
+    expect(chip).toHaveTextContent("❤️1");
+    await userEvent.click(screen.getByTestId("chat-react-add"));
+    const picks = within(screen.getByTestId("chat-react-picker")).getAllByRole("button");
+    expect(picks.map((b) => b.textContent)).toEqual(["❤️", "👍", "😂", "😮", "😢", "🙏"]);
+    await userEvent.click(picks[0]);
+    await waitFor(() => expect(reactMessage).toHaveBeenCalledWith("m1", "❤️"));
+    await waitFor(() => expect(screen.getByTestId("chat-react-chip")).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByTestId("chat-react-chip")).toHaveAccessibleName("❤️: you, Ewa");
+    expect(screen.queryByTestId("chat-react-picker")).toBeNull();
+    await userEvent.click(screen.getByTestId("chat-react-chip"));
+    await waitFor(() => expect(reactMessage).toHaveBeenLastCalledWith("m1", null));
+    await waitFor(() => expect(screen.getByTestId("chat-react-chip")).toHaveAttribute("aria-pressed", "false"));
+  });
+
+  it("chat: too many says so; a closed room shows the reactions but nothing to tap — in Polish", async () => {
+    const reactMessage = vi.fn<Backend["reactMessage"]>(async () => {
+      throw new ServerError("too_many");
+    });
+    const { unmount } = setup("en", <ChatPanel />, { chat: async () => thread([msg()]), myState, reactMessage }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    await userEvent.click(await screen.findByTestId("chat-react-add"));
+    await userEvent.click(within(screen.getByTestId("chat-react-picker")).getAllByRole("button")[1]);
+    expect(await screen.findByRole("alert")).toHaveTextContent("That's a lot of reactions at once");
+    unmount();
+    setup("pl", <ChatPanel />, { chat: async () => thread([msg({ reactions: [{ ...HEART, mine: true, count: 2 }] })], false), myState }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    const chip = await screen.findByTestId("chat-react-chip");
+    expect(chip.tagName).toBe("SPAN");
+    expect(chip).toHaveAccessibleName("❤️: Ty, Ewa");
+    expect(screen.queryByTestId("chat-react-add")).toBeNull();
+  });
+
+  it("feed: reacts to a photo; the provider's family reads the reactions without reacting", async () => {
+    const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+    const reactUpdate = vi.fn<Backend["reactUpdate"]>(async (_id, emoji) => update({ reactions: [{ emoji: emoji!, count: 1, mine: true, names: [] }] }));
+    const updates = vi.fn(async () => ({ appointmentId: "a1", open: true, items: [update()] }));
+    const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates, myState, reactUpdate }, { panel: "appointment", panelArg: "a1" });
+    await userEvent.click(await screen.findByTestId("feed-react-add"));
+    await userEvent.click(within(screen.getByTestId("feed-react-picker")).getByRole("button", { name: "👍" }));
+    await waitFor(() => expect(reactUpdate).toHaveBeenCalledWith("u1", "👍"));
+    await waitFor(() => expect(screen.getByTestId("feed-react-chip")).toHaveAccessibleName("👍: you"));
+    unmount();
+    const kin = appt({ role: "family", family: { side: "provider", member: "Siosia" }, feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+    const seen = vi.fn(async () => ({ appointmentId: "a1", open: true, items: [update({ reactions: [{ emoji: "😂", count: 2, mine: false, names: ["Toria", "Anna"] }] })] }));
+    setup("en", <AppointmentPanel />, { getAppointment: async () => kin, updates: seen, myState }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("feed-react-chip")).toHaveAccessibleName("😂: Toria, Anna");
+    expect(screen.queryByTestId("feed-react-add")).toBeNull();
+  });
+
+  it("on a database not migrated yet (no features): no Payment choice, no Childcare-rate preview, no ☺ (V89)", async () => {
+    const YOLO = DEFAULT_SERVICES.find((e) => e.id === "yolo_halloween")!;
+    const old = { ...DEFAULT_CONFIG, features: undefined, services: DEFAULT_SERVICES.map((e) => (e.id === "childcare" ? { ...e, price: { perHour: 50 } } : e)) };
+    const requestService = vi.fn(async () => ({}) as never);
+    const { unmount } = setup("en", <RequestPanel />, { catalog: async () => [{ ...YOLO, providers: [SIOSIA_PARTY as never] }], requestService }, { panel: "request", panelArg: "yolo_halloween", deployment: old });
+    await screen.findByTestId("request-form");
+    expect(screen.queryByTestId("request-pay")).toBeNull();
+    expect(screen.queryByTestId("request-price")).toBeNull(); // the old server would freeze no price
+    unmount();
+    const { unmount: u2 } = setup("en", <ChatPanel />, { chat: async () => thread([{ ...msg(), reactions: undefined as never }]), myState }, { uid: "u", my: MY, panel: "chat", panelArg: ROOM });
+    expect(await screen.findByTestId("chat-msg-theirs")).toHaveTextContent("Hi!");
+    expect(screen.queryByTestId("chat-react-add")).toBeNull();
+    u2();
+    const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates: vi.fn(async () => ({ appointmentId: "a1", open: true, items: [{ ...update(), reactions: undefined as never }] })), myState }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("feed-photo")).toBeInTheDocument(); // Save photo needs nothing new
+    expect(screen.queryByTestId("feed-react-add")).toBeNull();
+  });
+
+  it("the picker comes into view, focus goes back to ☺ after a pick, and it closes once the item turns read-only", async () => {
+    const seen = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = seen;
+    try {
+      const onReact = vi.fn(async () => {});
+      const { rerender } = setup("en", <Reactions reactions={[]} onReact={onReact} testId="r" />, {});
+      await userEvent.click(screen.getByTestId("r-add"));
+      expect(seen).toHaveBeenCalledWith({ block: "nearest" });
+      screen.getByRole("button", { name: "🙏" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() => expect(onReact).toHaveBeenCalledWith("🙏"));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("r-add")));
+      await userEvent.click(screen.getByTestId("r-add"));
+      expect(screen.getByTestId("r-picker")).toBeInTheDocument();
+      rerender(
+        <StoreContext.Provider value={new AppStore()}>
+          <I18nProvider lang="en">
+            <Reactions reactions={[]} onReact={undefined} testId="r" />
+          </I18nProvider>
+        </StoreContext.Provider>
+      );
+      expect(screen.queryByTestId("r-picker")).toBeNull();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  describe("Save photo in the full-size view (FR-333)", () => {
+    const create = vi.fn<(b: Blob) => string>(() => "blob:siosia");
+    const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL, ua: navigator.userAgent };
+    afterEach(() => {
+      URL.createObjectURL = original.create;
+      URL.revokeObjectURL = original.revoke;
+      Object.defineProperty(navigator, "userAgent", { value: original.ua, configurable: true });
+      delete (navigator as { share?: unknown }).share;
+      delete (navigator as { canShare?: unknown }).canShare;
+      vi.restoreAllMocks();
+      create.mockClear();
+    });
+    const openPhoto = async (lang: Lang = "en", over: Partial<SessionUpdate> = {}) => {
+      const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+      setup(lang, <AppointmentPanel />, { getAppointment: async () => live, updates: vi.fn(async () => ({ appointmentId: "a1", open: true, items: [update(over)] })), myState }, { panel: "appointment", panelArg: "a1" });
+      await userEvent.click(await screen.findByTestId("feed-photo"));
+      return screen.getByTestId("feed-lightbox-save");
+    };
+
+    it("downloads the JPEG named by the time it was posted (Android, desktop); the view stays open", async () => {
+      URL.createObjectURL = create as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = vi.fn();
+      const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      const save = await openPhoto();
+      await waitFor(() => expect(save).toBeEnabled());
+      await userEvent.click(save);
+      await waitFor(() => expect(click).toHaveBeenCalled());
+      const file = create.mock.calls[0][0] as File;
+      expect(file.name).toBe("siosia-2026-10-31-1430.jpg");
+      expect(file.type).toBe("image/jpeg");
+      // jsdom's Blob only reads through a FileReader.
+      const bytes = await new Promise<ArrayBuffer>((ok) => {
+        const r = new FileReader();
+        r.onload = () => ok(r.result as ArrayBuffer);
+        r.readAsArrayBuffer(file);
+      });
+      expect(Array.from(new Uint8Array(bytes).slice(0, 3))).toEqual([0xff, 0xd8, 0xff]);
+      expect(click.mock.contexts[0]).toMatchObject({ download: "siosia-2026-10-31-1430.jpg", href: "blob:siosia" });
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Saved");
+      expect(screen.getByTestId("feed-lightbox")).toBeInTheDocument();
+    });
+
+    it("on iPhone hands the photo to the share sheet (Save Image) and says how — in Polish; a closed sheet saves nothing", async () => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15", configurable: true });
+      const share = vi.fn(async (_d: ShareData) => {});
+      Object.assign(navigator, { share, canShare: () => true });
+      const save = await openPhoto("pl");
+      expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("W okienku wybierz „Zachowaj obraz”.");
+      await waitFor(() => expect(save).toBeEnabled());
+      expect(save).toHaveTextContent("Zapisz zdjęcie");
+      await userEvent.click(save);
+      await waitFor(() => expect(share).toHaveBeenCalledWith({ files: [expect.any(File)] }));
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Zapisano");
+      share.mockRejectedValueOnce(Object.assign(new Error("closed"), { name: "AbortError" }));
+      await userEvent.click(screen.getByTestId("feed-lightbox-close"));
+      await userEvent.click(screen.getByTestId("feed-photo"));
+      await waitFor(() => expect(screen.getByTestId("feed-lightbox-save")).toBeEnabled());
+      await userEvent.click(screen.getByTestId("feed-lightbox-save"));
+      await waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("W okienku wybierz");
+    });
+
+    it("an expired link: the feed is fetched again and the fresh link saves; a photo still unreachable offers Try again", async () => {
+      URL.createObjectURL = create as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = vi.fn();
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      const OLD = "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=old";
+      const NEW = "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=new";
+      const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+        String(url) === NEW ? new Response(new Uint8Array([0xff, 0xd8, 0xff]), { status: 200, headers: { "content-type": "image/jpeg" } }) : new Response("gone", { status: 400 })
+      );
+      const live = appt({ feedOpen: true, updateCount: 1, startsAt: Date.now() - 30 * 60_000 });
+      const updates = vi
+        .fn(async () => ({ appointmentId: "a1", open: true, items: [update({ photo: NEW })] }))
+        .mockResolvedValueOnce({ appointmentId: "a1", open: true, items: [update({ photo: OLD })] });
+      setup("en", <AppointmentPanel />, { getAppointment: async () => live, updates, myState }, { panel: "appointment", panelArg: "a1" });
+      await userEvent.click(await screen.findByTestId("feed-photo"));
+      await waitFor(() => expect(screen.getByTestId("feed-lightbox-save")).toBeEnabled());
+      expect(fetch.mock.calls.map((c) => String(c[0]))).toEqual([OLD, NEW]);
+      expect(screen.getByTestId("feed-lightbox").querySelector("img")).toHaveAttribute("src", NEW);
+      await userEvent.click(screen.getByTestId("feed-lightbox-save"));
+      expect(await screen.findByTestId("feed-lightbox-note")).toHaveTextContent("Saved");
+    });
+
+    it("a photo that stays unreachable says so and offers Try again", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("gone", { status: 400 }));
+      await openPhoto("en", { photo: "https://x.supabase.co/storage/v1/object/sign/photos/update/a.jpg?token=t" });
+      await waitFor(() => expect(screen.getByTestId("feed-lightbox-note")).toHaveTextContent("Couldn't get the photo — check the connection and try again."), { timeout: 4000 });
+      const retry = screen.getByTestId("feed-lightbox-save");
+      expect(retry).toHaveTextContent("Retry");
+      expect(retry).toBeEnabled();
+    }, 10_000);
   });
 });

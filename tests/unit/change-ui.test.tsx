@@ -1,4 +1,4 @@
-// Component tests of 2.14 "proposing a change" (FR-330–335, V90): C3 Propose a change (a move with
+// Component tests of 2.14 "proposing a change" (FR-334–339, V93): C3 Propose a change (a move with
 // my ride's new pickup, a new length of a live or done appointment), the pending card (Accept /
 // Decline for the other party, Withdraw for the proposer), the change:<id> panel arg, P1 To answer
 // with the change chip and H1's chip — EN and PL, with a fake backend.
@@ -123,6 +123,7 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     cost: null,
     tip: null,
     family: null,
+    customPrice: false,
     change: null,
     ...over
   };
@@ -152,7 +153,7 @@ function change(a: AppointmentView, over: Partial<ChangeView> = {}): ChangeView 
 
 const at = (h: number, m = 0) => new Date(2026, 10, 3, h, m).getTime();
 
-describe("C3 Propose a change — a move (FR-330, FR-335)", () => {
+describe("C3 Propose a change — a move (FR-334, FR-339)", () => {
   it("sends the new start, length, place and my ride's new pickup with its route estimate", async () => {
     const a = appt({
       rides: [{ rideId: "r1", leg: "there", passenger: "client", mine: true, scheduledFor: Date.now() + 25 * 3600_000, status: "confirmed", driver: null, pickup: PARK, dropoff: KIDS, fare: 20 }]
@@ -204,7 +205,7 @@ describe("C3 Propose a change — a move (FR-330, FR-335)", () => {
   });
 });
 
-describe("C3 the pending change card (FR-332, FR-335, V90)", () => {
+describe("C3 the pending change card (FR-336, FR-339, V93)", () => {
   it("the other party sees old → new, the rides and the note, and accepts or declines — in Polish", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 10, 2, 10, 0));
@@ -266,7 +267,7 @@ describe("C3 the pending change card (FR-332, FR-335, V90)", () => {
   });
 });
 
-describe("C3 a new length (FR-331)", () => {
+describe("C3 a new length (FR-335)", () => {
   it("a live session: the new length with the new end and price from the rate", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 10, 3, 15, 0));
@@ -310,6 +311,36 @@ describe("C3 a new length (FR-331)", () => {
     await waitFor(() => expect(proposeChange).toHaveBeenCalledWith("a1", { kind: "length", minutes: 150, note: "" }));
   });
 
+  it("on a database without change proposals (no 'changes', V89): no Propose a change; the provider still corrects the time", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const old = { ...DEFAULT_CONFIG, features: ["customPrice" as const, "reactions" as const] };
+    const done = appt({
+      role: "provider",
+      status: "done",
+      startsAt: at(14),
+      durationMin: 180,
+      endsAt: at(17),
+      endedAt: at(17),
+      rate: 40,
+      price: 120,
+      cost: { minutes: 180, rate: 40, total: 120, currency: "PLN", source: "catalog", corrected: false }
+    });
+    const setActualTime = vi.fn(async () => done);
+    const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => done, setActualTime }, { panel: "appointment", panelArg: "a1", deployment: old });
+    expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
+    expect(screen.queryByTestId("cost-propose")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("cost-correct"));
+    await userEvent.selectOptions(screen.getByTestId("cost-minutes"), "150");
+    await userEvent.click(screen.getByTestId("cost-save"));
+    await waitFor(() => expect(setActualTime).toHaveBeenCalledWith("a1", 150));
+    unmount();
+    vi.useRealTimers();
+    setup("en", <AppointmentPanel />, { getAppointment: async () => appt() }, { panel: "appointment", panelArg: "a1", deployment: old });
+    expect(await screen.findByTestId("appt-status")).toBeInTheDocument();
+    expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+  });
+
   it("nothing to propose a day after the end", () => {
     const now = Date.now();
     const a = appt({ status: "done", startsAt: now - 30 * 3600_000, durationMin: 60, endsAt: now - 29 * 3600_000 });
@@ -319,7 +350,7 @@ describe("C3 a new length (FR-331)", () => {
   });
 });
 
-describe("P1 To answer and H1 (FR-335)", () => {
+describe("P1 To answer and H1 (FR-339)", () => {
   it("lists a change awaiting me under To answer with its chip, Accept answers it; mine reads Change sent", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 10, 2, 10, 0));
@@ -364,8 +395,8 @@ describe("P1 To answer and H1 (FR-335)", () => {
   });
 });
 
-// B13 (2026-11-03, the 2.14 pre-release review): the sheet and the answer, each finding pinned.
-describe("2.14 review fixes (B13)", () => {
+// B15 (2026-11-03, the 2.14 pre-release review): the sheet and the answer, each finding pinned.
+describe("2.14 review fixes (B15)", () => {
   const myThere = (a: AppointmentView) =>
     [{ rideId: "r1", leg: "there" as const, passenger: "client" as const, mine: true, scheduledFor: a.startsAt - 1800_000, status: "confirmed" as const, driver: null, pickup: PARK, dropoff: KIDS, fare: 20 }];
 

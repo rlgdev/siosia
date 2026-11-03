@@ -249,6 +249,11 @@ to the other person, see when they read it, and get a notification when they wri
 are driving — the message waits in the thread). The chat stays open until a day after the ride or
 appointment ends, then becomes read-only, and is deleted with it.
 
+**Reactions.** Tap the ☺ under a message to answer with one of ❤️ 👍 😂 😮 😢 🙏; tap your own
+again to take it back, or another one to change it. The other person sees it at once and gets one
+notification the first time you react to a message (not when you change it). Each of you has one
+reaction per message.
+
 ## Session updates and heading home
 
 During childcare (or a lesson) the person with the kids can post short **session updates** — a line
@@ -257,6 +262,11 @@ and, if they like, a photo — about everyone or about one kid: open the appoint
 it) and see them live; you can answer there too. The section opens 30 minutes before the start and
 takes posts until 7 days after the end; afterwards it stays under the appointment in History,
 read-only. Only the two of you see it, and each of you can delete your own posts.
+
+You can **react** to every update — a photo included — with the same ☺ as in the chat (while the
+section takes posts); its author is told once. **Save a photo**: tap it to see it full size, then
+*Save photo* — on iPhone choose *Save Image* in the sheet and it lands in Photos; on Android it is
+downloaded and shows up in the gallery (in *Downloads*).
 
 On the way back, tap **I'm heading home** on the appointment: Siosia takes your phone's location,
 works out the driving time to the place and tells the other person "about N min — around HH:MM".
@@ -277,7 +287,8 @@ their own kids go with them. A family has at most 6 people.
 rate per hour for each service (childcare 40 PLN/h, say), or — if you offer services — the family
 you work for. It binds once the other side taps *Accept*. Every new request between your family and
 that person then takes the contract's rate ("Contract rate with Toria: 40.00 PLN/h" on the request
-form); requests already sent keep their price. *Propose new rates* replaces it once accepted; either
+form); requests already sent keep their price — except those still without one, which take the
+contract's rate when it becomes active. *Propose new rates* replaces it once accepted; either
 side may *End contract*.
 
 **Invite someone new.** Family & contracts → *Invite someone new to Siosia* makes a personal link and
@@ -307,7 +318,12 @@ Nicholas' Day, Christmas, New Year's Eve, winter holidays, date night, carnival,
 Day, summer holidays, back to school, birthday parties, kids' parties, sleepovers, weddings. The next
 ones come first ("in 3 days"). Each is booked like Childcare — place, time, kids, approval — and
 whoever looks after kids can be asked; with a contract it costs your Childcare rate unless the
-contract sets one for that event.
+contract sets one for that event, and without one the price list's Childcare rate.
+
+**Payment.** On any request form choose *At the rate* (the contract's, else the price list's) or
+*Custom amount* — what you will pay for the whole event (each time, when it repeats). No contract
+changes a custom amount. Planned shows every appointment's price: "est." when it is the rate × the
+booked time (the final cost follows the time actually spent), or "no price set".
 
 ## Notifications, tips and My profile
 
@@ -628,6 +644,11 @@ napisz do drugiej osoby, zobacz, kiedy przeczyta, i dostań powiadomienie, gdy o
 trakcie jazdy — wiadomość czeka w wątku). Czat jest otwarty do dnia po zakończeniu kursu lub
 terminu, potem można go tylko czytać, a znika razem z nim.
 
+**Reakcje.** Stuknij ☺ pod wiadomością, żeby odpowiedzieć jednym z ❤️ 👍 😂 😮 😢 🙏; stuknij swoją
+jeszcze raz, żeby ją cofnąć, albo inną, żeby ją zmienić. Druga osoba widzi ją od razu i dostaje
+jedno powiadomienie, gdy pierwszy raz zareagujesz na wiadomość (nie przy zmianie). Każde z was ma
+jedną reakcję na wiadomość.
+
 ## Relacja z opieki i „Wracam do domu”
 
 W czasie opieki (albo lekcji) osoba z dziećmi może wysyłać krótkie **wiadomości z relacji** — zdanie
@@ -636,6 +657,11 @@ i, jeśli chce, zdjęcie — o wszystkich albo o jednym dziecku: otwiera termin 
 żywo; możesz tam też odpowiedzieć. Sekcja otwiera się 30 minut przed początkiem i przyjmuje wpisy
 do 7 dni po zakończeniu; potem zostaje pod terminem w Historii, tylko do czytania. Widzicie ją
 tylko wy oboje, a każde z was może usunąć własne wpisy.
+
+Na każdy wpis — także zdjęcie — możesz **zareagować** tym samym ☺ co w czacie (dopóki sekcja
+przyjmuje wpisy); autor dostaje jedno powiadomienie. **Zapisz zdjęcie**: stuknij je, żeby zobaczyć
+w całości, potem *Zapisz zdjęcie* — na iPhonie wybierz w okienku *Zachowaj obraz* i trafi do
+Zdjęć; na Androidzie zostanie pobrane i pojawi się w galerii (w *Pobranych*).
 
 W drodze powrotnej dotknij **Wracam do domu** w terminie: Siosia bierze położenie telefonu, liczy
 czas jazdy autem na miejsce i mówi drugiej osobie „około N min — około HH:MM”. Wysyłane są tylko
@@ -655,7 +681,8 @@ umówił. Każdy może *Opuścić rodzinę*; jego dzieci odchodzą z nim. Rodzin
 za godzinę dla każdej usługi (np. opieka 40 zł/godz.), albo — jeśli oferujesz usługi — rodzina, dla
 której pracujesz. Wiąże, gdy druga strona dotknie *Akceptuj*. Każda nowa prośba między Twoją rodziną a
 tą osobą ma wtedy stawkę z umowy („Stawka z umowy z: Toria — 40,00 zł/godz.” w formularzu); wysłane
-już prośby zachowują swoją cenę. *Zaproponuj nowe stawki* zastępuje umowę po akceptacji; każda strona
+już prośby zachowują swoją cenę — poza tymi jeszcze bez ceny, które dostają stawkę z umowy, gdy ta
+zaczyna obowiązywać. *Zaproponuj nowe stawki* zastępuje umowę po akceptacji; każda strona
 może ją *Zakończyć*.
 
 **Zaproś kogoś nowego.** Rodzina i umowy → *Zaproś kogoś nowego do Siosi* tworzy osobisty link i
@@ -685,7 +712,13 @@ Na dole *Siosi* sekcja **YOLO** zbiera wyjątkowe dni w roku: Halloween, Mikoła
 Sylwester, ferie, randkę we dwoje, karnawał, Wielkanoc, Dzień Dziecka, wakacje, powrót do szkoły,
 urodziny, imprezy dla dzieci, piżama party, wesela. Najbliższe są pierwsze („za 3 dni”). Każde
 rezerwujesz jak opiekę nad dziećmi — miejsce, czas, dzieci, akceptacja — a poprosić możesz każdego,
-kto opiekuje się dziećmi; z umową kosztuje stawkę opieki, chyba że umowa ma osobną dla tego dnia.
+kto opiekuje się dziećmi; z umową kosztuje stawkę opieki, chyba że umowa ma osobną dla tego dnia, a bez
+umowy — stawkę opieki z cennika.
+
+**Płatność.** W formularzu prośby wybierz *Według stawki* (z umowy, a bez niej z cennika) albo *Własna
+kwota* — ile zapłacisz za całe wydarzenie (za każdym razem, gdy się powtarza). Żadna umowa nie zmienia
+własnej kwoty. W Zaplanowanych każdy termin pokazuje cenę: „ok.”, gdy to stawka × zarezerwowany czas
+(ostateczny koszt zależy od faktycznego czasu), albo „bez ustalonej ceny”.
 
 ## Powiadomienia, napiwki i Mój profil
 

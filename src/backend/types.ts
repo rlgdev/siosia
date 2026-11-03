@@ -229,6 +229,10 @@ export interface Backend {
   postUpdate(appointmentId: string, input: UpdateInput, jpeg?: Blob | null): Promise<SessionUpdate>;
   /** Removes my own update (its photo goes too). */
   deleteUpdate(id: string): Promise<void>;
+  /** 2.12.3 (FR-330): sets my one reaction (one of REACTIONS) on a chat message, or takes it back (null). */
+  reactMessage(messageId: string, emoji: string | null): Promise<ChatMessage>;
+  /** 2.12.3 (FR-330): the same on a session update. */
+  reactUpdate(updateId: string, emoji: string | null): Promise<SessionUpdate>;
   /** 2.5 (FR-240): the client is heading home, about this many minutes away (computed on the phone). */
   comingHome(appointmentId: string, minutes: number): Promise<AppointmentView>;
 
@@ -253,7 +257,7 @@ export interface Backend {
   /** The provider corrects the time of a done appointment within 24 h (FR-272). */
   setActualTime(appointmentId: string, minutes: number): Promise<AppointmentView>;
   /**
-   * 2.14 (FR-330–335): either party proposes a change — a move of a planned appointment (start,
+   * 2.14 (FR-334–339): either party proposes a change — a move of a planned appointment (start,
    * length, place, my rides' pickups) or a new length of a live or just-finished one. The other party
    * answers; a counter-proposal replaces the pending one.
    */

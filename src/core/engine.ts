@@ -12,7 +12,8 @@
 
 import type { PushKind, PushParams } from "../../supabase/functions/_shared/push-text";
 import { DEFAULT_CONFIG, SERVER } from "./defaults";
-import { computeFare } from "./fare";
+import { computeFare, CUSTOM_PRICE_MAX } from "./fare";
+import { isReaction, REACT_RATE_MS, REACT_RATE_N, REACTIONS } from "./reactions";
 import { haversineKm, isValidLatLng } from "./geo";
 import { isActive } from "./lifecycle";
 import { summarizeRatings } from "./rating";
@@ -57,6 +58,7 @@ import {
   type PartyRole,
   type Planned,
   type PublicParty,
+  type Reaction,
   type PublicProvider,
   type RideTemplateInput,
   type ServiceRequestInput,
@@ -239,6 +241,8 @@ export interface ApptRow {
   contractId?: string | null;
   actualMin?: number | null;
   summarySent?: boolean;
+  /** 2.12.2: the price is the client's custom payment — no contract reprices it. */
+  customPrice?: boolean;
   /** 2.9 (FR-314): the client side's tip to the provider — how much, who gave it, when. */
   tip?: number | null;
   tipBy?: string | null;
@@ -250,7 +254,7 @@ export interface ApptRow {
 }
 
 /**
- * 2.14 (FR-330–332): a proposed change of an appointment (Supabase: appointment_changes). A move
+ * 2.14 (FR-334–336): a proposed change of an appointment (Supabase: appointment_changes). A move
  * holds the appointment as it would be (start, length, place) and the proposer's new pickups; a
  * length change holds the minutes. At most one "proposed" per appointment.
  */
@@ -275,7 +279,7 @@ export interface ChangeRow {
 /** 2.14: a change as checked (the row's own fields). */
 type ChangeDraft = Pick<ChangeRow, "kind" | "startsAt" | "durationMin" | "place" | "minutes" | "pickups" | "note">;
 
-/** 2.14 (FR-333, V89): what one attached ride does when a change is accepted. */
+/** 2.14 (FR-337, V92): what one attached ride does when a change is accepted. */
 interface RideEffect {
   r: RideRow;
   from: number;
@@ -378,6 +382,21 @@ export interface MessageRow {
   readAt: number | null;
 }
 
+/**
+ * 2.12.3 (FR-330): one person's reaction on one chat message or one session update — exactly one
+ * of messageId / updateId (Supabase: reactions). emoji null = taken back: the row stays, so taking
+ * it back and setting it again never notifies the author a second time (FR-331).
+ */
+export interface ReactionRow {
+  messageId?: string;
+  updateId?: string;
+  userId: string;
+  emoji: string | null;
+  /** When it was first set, and when it last changed. */
+  createdAt: number;
+  at: number;
+}
+
 /** 2.5 (FR-230): a session update (Supabase: appointment_updates). */
 export interface UpdateRow {
   id: string;
@@ -458,6 +477,8 @@ export interface DbState {
   chatPresence?: Record<string, Record<string, number>>;
   /** 2.5 (optional: demo databases saved before 2.5 lack it) */
   updates?: UpdateRow[];
+  /** 2.12.3 (optional: demo databases saved before 2.12.3 lack it) */
+  reactions?: ReactionRow[];
   /** 2.6 (optional: demo databases saved before 2.6 lack them) */
   families?: Record<string, FamilyRow>;
   /** user id → their family (a member is in at most one). */
@@ -474,7 +495,7 @@ export interface DbState {
   notifications?: NotificationRow[];
   /** 2.11 (FR-322–324): reminders to pay and dobry Pancios (Supabase: settlements). */
   settlements?: SettlementRow[];
-  /** 2.14 (FR-330–333): change proposals (Supabase: appointment_changes). */
+  /** 2.14 (FR-334–337): change proposals (Supabase: appointment_changes). */
   changes?: Record<string, ChangeRow>;
 }
 
@@ -559,6 +580,7 @@ export function emptyDb(): DbState {
     photos: {},
     chatPresence: {},
     updates: [],
+    reactions: [],
     families: {},
     familyMembers: {},
     familyInvites: [],
@@ -899,6 +921,7 @@ export class Engine {
     for (const g of this.db.kidRatings ?? []) if (g.fromUser === old) g.fromUser = uid;
     for (const m of this.db.messages ?? []) if (m.sender === old) m.sender = uid;
     for (const u of this.db.updates ?? []) if (u.author === old) u.author = uid; // 2.5 (FR-235)
+    this.moveReactions(old, uid); // 2.12.3: the new account's reaction on the same item stays
     // 2.6: a replaced profile leaves its family first (as a deleted one would); then the family,
     // the invitations and the contracts follow the account.
     if (mine && !mine.deleted) this.dropFromFamilies(uid);
@@ -1140,6 +1163,7 @@ export class Engine {
     for (const g of this.db.kidRatings ?? []) if (g.fromUser === from) g.fromUser = into;
     for (const m of this.db.messages ?? []) if (m.sender === from) m.sender = into;
     for (const u of this.db.updates ?? []) if (u.author === from) u.author = into;
+    this.moveReactions(from, into); // 2.12.3: into's reaction on the same item stays
     // The family seat moves (both in the same family: one seat stays) — never by leaving.
     if (ff) {
       if (!tf) fm[into] = fm[from];
@@ -1440,7 +1464,7 @@ export class Engine {
       this.notifyAppt(a);
     }
     this.cascadeRides(upcoming.map((a) => a.id));
-    // 2.14 (FR-332): a pending change of any of my appointments ends (withdrawn, nobody told).
+    // 2.14 (FR-336): a pending change of any of my appointments ends (withdrawn, nobody told).
     this.withdrawChanges(Object.values(this.db.appointments ?? {}).filter((a) => a.clientId === uid || a.providerId === uid).map((a) => a.id));
     // 2.1: open requests of this client leave everyone's "You could help" list (no provider to tell).
     if (upcoming.some((a) => a.providerId === null)) this.notifyMembers();
@@ -1483,6 +1507,9 @@ export class Engine {
     // 2.5 (FR-235): my session updates and their photos.
     for (const x of (this.db.updates ?? []).filter((u) => u.author === uid)) if (x.photoPath) delete this.db.photos?.[x.photoPath];
     if (this.db.updates?.length) this.db.updates = this.db.updates.filter((u) => u.author !== uid);
+    // 2.12.3: my reactions, and the reactions on what I wrote (SQL: the foreign keys cascade).
+    if (this.db.reactions?.length) this.db.reactions = this.db.reactions.filter((r) => r.userId !== uid);
+    this.pruneReactions();
     delete this.db.chatPresence?.[uid];
     this.db.users[uid] = { ...u, nickname: "Deleted user", deleted: true, masterId: null, offers: [], home: null, photoPath: null };
   }
@@ -2292,8 +2319,11 @@ export class Engine {
       throw new ServerError("bad_input");
     // 2.3 (FR-201): the client's own kids come along, on every occurrence of a series.
     const kidIds = input.kidIds == null ? [] : this.ownKidIds(uid, input.kidIds);
+    // 2.12.2: a custom payment per occurrence (1 … 10000, two decimals) replaces the rate.
+    const custom = input.customPrice == null ? null : round2(Number(input.customPrice));
+    if (custom !== null && (!Number.isFinite(custom) || custom < 1 || custom > CUSTOM_PRICE_MAX)) throw new ServerError("bad_input");
     // 2.6 (FR-262, V62): an active contract between my family and the provider sets the rate.
-    const { rate, price, contractId } = this.priceFor(e, uid, provider?.id ?? null, d);
+    const { rate, price, contractId } = custom !== null ? { rate: null, price: custom, contractId: null } : this.priceFor(e, uid, provider?.id ?? null, d);
     // The occurrences: one, or a series at the same wall-clock time every 1 or 2 weeks.
     const tz = this.cfg.timezone;
     const { seriesMaxCount, seriesMaxDays } = this.cfg.appointment;
@@ -2348,7 +2378,7 @@ export class Engine {
       currency: this.cfg.tariff.currency
     };
     let series: SeriesRow | null = null;
-    const priced = { rate, contractId, actualMin: null, summarySent: false };
+    const priced = { rate, contractId, actualMin: null, summarySent: false, customPrice: custom !== null };
     if (starts.length > 1) {
       series = {
         ...base,
@@ -2438,7 +2468,8 @@ export class Engine {
     this.settle(uid, a, "accept");
     // 2.6 (FR-262): the taker's contract with the client's family reprices what was accepted.
     const e = this.service(a.serviceId);
-    const p = e ? this.priceFor(e, a.clientId, uid, a.durationMin) : null;
+    // 2.12.2: a custom payment stays as the client set it.
+    const p = e && !a.customPrice ? this.priceFor(e, a.clientId, uid, a.durationMin) : null;
     if (p?.contractId) {
       for (const o of a.seriesId ? this.occurrences(a.seriesId) : [a])
         if (o.providerId === uid && o.status === "accepted") Object.assign(o, { rate: p.rate, contractId: p.contractId, price: round2((p.rate! * o.durationMin) / 60) });
@@ -2511,7 +2542,7 @@ export class Engine {
     // 2.1: a withdrawn open request leaves everyone's "You could help" list (nobody else is told).
     if (targets.some((x) => x.providerId === null)) this.notifyMembers();
     this.cascadeRides(targets.map((x) => x.id));
-    this.withdrawChanges(targets.map((x) => x.id)); // 2.14 (FR-332)
+    this.withdrawChanges(targets.map((x) => x.id)); // 2.14 (FR-336)
     if (a.seriesId && !this.occurrences(a.seriesId).some((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now)) {
       const s = this.db.series![a.seriesId];
       if (s.status === "requested" || s.status === "answered") s.status = "cancelled";
@@ -2610,7 +2641,7 @@ export class Engine {
           (a) =>
             this.sees(uid, a) &&
             (((a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now) ||
-              // 2.14 (FR-335): a finished one with a new length pending between its parties
+              // 2.14 (FR-339): a finished one with a new length pending between its parties
               (a.status === "done" && this.isParty(uid, a) && this.pendingChange(a.id) !== null))
         )
         .sort((x, y) => x.startsAt - y.startsAt)
@@ -2958,7 +2989,8 @@ export class Engine {
       kid: u.kidName === null ? null : { id: u.kidId, name: u.kidName },
       text: u.text,
       photo: this.signedUrl(u.photoPath),
-      createdAt: u.createdAt
+      createdAt: u.createdAt,
+      reactions: this.reactionsOn({ updateId: u.id }, viewer)
     };
   }
 
@@ -3030,6 +3062,7 @@ export class Engine {
     if (!a || !this.feedOpen(a)) throw new ServerError("illegal_transition");
     this.db.updates = all.filter((x) => x !== u);
     if (u.photoPath) delete this.db.photos?.[u.photoPath];
+    this.pruneReactions(); // 2.12.3: its reactions go with it
     this.notifyAppt(a);
   }
 
@@ -3101,6 +3134,7 @@ export class Engine {
    */
   private resetRoom(r: RideRow): void {
     if (this.db.messages?.length) this.db.messages = this.db.messages.filter((m) => m.room !== `ride:${r.id}`);
+    this.pruneReactions(); // 2.12.3: and the reactions on those words
   }
 
   /** The driver of a ride under way right now (FR-222). */
@@ -3114,7 +3148,114 @@ export class Engine {
   }
 
   private messageView(m: MessageRow, viewer: string): ChatMessage {
-    return { id: m.id, room: m.room, mine: m.sender === viewer, text: m.text, sentAt: m.sentAt, readAt: m.readAt };
+    return { id: m.id, room: m.room, mine: m.sender === viewer, text: m.text, sentAt: m.sentAt, readAt: m.readAt, reactions: this.reactionsOn({ messageId: m.id }, viewer) };
+  }
+
+  // ---------- 2.12.3: reactions (FR-330–332) ----------
+
+  /** The reactions on one item as a viewer sees them: per emoji in the fixed order, mine, the others by nickname. */
+  private reactionsOn(item: { messageId: string } | { updateId: string }, viewer: string): Reaction[] {
+    const rows = (this.db.reactions ?? [])
+      .filter((r) => r.emoji !== null && ("messageId" in item ? r.messageId === item.messageId : r.updateId === item.updateId))
+      .sort((x, y) => x.at - y.at || (x.userId < y.userId ? -1 : 1));
+    return REACTIONS.flatMap((emoji) => {
+      const set = rows.filter((r) => r.emoji === emoji);
+      if (!set.length) return [];
+      return [{ emoji, count: set.length, mine: set.some((r) => r.userId === viewer), names: set.filter((r) => r.userId !== viewer).map((r) => this.nick(r.userId)) }];
+    });
+  }
+
+  /**
+   * Sets (or with null takes back) my one reaction on an item (FR-330): an emoji outside REACTIONS
+   * is bad_input; reacting to more than REACT_RATE_N items in REACT_RATE_MS is too_many. Returns
+   * whether this is my first reaction on it ever — the one that notifies its author (FR-331).
+   */
+  private setReaction(uid: string, item: { messageId: string } | { updateId: string }, emoji: unknown): boolean {
+    if (emoji !== null && !isReaction(emoji)) throw new ServerError("bad_input");
+    const all = (this.db.reactions ??= []);
+    const same = (r: ReactionRow) => r.userId === uid && ("messageId" in item ? r.messageId === item.messageId : r.updateId === item.updateId);
+    const row = all.find(same);
+    if (row) {
+      if (row.emoji === emoji) return false;
+      row.emoji = emoji;
+      row.at = this.now;
+      return false;
+    }
+    if (emoji === null) return false;
+    // New items only: a change or a take-back never counts (createdAt = first set).
+    if (all.filter((r) => r.userId === uid && r.createdAt > this.now - REACT_RATE_MS).length >= REACT_RATE_N) throw new ServerError("too_many");
+    all.push({ ...item, userId: uid, emoji, createdAt: this.now, at: this.now });
+    return true;
+  }
+
+  /**
+   * React to a message of a room I am a party to (FR-330): not_found outside it, illegal_transition
+   * once the room is read-only (as sending). Both parties refetch; the author is told once, unless it
+   * is me, they are driving or they have the thread open (FR-331, as a chat message).
+   */
+  reactMessage(uid: string, messageId: string, emoji: string | null): ChatMessage {
+    this.requireUser(uid);
+    this.sweep();
+    const m = (this.db.messages ?? []).find((x) => x.id === messageId);
+    if (!m) throw new ServerError("not_found");
+    const info = this.room(m.room, uid);
+    if (!info.open) throw new ServerError("illegal_transition");
+    const first = this.setReaction(uid, { messageId: m.id }, emoji);
+    for (const p of info.parties) this.effects.notify.add(p);
+    if (first && m.sender !== uid && this.isMember(m.sender) && !this.driving(m.sender) && !this.inRoom(m.sender, m.room))
+      this.effects.push.push({
+        userId: m.sender,
+        kind: "reaction",
+        rideId: info.rideId,
+        appointmentId: info.appointmentId,
+        params: { sender: this.nick(uid), emoji: emoji!, text: m.text, room: m.room, messageId: m.id }
+      });
+    return this.messageView(m, uid);
+  }
+
+  /**
+   * React to a session update (FR-330): who may post may react — the two parties and the client's
+   * family (forbidden for the provider's family, not_found for anyone else) — while the feed is open
+   * (illegal_transition after). Every viewer refetches; the author is told once, unless it is me,
+   * they are driving or they have the feed in front (FR-331).
+   */
+  reactUpdate(uid: string, updateId: string, emoji: string | null): SessionUpdate {
+    this.requireUser(uid);
+    this.sweep();
+    const u = (this.db.updates ?? []).find((x) => x.id === updateId);
+    if (!u) throw new ServerError("not_found");
+    const a = this.feedAppt(uid, u.appointmentId);
+    if (a.clientId !== uid && a.providerId !== uid && !this.sameFamily(uid, a.clientId)) throw new ServerError("forbidden");
+    if (!this.feedOpen(a)) throw new ServerError("illegal_transition");
+    const first = this.setReaction(uid, { updateId: u.id }, emoji);
+    this.notifyAppt(a);
+    // (an author who no longer sees this feed — they left the family — is not told)
+    if (first && u.author !== uid && this.sees(u.author, a) && this.isMember(u.author) && !this.driving(u.author) && !this.inRoom(u.author, `feed:${a.id}`))
+      this.effects.push.push({
+        userId: u.author,
+        kind: "reaction",
+        rideId: null,
+        appointmentId: a.id,
+        params: { sender: this.nick(uid), emoji: emoji!, text: u.text, photo: u.photoPath !== null, kid: u.kidName, updateId: u.id }
+      });
+    return this.updateView(u, uid);
+  }
+
+  /** Account move / merge: `from`'s reactions become `to`'s; on an item both reacted to, `to`'s stays. */
+  private moveReactions(from: string, to: string): void {
+    const all = this.db.reactions ?? [];
+    const key = (r: ReactionRow) => (r.messageId ? `m:${r.messageId}` : `u:${r.updateId}`);
+    const kept = new Set(all.filter((r) => r.userId === to).map(key));
+    this.db.reactions = all.filter((r) => !(r.userId === from && kept.has(key(r))));
+    for (const r of this.db.reactions) if (r.userId === from) r.userId = to;
+  }
+
+  /** The reactions whose message or update is gone go too (SQL: on delete cascade). */
+  private pruneReactions(): void {
+    if (!this.db.reactions?.length) return;
+    const msgs = new Set((this.db.messages ?? []).map((m) => m.id));
+    const ups = new Set((this.db.updates ?? []).map((u) => u.id));
+    this.db.reactions = this.db.reactions.filter((r) => (r.messageId ? msgs.has(r.messageId) : ups.has(r.updateId!)));
   }
 
   /** The other party's messages in a room the viewer has not read yet. */
@@ -3206,7 +3347,7 @@ export class Engine {
 
   /**
    * The provider is busy then: an accepted appointment or a booked ride taken as driver overlaps.
-   * The appointment `except` and its own rides do not count (2.14, V88: they follow the change).
+   * The appointment `except` and its own rides do not count (2.14, V91: they follow the change).
    */
   private providerBusy(uid: string, start: number, min: number, except: string): boolean {
     const end = start + min * 60_000;
@@ -3316,7 +3457,7 @@ export class Engine {
           s.templatesAt = this.now;
         }
       }
-    // 2.14 (FR-332): pending changes lapse unanswered (expired), or end with their appointment
+    // 2.14 (FR-336): pending changes lapse unanswered (expired), or end with their appointment
     // (withdrawn); nobody is told. One bad row never stops the sweep (V30).
     for (const c of Object.values(this.db.changes ?? {})) {
       if (c.status !== "proposed") continue;
@@ -3475,6 +3616,7 @@ export class Engine {
       // 2.6 (FR-262, FR-270–272): where the price came from and, once done, what it cost.
       rate: a.rate ?? null,
       contractId: candidate ? null : a.contractId ?? null,
+      customPrice: a.customPrice === true,
       actualMin: a.actualMin ?? null,
       cost: candidate ? null : this.costOf(a),
       // 2.9 (FR-314): the tip — the parties and their families see it.
@@ -3490,7 +3632,7 @@ export class Engine {
             status: s.status,
             remaining: occ.filter((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now).length,
             declined: occ.filter((x) => x.status === "declined").map((x) => x.startsAt).sort((x, y) => x - y),
-            // 2.14 (FR-336): a gap is the rule's own slot (a moved date cancelled is excluded there).
+            // 2.14 (FR-340): a gap is the rule's own slot (a moved date cancelled is excluded there).
             gaps: occ.filter((x) => x.status === "declined" || x.status === "cancelled").map((x) => this.slotOf(s, x)).sort((x, y) => x - y),
             starts: occ.map((x) => x.startsAt),
             first: s.firstStart,
@@ -3514,12 +3656,12 @@ export class Engine {
           }
         : null,
       calendar: { google: null, ics: null },
-      // 2.14 (FR-335, V90): the pending change — the two parties only.
+      // 2.14 (FR-339, V93): the pending change — the two parties only.
       change: this.changeView(a, viewer)
     };
   }
 
-  /** 2.14 (FR-336): the rule's own start of an occurrence (twin of siosia_add_weeks(first_start, …)). */
+  /** 2.14 (FR-340): the rule's own start of an occurrence (twin of siosia_add_weeks(first_start, …)). */
   private slotOf(s: SeriesRow, x: ApptRow): number {
     return addWeeksWallClock(s.firstStart, ((x.seq ?? 1) - 1) * (s.rule === "biweekly" ? 2 : 1), this.cfg.timezone);
   }
@@ -3835,11 +3977,31 @@ export class Engine {
       for (const x of Object.values(this.db.contracts ?? {}))
         if (x !== c && x.familyId === c.familyId && this.samePerson(x.providerId, c.providerId) && x.status === "active") this.closeContract(x, "replaced", uid);
       c.status = "active";
+      this.priceUnpriced(c);
     } else c.status = "declined";
     c.answeredAt = this.now;
     for (const m of this.proposingSide(c)) this.pushPlain(m, decision === "accept" ? "contract_accepted" : "contract_declined", { sender: this.nick(uid) });
     this.notifyContract(c);
     return this.contractView(c, uid);
+  }
+
+  /**
+   * 2.12.2: a contract that becomes active prices the coming appointments between its family and its
+   * provider that have no price yet (nor a custom payment) — at its rate for the service or its base.
+   */
+  private priceUnpriced(c: ContractRow): void {
+    for (const a of Object.values(this.db.appointments ?? {})) {
+      if (a.price !== null || a.customPrice || (a.status !== "requested" && a.status !== "accepted") || a.startsAt <= this.now) continue;
+      if (this.familyOf(a.clientId) !== c.familyId || !this.samePerson(a.providerId, c.providerId)) continue;
+      const base = this.service(a.serviceId)?.base ?? null;
+      const line = c.rates.find((r) => r.serviceId === a.serviceId) ?? (base ? c.rates.find((r) => r.serviceId === base) : undefined);
+      if (!line) continue;
+      a.rate = line.perHour;
+      a.contractId = c.id;
+      a.price = round2((line.perHour * a.durationMin) / 60);
+      if (a.seriesId && this.db.series?.[a.seriesId]?.price === null) this.db.series[a.seriesId].price = a.price;
+      this.notifyAppt(a);
+    }
   }
 
   /** The proposing side takes back a proposal that still waits. */
@@ -3880,7 +4042,8 @@ export class Engine {
     const start = localMidnight(from, tz);
     let count = 0;
     for (const a of Object.values(this.db.appointments ?? {})) {
-      if (a.status !== "done" || a.startsAt < start || a.startsAt >= this.now) continue;
+      // 2.12.2: a custom payment stays as the client set it.
+      if (a.status !== "done" || a.startsAt < start || a.startsAt >= this.now || a.customPrice) continue;
       if (this.familyOf(a.clientId) !== c.familyId || !this.samePerson(a.providerId, c.providerId)) continue;
       const base = this.service(a.serviceId)?.base ?? null;
       const line = c.rates.find((r) => r.serviceId === a.serviceId) ?? (base ? c.rates.find((r) => r.serviceId === base) : undefined);
@@ -3986,12 +4149,18 @@ export class Engine {
     return offers.includes(e.id) || (!!e.base && offers.includes(e.base));
   }
 
-  /** The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed price. */
+  /**
+   * The price a request freezes (V62): a contract's rate, else the price list's per hour or fixed
+   * price — 2.12.2: an entry without a price of its own takes its base's (a YOLO event: Childcare's)
+   * while the base is enabled (the app shows only enabled entries' prices).
+   */
   private priceFor(e: CatalogEntry, client: string, provider: string | null, minutes: number): { rate: number | null; price: number | null; contractId: string | null } {
     const c = this.contractRate(client, provider, e.id);
     if (c) return { rate: c.perHour, price: round2((c.perHour * minutes) / 60), contractId: c.contractId };
-    if (e.price && "perHour" in e.price) return { rate: e.price.perHour, price: round2((e.price.perHour * minutes) / 60), contractId: null };
-    return { rate: null, price: e.price && "fixed" in e.price ? e.price.fixed : null, contractId: null };
+    const base = e.base ? this.service(e.base) : null;
+    const list = e.price ?? (base?.enabled ? (base.price ?? null) : null);
+    if (list && "perHour" in list) return { rate: list.perHour, price: round2((list.perHour * minutes) / 60), contractId: null };
+    return { rate: null, price: list && "fixed" in list ? list.fixed : null, contractId: null };
   }
 
   // ---------- 2.6: cost summary (FR-270–273, V63) ----------
@@ -4007,7 +4176,7 @@ export class Engine {
       rate,
       total,
       currency: a.currency,
-      source: a.contractId ? "contract" : rate !== null ? "catalog" : a.price !== null ? "fixed" : "none",
+      source: a.contractId ? "contract" : rate !== null ? "catalog" : a.price !== null ? (a.customPrice ? "custom" : "fixed") : "none",
       corrected: a.actualMin != null
     };
   }
@@ -4058,11 +4227,11 @@ export class Engine {
     return this.apptView(a, uid);
   }
 
-  // ---------- 2.14: proposing a change (FR-330–335, V87–V91) ----------
+  // ---------- 2.14: proposing a change (FR-334–339, V90–V94) ----------
 
   /**
    * Either party proposes a move of a planned appointment or a new length of a live or just-finished
-   * one (FR-330, FR-331). My own pending one is replaced; the other party's is declined (FR-332).
+   * one (FR-334, FR-335). My own pending one is replaced; the other party's is declined (FR-336).
    */
   proposeChange(uid: string, id: string, input: ChangeInput): AppointmentView {
     this.requireUser(uid);
@@ -4071,7 +4240,7 @@ export class Engine {
     if (!a || !this.isParty(uid, a)) throw new ServerError("not_found");
     if (!input || typeof input !== "object") throw new ServerError("bad_input");
     const draft = this.checkChange(uid, a, input);
-    // V89: a ride already dispatched cannot follow, and new places must pass the booking rules.
+    // V92: a ride already dispatched cannot follow, and new places must pass the booking rules.
     this.changeEffects(a, { ...draft, proposedBy: uid }, true);
     const pending = this.pendingChange(a.id);
     if (pending) {
@@ -4099,7 +4268,7 @@ export class Engine {
     return this.apptView(a, uid);
   }
 
-  /** The other party accepts (everything checked again; the appointment, rides and price follow) or declines (FR-333). */
+  /** The other party accepts (everything checked again; the appointment, rides and price follow) or declines (FR-337). */
   answerChange(uid: string, id: string, decision: "accept" | "decline"): AppointmentView {
     this.requireUser(uid);
     if (decision !== "accept" && decision !== "decline") throw new ServerError("bad_input");
@@ -4115,7 +4284,7 @@ export class Engine {
       this.notifyAppt(a);
       return this.apptView(a, uid);
     }
-    // FR-333: the rules of FR-330/331 against now, the rides, then the provider's time (V5).
+    // FR-337: the rules of FR-334/335 against now, the rides, then the provider's time (V5).
     this.checkChange(c.proposedBy, a, c, c.expiresAt);
     const effects = this.changeEffects(a, c, true);
     const t = this.changeTarget(a, c);
@@ -4126,7 +4295,7 @@ export class Engine {
       a.startsAt = t.start;
       a.durationMin = t.durationMin;
       a.place = t.place ? { ...t.place } : null;
-      // V88: the slots already past for the new start count as sent (no burst); the rest go out anew.
+      // V91: the slots already past for the new start count as sent (no burst); the rest go out anew.
       a.reminded = this.cfg.appointment.reminderMin.filter((s) => t.start - s * 60_000 <= this.now);
     } else if (!done) a.durationMin = t.durationMin;
     else a.actualMin = c.minutes === a.durationMin ? null : c.minutes;
@@ -4176,7 +4345,7 @@ export class Engine {
     throw new ServerError("not_found");
   }
 
-  /** Cancelled or gone appointments end their pending change (FR-332; nobody is told). */
+  /** Cancelled or gone appointments end their pending change (FR-336; nobody is told). */
   private withdrawChanges(ids: string[]): void {
     for (const c of Object.values(this.db.changes ?? {}))
       if (c.status === "proposed" && ids.includes(c.appointmentId)) {
@@ -4185,7 +4354,7 @@ export class Engine {
       }
   }
 
-  /** Appointments whose pending change waits for my answer (V90: toAnswer, P1). */
+  /** Appointments whose pending change waits for my answer (V93: toAnswer, P1). */
   private changesToAnswer(uid: string): string[] {
     const all = this.db.appointments ?? {};
     return Object.values(this.db.changes ?? {})
@@ -4197,7 +4366,7 @@ export class Engine {
   }
 
   /**
-   * When a pending change lapses (FR-332): a move when it could no longer be accepted — at the current
+   * When a pending change lapses (FR-336): a move when it could no longer be accepted — at the current
    * start, or the booking lead before the new one, whichever is first; a length 24 h after the (later) end.
    */
   private changeExpiresAt(a: ApptRow, c: ChangeDraft): number {
@@ -4217,7 +4386,7 @@ export class Engine {
     return { start: a.startsAt, durationMin: a.status === "done" ? a.durationMin : m, end: a.startsAt + m * 60_000, place: a.place, length: m };
   }
 
-  /** The checks of FR-330 / FR-331 against now (at proposing and again at accepting); the change as stored. */
+  /** The checks of FR-334 / FR-335 against now (at proposing and again at accepting); the change as stored. */
   private checkChange(uid: string, a: ApptRow, input: ChangeInput | ChangeDraft, expiresAt?: number): ChangeDraft {
     const note = trimWs(String(input.note ?? ""));
     if (input.kind === "move") {
@@ -4241,7 +4410,7 @@ export class Engine {
         if (!p || (p.leg !== "there" && p.leg !== "back")) throw new ServerError("bad_leg");
         if (pickups.some((x) => x.leg === p.leg)) throw new ServerError("bad_input");
         const onLeg = live.filter((r) => r.leg === p.leg);
-        // Only for my own live ride on that leg (FR-330).
+        // Only for my own live ride on that leg (FR-334).
         if (!onLeg.some((r) => r.riderId === uid)) throw new ServerError(onLeg.length ? "forbidden" : "bad_leg");
         if (!p.pickup || !isValidLatLng(p.pickup) || !String(p.pickup.label ?? "").trim()) throw new ServerError("bad_input");
         if (typeof p.estKm !== "number" || typeof p.estMin !== "number" || !Number.isFinite(p.estKm) || !Number.isFinite(p.estMin)) throw new ServerError("bad_input");
@@ -4274,7 +4443,7 @@ export class Engine {
   }
 
   /**
-   * What each attached ride does on acceptance (FR-333, V89) — the preview and the outcome alike.
+   * What each attached ride does on acceptance (FR-337, V92) — the preview and the outcome alike.
    * strict: refuse (ride_started, outside_area, too_far); otherwise the offending ride shows "keep".
    */
   private changeEffects(a: ApptRow, c: ChangeDraft & { proposedBy: string }, strict: boolean): RideEffect[] {
@@ -4306,7 +4475,7 @@ export class Engine {
         const own = r.riderId === c.proposedBy ? c.pickups.find((p) => p.leg === r.leg) : undefined;
         let pickup = r.pickup;
         let dropoff = r.dropoff;
-        // The two rules are independent (FR-333): a new pickup of a there ride still takes it to the new place.
+        // The two rules are independent (FR-337): a new pickup of a there ride still takes it to the new place.
         if (own) pickup = own.pickup;
         if (moved) {
           if (r.leg === "there" && haversineKm(r.dropoff, a.place!) <= CHANGE_FOLLOW_KM) dropoff = t.place!;
@@ -4368,7 +4537,7 @@ export class Engine {
   }
 
   /**
-   * The rides follow an accepted change (V89): cancelled, or moved — first all of them, then each
+   * The rides follow an accepted change (V92): cancelled, or moved — first all of them, then each
    * driver kept when still free at the final times (a driver on both legs is judged at both new times).
    */
   private applyRideEffects(effects: RideEffect[]): void {
@@ -4413,7 +4582,7 @@ export class Engine {
     }
   }
 
-  /** The pending change as one of the two parties sees it (V90); others see none. */
+  /** The pending change as one of the two parties sees it (V93); others see none. */
   private changeView(a: ApptRow, viewer: string): ChangeView | null {
     if (!this.isParty(viewer, a)) return null;
     const c = this.pendingChange(a.id);
@@ -4454,7 +4623,7 @@ export class Engine {
     };
   }
 
-  /** A change notification's params (FR-334): {at}/{end}/{place} as proposed, {fromAt}/{fromEnd}/{fromPlace} as before. */
+  /** A change notification's params (FR-338): {at}/{end}/{place} as proposed, {fromAt}/{fromEnd}/{fromPlace} as before. */
   private changeParams(a: ApptRow, c: ChangeDraft, who: string): Partial<PushParams> {
     const t = this.changeTarget(a, c);
     const before = a.status === "done" ? a.actualMin ?? a.durationMin : a.durationMin;
@@ -5099,12 +5268,12 @@ const round3 = (x: number) => Math.round(x * 1000) / 1000;
 
 /** The longest ride estimate accepted, in minutes (twin of the 1440 in siosia_book_for). */
 const MAX_EST_MIN = 1440;
-/** 2.14 (V89): a ride within 150 m of the old place follows the new one. */
+/** 2.14 (V92): a ride within 150 m of the old place follows the new one. */
 const CHANGE_FOLLOW_KM = 0.15;
 
 /** How an attached ride stands for its appointment (§7 rule 7); null = not shown (twin of siosia_ride_summary). */
 export function rideSummary(r: Pick<RideRow, "status" | "driverId" | "cancelledBy" | "cancelReason">): AttachedStatus | null {
-  // 2.14 (V89): a ride an accepted change cancelled (too soon to move) goes like a cancelled appointment's.
+  // 2.14 (V92): a ride an accepted change cancelled (too soon to move) goes like a cancelled appointment's.
   if (r.status === "cancelled" && (r.cancelledBy === "rider" || r.cancelReason === "appointment_cancelled" || r.cancelReason === "appointment_changed")) return null;
   if ((r.status === "scheduled" && !r.driverId) || r.status === "requested") return "pending";
   if (r.status === "scheduled" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress") return "confirmed";

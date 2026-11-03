@@ -279,7 +279,7 @@ describe(".ics (V27)", () => {
   });
 });
 
-describe("2.14 moved dates of a series (FR-336, V92)", () => {
+describe("2.14 moved dates of a series (FR-340, V95)", () => {
   const H = 3600_000;
   // Tue 16:00 local, weekly ×4: 20 Oct (CEST), 27 Oct, 3 Nov, 10 Nov (CET).
   const slots = [0, 1, 2, 3].map((i) => START + i * WEEK + (i > 0 ? H : 0));

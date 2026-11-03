@@ -95,7 +95,7 @@ export class RobotSiosia {
         if (!a.open || !OFFERS.includes(a.serviceId) || this.passed.has(a.id)) continue;
         if (due(a, TAKE_MS)) await this.take(a);
       }
-      // 2.14 (FR-337): a change proposed to her (by the other party) is accepted after a moment.
+      // 2.14 (FR-341): a change proposed to her (by the other party) is accepted after a moment.
       for (const a of planned.appointments) {
         if (!a.change || a.change.mine || (a.role !== "provider" && a.role !== "client")) continue;
         const key = `change:${a.change.id}`;

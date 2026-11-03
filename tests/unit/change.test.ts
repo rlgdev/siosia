@@ -1,4 +1,4 @@
-// Siosia 2.14 change proposals in the engine (FR-330–336, V87–V91): who may propose, the move and
+// Siosia 2.14 change proposals in the engine (FR-334–340, V90–V94): who may propose, the move and
 // length windows, no_change, counter-proposals and replacing, withdraw and lapse, the checks again at
 // acceptance (overlap, ride_started), reminders, price and cost, rides following (shift, clamp,
 // too soon, pickups and fares, the place followed), drivers kept or dropped, the view per role,
@@ -101,7 +101,7 @@ beforeEach(() => {
   pushes = [];
 });
 
-describe("who may propose, and the view per role (FR-330, V87, V90)", () => {
+describe("who may propose, and the view per role (FR-334, V90, V93)", () => {
   it("the two parties only; family, drivers and strangers get not_found and see no change", () => {
     const a = planned(4 * 60);
     for (const u of ["mum", "other", "driver"]) expect(code(() => propose(u, a.id, moveBy(a.id, 60)))).toBe("not_found");
@@ -116,7 +116,7 @@ describe("who may propose, and the view per role (FR-330, V87, V90)", () => {
     expect(code(() => answerC("mum", a.id))).toBe("not_found");
   });
 
-  it("the other party hears once, with the old and the new range (FR-334)", () => {
+  it("the other party hears once, with the old and the new range (FR-338)", () => {
     const a = planned(4 * 60);
     const old = appt(a.id).startsAt;
     pushes = [];
@@ -133,7 +133,7 @@ describe("who may propose, and the view per role (FR-330, V87, V90)", () => {
   });
 });
 
-describe("move: window and checks (FR-330)", () => {
+describe("move: window and checks (FR-334)", () => {
   it("only an accepted appointment before its start", () => {
     const r = request("client", 4 * 60);
     expect(code(() => propose("client", r.id, moveBy(r.id, 60)))).toBe("illegal_transition");
@@ -162,7 +162,7 @@ describe("move: window and checks (FR-330)", () => {
   });
 });
 
-describe("length: window and checks (FR-331)", () => {
+describe("length: window and checks (FR-335)", () => {
   it("live or done within 24 h; minutes 15–1440 by 15; the same is no_change", () => {
     const a = planned(60);
     expect(code(() => propose("client", a.id, { kind: "length", minutes: 240 }))).toBe("illegal_transition"); // not started
@@ -183,7 +183,7 @@ describe("length: window and checks (FR-331)", () => {
   });
 });
 
-describe("one pending change (FR-332)", () => {
+describe("one pending change (FR-336)", () => {
   it("my own is replaced; the other party's becomes declined and its proposer hears", () => {
     const a = planned(4 * 60);
     propose("client", a.id, moveBy(a.id, 60));
@@ -254,7 +254,7 @@ describe("one pending change (FR-332)", () => {
     expect(changes()[1].status).toBe("withdrawn");
   });
 
-  it("toAnswer counts the changes waiting for me (V90)", () => {
+  it("toAnswer counts the changes waiting for me (V93)", () => {
     const a = planned(4 * 60);
     const b = planned(8 * 60);
     const base = at((e) => e.myState("siosia")).toAnswer;
@@ -297,7 +297,7 @@ describe("one pending change (FR-332)", () => {
   });
 });
 
-describe("accept (FR-333, V88)", () => {
+describe("accept (FR-337, V91)", () => {
   it("decline: the proposer hears, nothing moves", () => {
     const a = planned(4 * 60);
     const start = appt(a.id).startsAt;
@@ -339,7 +339,7 @@ describe("accept (FR-333, V88)", () => {
     at((e) => e.answerAppointment("siosia", b.id, "accept"));
     expect(code(() => answerC("siosia", a.id))).toBe("overlap");
     at((e) => e.cancelAppointment("client", b.id, null, "one"));
-    // A move to 40 min ahead: fine when proposed and up to the booking lead before it (B13: never a
+    // A move to 40 min ahead: fine when proposed and up to the booking lead before it (B15: never a
     // pending change that can only fail with bad_time), lapsed after that.
     const c = planned(10 * 60);
     propose("client", c.id, { kind: "move", startsAt: now + 40 * MIN });
@@ -397,7 +397,7 @@ describe("accept (FR-333, V88)", () => {
   });
 });
 
-describe("rides follow (FR-333, V89)", () => {
+describe("rides follow (FR-337, V92)", () => {
   it("there by the start's shift, back by the end's shift; the preview says so", () => {
     const a = planned(5 * 60);
     const start = appt(a.id).startsAt;
@@ -572,7 +572,7 @@ describe("rides follow (FR-333, V89)", () => {
   });
 });
 
-describe("series: moved dates and gaps at the rule's slot (FR-336)", () => {
+describe("series: moved dates and gaps at the rule's slot (FR-340)", () => {
   it("a moved date is listed with its slot; cancelled, its gap is the slot", () => {
     const a = request("client", 24 * 60, { repeat: { every: 1, count: 3 } });
     at((e) => e.answerAppointment("siosia", a.id, "accept"));
@@ -596,11 +596,11 @@ describe("series: moved dates and gaps at the rule's slot (FR-336)", () => {
   });
 });
 
-// B13 (2026-11-03, the 2.14 pre-release review): the real findings, each pinned (twins in sql-change).
-describe("2.14 review fixes (B13)", () => {
+// B15 (2026-11-03, the 2.14 pre-release review): the real findings, each pinned (twins in sql-change).
+describe("2.14 review fixes (B15)", () => {
   const car = (uid: string) => at((e) => e.saveVehicle(uid, { make: "Kia", model: "Ceed", colour: "Szary", plate: `W ${uid}`, seats: 4 }));
 
-  it("the provider driving their own appointment's ride: an extension and a move are accepted, the ride follows (V88)", () => {
+  it("the provider driving their own appointment's ride: an extension and a move are accepted, the ride follows (V91)", () => {
     car("siosia");
     // a back ride the provider drives, extended while live
     const a = planned(60);
@@ -629,7 +629,7 @@ describe("2.14 review fixes (B13)", () => {
     expect(ride(there.id)).toMatchObject({ scheduledFor: sb + 15 * MIN, driverId: "siosia" });
   });
 
-  it("a driver on both legs is judged at both new times and keeps them (V89)", () => {
+  it("a driver on both legs is judged at both new times and keeps them (V92)", () => {
     const a = planned(5 * 60);
     const s = appt(a.id).startsAt;
     const there = book("client", 5 * 60 - 30, a.id, "there");
@@ -648,7 +648,7 @@ describe("2.14 review fixes (B13)", () => {
     expect(kinds()).not.toContain("booking_new");
   });
 
-  it("my new pickup and a moved place: the there ride still goes to the new place (FR-333)", () => {
+  it("my new pickup and a moved place: the there ride still goes to the new place (FR-337)", () => {
     const a = planned(5 * 60);
     const there = book("client", 4 * 60, a.id, "there", PARK, NEAR_HOME);
     propose("client", a.id, { kind: "move", place: SCHOOL, pickups: [{ leg: "there", pickup: AWAY, estKm: 5, estMin: 12, fareIsEstimate: false }] });

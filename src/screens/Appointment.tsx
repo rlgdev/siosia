@@ -11,7 +11,7 @@
 // 2.5 (FR-230–233, FR-240–241): the session feed (updates with photos, about everyone or one kid)
 // while it is open or has anything, the client's "I'm heading home" during the session and the
 // notice it leaves for both parties.
-// 2.14 (FR-330–335): either party proposes a change — a planned appointment's start, length, place
+// 2.14 (FR-334–339): either party proposes a change — a planned appointment's start, length, place
 // and their own rides' pickups, or a live / just-finished one's length; the pending change is a
 // card above everything with Accept / Decline (the other party) or Withdraw (the proposer).
 
@@ -33,7 +33,7 @@ import { computeFare } from "../core/fare";
 import { haversineKm } from "../core/geo";
 import { derivedPickup } from "../core/time";
 import type { AppointmentView, CatalogItem, ChangeInput, ChangeKind, ChangePickup, ChangeView, Leg, Place, RideTemplateInput } from "../core/types";
-import { ServerError } from "../core/types";
+import { hasFeature, ServerError } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { navigationUrl } from "../services/device";
@@ -93,8 +93,10 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
   const dep = app.deployment!;
   const now = store.serverNow();
   const [busy, run, error, setError] = useBusy();
-  // 2.14 (FR-335): a party may propose a change (a pending one of the other side is countered by it).
-  const canPropose = proposeKind(a, now) !== null && !a.change?.mine;
+  // 2.14 (FR-339): a party may propose a change (a pending one of the other side is countered by it);
+  // only once the database does changes (V89: the app may go live before the SQL).
+  const changes = hasFeature(dep, "changes");
+  const canPropose = changes && proposeKind(a, now) !== null && !a.change?.mine;
   const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | "kids" | "change" | Leg>(
     accepting && a.status === "requested" && a.role === "provider"
       ? "accept"
@@ -186,6 +188,14 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
               <small className="muted">
                 {" · "}
                 {t("cost.planned", { rate: money(a.rate, a.currency, locale), source: t(a.contractId ? "cost.source.contract" : "cost.source.catalog") })}
+                {/* 2.12.2: an estimate only while it may still happen (rate × the booked time) */}
+                {(a.status === "requested" || a.status === "accepted") && ` · ${t("common.estimate")}`}
+              </small>
+            )}
+            {a.customPrice && (
+              <small className="muted" data-testid="appt-price-custom">
+                {" · "}
+                {t("cost.source.custom")}
               </small>
             )}
           </p>
@@ -225,7 +235,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
       )}
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
-      {a.cost && <CostSection a={a} onPropose={canPropose && mode === "view" ? () => setMode("change") : undefined} />}
+      {a.cost && <CostSection a={a} reload={reload} changes={changes} onPropose={canPropose && mode === "view" ? () => setMode("change") : undefined} />}
       <TipSection a={a} reload={reload} />
 
       {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
@@ -387,9 +397,12 @@ function TipSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
   );
 }
 
-function CostSection({ a, onPropose }: { a: AppointmentView; onPropose?: () => void }) {
+function CostSection({ a, reload, changes, onPropose }: { a: AppointmentView; reload: () => void; changes: boolean; onPropose?: () => void }) {
   const { t, locale } = useI18n();
+  const store = useStore();
   const cost = a.cost!;
+  // A database before 2.14 (no "changes", V89): the provider still corrects the time one-sidedly (2.6).
+  const canCorrect = !changes && a.role === "provider" && store.serverNow() < (a.endedAt ?? a.endsAt) + 24 * 3600_000;
   return (
     <section className="card stack" data-testid="appt-cost">
       <strong>{t("cost.title")}</strong>
@@ -406,6 +419,13 @@ function CostSection({ a, onPropose }: { a: AppointmentView; onPropose?: () => v
           </span>
         </div>
       )}
+      {/* 2.12.2: a set amount (custom or a fixed price) says so; the time does not change it */}
+      {cost.rate === null && (cost.source === "custom" || cost.source === "fixed") && (
+        <div className="kv">
+          <span>{t("cost.price")}</span>
+          <span data-testid="cost-source">{t(`cost.source.${cost.source}` as MessageKey)}</span>
+        </div>
+      )}
       <div className="kv big">
         <span>{t("cost.total")}</span>
         {cost.total === null ? (
@@ -418,16 +438,79 @@ function CostSection({ a, onPropose }: { a: AppointmentView; onPropose?: () => v
           </strong>
         )}
       </div>
-      {/* 2.14 (FR-335): the provider's one-sided Correct the time (2.6) gave way to a proposal of a new length. */}
+      {/* 2.14 (FR-339): the provider's one-sided Correct the time (2.6) gave way to a proposal of a new length. */}
       {onPropose && (
         <span className="with-info">
           <button type="button" className="btn btn-link btn-small" onClick={onPropose} data-testid="cost-propose">
             {t("change.lengthEntry")}
           </button>
-          <InfoTip text={t("change.lengthHint")} testId="cost-propose" />
+          <InfoTip text={t(cost.rate === null ? "change.lengthHintSet" : "change.lengthHint")} testId="cost-propose" />
         </span>
       )}
+      {canCorrect && <CorrectTime a={a} reload={reload} />}
     </section>
+  );
+}
+
+/** 2.6 Correct the time (the provider alone), kept for a database without change proposals (V89). */
+function CorrectTime({ a, reload }: { a: AppointmentView; reload: () => void }) {
+  const { t } = useI18n();
+  const store = useStore();
+  const cost = a.cost!;
+  const [busy, run, error] = useBusy();
+  const [editing, setEditing] = useState(false);
+  const [minutes, setMinutes] = useState(cost.minutes);
+  const choices: number[] = [];
+  for (let m = Math.max(15, a.durationMin - 180); m <= Math.min(1440, a.durationMin + 360); m += 15) choices.push(m);
+  return (
+    <>
+      {editing ? (
+        <div className="stack">
+          <label className="field">
+            <span className="with-info">
+              {t("cost.correct")}
+              <InfoTip text={t(cost.rate === null ? "cost.correctHintSet" : "cost.correctHint")} testId="cost-correct" />
+            </span>
+            <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} data-testid="cost-minutes">
+              {choices.map((m) => (
+                <option key={m} value={m}>
+                  {durationText(m, t)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="row">
+            <button
+              type="button"
+              className="btn btn-primary grow"
+              disabled={busy || minutes === cost.minutes}
+              onClick={() =>
+                void run(async () => {
+                  await store.api.setActualTime(a.id, minutes);
+                  setEditing(false);
+                  reload();
+                })
+              }
+              data-testid="cost-save"
+            >
+              {t("cost.correctSave")}
+            </button>
+            <button type="button" className="btn btn-secondary grow" onClick={() => setEditing(false)}>
+              {t("common.cancel")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="btn btn-link btn-small" onClick={() => setEditing(true)} data-testid="cost-correct">
+          {t("cost.correct")}
+        </button>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -733,13 +816,13 @@ function RateBox({ a, onRated }: { a: AppointmentView; onRated: () => void }) {
   );
 }
 
-// ---------- 2.14: proposing a change (FR-330–335) ----------
+// ---------- 2.14: proposing a change (FR-334–339) ----------
 
 const DAY_MS = 24 * 3600_000;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
- * What the viewer may propose now (FR-330, FR-331): a move before the start, a new length while it
+ * What the viewer may propose now (FR-334, FR-335): a move before the start, a new length while it
  * runs or within 24 h after the end — the two parties only (not their families, V60); null = nothing.
  */
 export function proposeKind(a: AppointmentView, now: number): ChangeKind | null {
@@ -752,7 +835,7 @@ export function proposeKind(a: AppointmentView, now: number): ChangeKind | null 
 
 const samePlace = (p: Place | null, q: Place | null) => (p === null || q === null ? p === q : p.label === q.label && p.lat === q.lat && p.lng === q.lng);
 
-/** The pending change as a card above everything (FR-335): old → new, what each ride does, the note, the answer. */
+/** The pending change as a card above everything (FR-339): old → new, what each ride does, the note, the answer. */
 function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: ChangeView; busy: boolean; act: (fn: () => Promise<unknown>) => unknown; accept: () => unknown }) {
   const { t, locale } = useI18n();
   const store = useStore();
@@ -840,7 +923,7 @@ function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: Change
   );
 }
 
-/** Where a new pickup's route goes: a there ride at the old place follows a moved place (FR-333). */
+/** Where a new pickup's route goes: a there ride at the old place follows a moved place (FR-337). */
 function pickupTarget(leg: Leg, dropoff: Place | null | undefined, from: Place | null, to: Place | null): Place | null {
   if (leg === "there" && dropoff && from && to && !samePlace(to, from) && haversineKm(dropoff, from) <= 0.15) return to;
   return dropoff ?? from;
@@ -902,7 +985,7 @@ function PickupField({ leg, to, value, onChange }: { leg: Leg; to: Place | null;
 }
 
 /**
- * The Propose a change sheet (FR-330, FR-331): before the start the start, length, place, a new
+ * The Propose a change sheet (FR-334, FR-335): before the start the start, length, place, a new
  * pickup for each of my rides and a note; while it runs or within 24 h after the end the new length.
  * The new end and price (or total) show as previews; the server checks everything again.
  */

@@ -6,6 +6,8 @@
 // the group sees until someone takes it; preselected when nobody offers the entry.
 // 2.3 (FR-201): a client with kids ticks the ones who will be there; they travel as kidIds (a
 // series: to every occurrence) and the provider sees them — nobody else.
+// 2.12.2: Payment — at the rate (a contract's, else the price list's; a YOLO event without a price of
+// its own takes its base's, the Childcare rate) or a custom amount for the whole event (each time).
 
 import { useEffect, useMemo, useState } from "react";
 import { InfoTip } from "../components/InfoTip";
@@ -14,7 +16,8 @@ import { KidPicker, useMyKids } from "../components/Kids";
 import { PlaceInput } from "../components/PlaceInput";
 import { durationText, EntryIcon, localText } from "./Catalog";
 import { Money, Panel, RatingBadge, useBusy } from "../components/ui";
-import type { CatalogItem, Place, RepeatInput } from "../core/types";
+import { CUSTOM_PRICE_MAX } from "../core/fare";
+import { hasFeature, type CatalogItem, type Place, type RepeatInput } from "../core/types";
 import { useI18n } from "../i18n";
 import { useApp, useStore } from "../state/store";
 
@@ -103,6 +106,10 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   // The picker shows only to a client who has kids (none: nothing to tick).
   const [kids] = useMyKids();
   const [kidIds, setKidIds] = useState<string[]>([]);
+  // 2.12.2: a custom amount for the whole event instead of the rate.
+  const [customPicked, setCustom] = useState(false);
+  const custom = customPicked && hasFeature(app.deployment, "customPrice");
+  const [amount, setAmount] = useState("");
 
   const startMs = fromInput(start);
   const every = repeat === "biweekly" ? 2 : 1;
@@ -116,14 +123,29 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
   // 2.6 (FR-262): my family's contract with the chosen provider sets the rate (the server freezes the same).
   const chosen = open ? null : (entry.providers.find((p) => p.publicId === provider) ?? null);
   const contractRate = chosen?.contractRate ?? null;
-  const price =
+  // 2.12.2: an entry without a price of its own takes its base's (a YOLO event: the Childcare price)
+  // — on a database that does so (V89); custom amounts likewise.
+  const priced = hasFeature(dep, "customPrice");
+  const baseEntry = entry.base ? (dep.services.find((x) => x.id === entry.base) ?? null) : null;
+  const list = entry.price ?? (priced ? (baseEntry?.price ?? null) : null);
+  const fromBase = !entry.price && !!baseEntry?.price;
+  const ratePrice =
     contractRate !== null
       ? Math.round(((contractRate * duration) / 60) * 100) / 100
-      : entry.price
-        ? "perHour" in entry.price
-          ? Math.round(((entry.price.perHour * duration) / 60) * 100) / 100
-          : entry.price.fixed
+      : list
+        ? "perHour" in list
+          ? Math.round(((list.perHour * duration) / 60) * 100) / 100
+          : list.fixed
         : null;
+  const hourly = contractRate ?? (list && "perHour" in list ? list.perHour : null);
+  // Whole units or up to two decimals, a comma or a dot (Polish keyboards) — never a third decimal to round.
+  const amountText = amount.trim().replace(",", ".");
+  const customShape = /^\d+(\.\d{1,2})?$/.test(amountText);
+  const customAmount = Number(amountText);
+  const customOk = customShape && customAmount >= 1 && customAmount <= CUSTOM_PRICE_MAX;
+  const price = custom ? (customOk ? customAmount : null) : ratePrice;
+  const fmtRate = (r: number) => new Intl.NumberFormat(locale, { style: "currency", currency: dep.tariff.currency }).format(r);
+  const baseName = localText(baseEntry?.name, locale.startsWith("pl") ? "pl" : "en") || entry.base || "";
 
   // Every rule the server checks, so Send request is only enabled when it will pass (V3, V23).
   const problem = (() => {
@@ -132,6 +154,7 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
     if (startMs > Date.now() + dep.booking.maxDays * 86_400_000) return t("request.tooFar", { days: dep.booking.maxDays });
     if (entry.needsPlace && !place) return t("request.needPlace");
     if (note.length > 200) return t("request.noteLong");
+    if (custom && !customOk) return t(amountText !== "" && /^\d+\.\d{3,}$/.test(amountText) ? "request.customDecimals" : "request.customBad", { max: CUSTOM_PRICE_MAX });
     if (repeat !== "none") {
       if (starts.length < 2 || starts.length > max) return t("request.repeatCount", { max });
       if (starts[starts.length - 1] > Date.now() + dep.appointment.seriesMaxDays * 86_400_000) return t("request.repeatFar", { days: dep.appointment.seriesMaxDays });
@@ -150,7 +173,8 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
         place,
         note: note.trim(),
         repeat: rep,
-        ...(kidIds.length ? { kidIds } : {})
+        ...(kidIds.length ? { kidIds } : {}),
+        ...(custom ? { customPrice: customAmount } : {})
       });
       if (keepHome && place) await store.api.saveHome(place).then(() => store.reloadProfile());
       // The request now waits in Planned (US9).
@@ -277,6 +301,45 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
         <textarea value={note} maxLength={200} rows={3} onChange={(e) => setNote(e.target.value)} placeholder={t("request.notePlaceholder")} data-testid="request-note" />
         <small>{t("request.noteLeft", { n: 200 - note.length })}</small>
       </label>
+      {priced && (
+        <fieldset className="field" data-testid="request-pay">
+          <legend>
+            <span className="with-info">
+              {t("request.pay")}
+              <InfoTip text={t("request.payCustomHint")} testId="request-pay" />
+            </span>
+          </legend>
+          <label className="switch-row">
+            <input type="radio" name="pay" checked={!custom} onChange={() => setCustom(false)} data-testid="request-pay-rate" />
+            <span>{t("request.payRate")}</span>
+          </label>
+          <label className="switch-row">
+            <input type="radio" name="pay" checked={custom} onChange={() => setCustom(true)} data-testid="request-pay-custom" />
+            <span>{t("request.payCustom")}</span>
+          </label>
+          {custom && (
+            <label className="field">
+              <span>
+                {t("request.customAmount")} ({dep.tariff.currency})
+              </span>
+              <input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                className="narrow-input"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                data-testid="request-custom-price"
+              />
+            </label>
+          )}
+          {!custom && ratePrice === null && (
+            <small className="muted" data-testid="request-no-rate">
+              {t("request.noRate")}
+            </small>
+          )}
+        </fieldset>
+      )}
       {price !== null && (
         <p className="estimate" data-testid="request-price">
           <span>{durationText(duration, t)}</span>
@@ -284,13 +347,26 @@ function RequestForm({ entry, locale }: { entry: CatalogItem; locale: string }) 
             <Money amount={price} currency={dep.tariff.currency} />
           </strong>
           {repeat !== "none" && <span className="muted small">{t("request.perOccurrence")}</span>}
-          {contractRate !== null && chosen && (
+          {!custom && contractRate !== null && chosen && (
             <span className="muted small" data-testid="request-contract">
-              {t("request.contractRate", { name: chosen.nickname, rate: new Intl.NumberFormat(locale, { style: "currency", currency: dep.tariff.currency }).format(contractRate) })}
+              {t("request.contractRate", { name: chosen.nickname, rate: fmtRate(contractRate) })}
               {/* 2.8 (FR-305): a YOLO event takes the contract's rate of its base service */}
-              {entry.base && ` · ${t("request.baseRate", { service: localText(dep.services.find((x) => x.id === entry.base)?.name, locale.startsWith("pl") ? "pl" : "en") || entry.base })}`}
+              {entry.base && ` · ${t("request.baseRate", { service: baseName })}`}
             </span>
           )}
+        </p>
+      )}
+      {/* 2.12.2: where the price comes from, under the row (the row itself stays as narrow as before) */}
+      {price !== null && (custom || hourly !== null) && (
+        <p className="muted small" data-testid="request-price-notes">
+          {custom && <span data-testid="request-custom">{t("request.customPrice")}</span>}
+          {!custom && contractRate === null && hourly !== null && (
+            <span data-testid="request-list-rate">
+              {fromBase ? t("request.baseListRate", { service: baseName, rate: fmtRate(hourly) }) : t("request.listRate", { rate: fmtRate(hourly) })}
+              {" · "}
+            </span>
+          )}
+          {!custom && hourly !== null && <span data-testid="request-estimate-note">{t("request.estimateNote")}</span>}
         </p>
       )}
       {problem && <p className="hint" data-testid="request-problem">{problem}</p>}

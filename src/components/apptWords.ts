@@ -33,7 +33,7 @@ export function statusChip(a: AppointmentView, lang: string, t: T): { text: stri
 }
 
 /**
- * 2.14 (FR-335): the chip of a pending change — "Change proposed" (to answer) or "Change sent"
+ * 2.14 (FR-339): the chip of a pending change — "Change proposed" (to answer) or "Change sent"
  * (mine, waiting); null without one (the view gives it to the two parties only).
  */
 export function changeChip(a: AppointmentView, t: T): { text: string; kind: ChipKind } | null {

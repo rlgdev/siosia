@@ -97,7 +97,7 @@ beforeEach(async () => {
   await h.db.exec("delete from public.rides; delete from public.appointments; delete from public.appointment_series; delete from public.push_outbox;");
 });
 
-describe("who and when (FR-330–332, V87)", () => {
+describe("who and when (FR-334–336, V90)", () => {
   it("the two parties only: the other one sees it and may answer, family and strangers learn nothing", async () => {
     const a = await appt(2 * 24 * 60);
     const start = Number(a.startsAt);
@@ -184,7 +184,7 @@ describe("who and when (FR-330–332, V87)", () => {
   });
 });
 
-describe("one pending change (FR-332, V87)", () => {
+describe("one pending change (FR-336, V90)", () => {
   it("mine is replaced; a counter-proposal declines theirs (told); the proposer withdraws; answered or none", async () => {
     const a = await appt(2 * 24 * 60);
     const start = Number(a.startsAt);
@@ -241,7 +241,7 @@ describe("one pending change (FR-332, V87)", () => {
   });
 });
 
-describe("accepting (FR-333, V88)", () => {
+describe("accepting (FR-337, V91)", () => {
   it("a move: start, length, place and the price at the rate; past reminders count as sent; the proposer is told", async () => {
     const a = await appt(2 * 24 * 60);
     await h.admin("update public.appointments set rate = 40, price = 120 where id = $1", [a.id]);
@@ -300,7 +300,7 @@ describe("accepting (FR-333, V88)", () => {
   });
 });
 
-describe("rides follow (FR-333, V89)", () => {
+describe("rides follow (FR-337, V92)", () => {
   it("there by the start's shift, back by the end's (never before the new start); the preview is the outcome", async () => {
     const a = await appt(2 * 24 * 60);
     const s = Number(a.startsAt);
@@ -466,7 +466,7 @@ describe("more of the engine's cases (V19)", () => {
   });
 });
 
-describe("views (FR-335, FR-336, V90, V92)", () => {
+describe("views (FR-339, FR-340, V93, V95)", () => {
   it("toAnswer counts the changes awaiting me; P1 lists a finished one with a new length pending", async () => {
     const a = await appt(2 * 24 * 60);
     const b = await appt(2 * 24 * 60 + 600);
@@ -506,7 +506,7 @@ describe("views (FR-335, FR-336, V90, V92)", () => {
   });
 });
 
-describe("accounts and the migration (V87, NFR-18)", () => {
+describe("accounts and the migration (V90, NFR-18)", () => {
   it("an account merge re-keys the proposer, who can still withdraw", async () => {
     const a = await appt(2 * 24 * 60, { client: "alt" });
     await propose("alt", a.id, { kind: "move", durationMin: 120 });
@@ -525,11 +525,11 @@ describe("accounts and the migration (V87, NFR-18)", () => {
   }, 60_000);
 });
 
-// B13 (2026-11-03, the 2.14 pre-release review): the real findings, each pinned (twins in change.test).
-describe("2.14 review fixes (B13, V19)", () => {
+// B15 (2026-11-03, the 2.14 pre-release review): the real findings, each pinned (twins in change.test).
+describe("2.14 review fixes (B15, V19)", () => {
   const pick = (o: Json = {}) => ({ leg: "there", pickup: NEWHOME, estKm: 5, estMin: 12, fareIsEstimate: false, ...o });
 
-  it("the provider driving their own appointment's ride: an extension and a move are accepted, the ride follows (V88)", async () => {
+  it("the provider driving their own appointment's ride: an extension and a move are accepted, the ride follows (V91)", async () => {
     await call("siosia", "siosia_save_vehicle", ["Kia", "Ceed", "Szary", "W S1", 4]);
     try {
       const a = await appt(2 * 24 * 60);
@@ -572,7 +572,7 @@ describe("2.14 review fixes (B13, V19)", () => {
     }
   });
 
-  it("a driver on both legs is judged at both new times and keeps them (V89)", async () => {
+  it("a driver on both legs is judged at both new times and keeps them (V92)", async () => {
     const a = await appt(2 * 24 * 60);
     const s = Number(a.startsAt);
     const there = await book("client", iso(s - 30 * MIN), a.id, "there");
@@ -595,7 +595,7 @@ describe("2.14 review fixes (B13, V19)", () => {
     expect(await sent("booking_new")).toEqual([]);
   });
 
-  it("my new pickup and a moved place: the there ride still goes to the new place (FR-333)", async () => {
+  it("my new pickup and a moved place: the there ride still goes to the new place (FR-337)", async () => {
     const a = await appt(2 * 24 * 60);
     const s = Number(a.startsAt);
     const there = await book("client", iso(s - 30 * MIN), a.id, "there");

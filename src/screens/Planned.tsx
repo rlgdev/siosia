@@ -4,8 +4,10 @@
 // 2.1 (FR-161): You could help (N) — others' open requests, soonest first, with I can do it.
 // 2.3 (FR-202, FR-221): "with Zosia and Kuba" on an item with kids attached (a candidate: the
 // count), the other party's photo, and the chat of an accepted appointment with its unread count.
-// 2.14 (FR-335): To answer also lists appointments with a change awaiting me (chip Change
+// 2.14 (FR-339): To answer also lists appointments with a change awaiting me (chip Change
 // proposed, Accept / Decline); my own pending change reads Change sent.
+// 2.12.2: every appointment shows its price — "est." when it is the rate × the booked time (the final
+// cost follows the time spent), as set for a fixed price or a custom amount, or "no price set".
 
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
@@ -211,12 +213,8 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
         </span>
         <span className="row muted small">
           <PartyAvatar p={other} /> {partyText(a, t)}
-          {a.price !== null && (
-            <>
-              {" · "}
-              <Money amount={a.price} currency={a.currency} />
-            </>
-          )}
+          {" · "}
+          <ApptPrice a={a} />
         </span>
         {kidsLine(a, lang, t) && (
           <span className="muted small" data-testid="kids-line">
@@ -324,11 +322,9 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
           <strong>
             <EventIcon icon={a.service?.icon ?? "📅"} serviceId={a.serviceId} /> {localText(a.service?.name, lang) || a.serviceId}
           </strong>
-          {a.price !== null && (
-            <strong>
-              <Money amount={a.price} currency={a.currency} />
-            </strong>
-          )}
+          <strong>
+            <ApptPrice a={a} />
+          </strong>
         </span>
         <span data-testid="open-request-when">
           {dayText(a.startsAt, now, locale, t)} · {rangeTimes(a.startsAt, a.endsAt, locale)} ({durationText(a.durationMin, t)})
@@ -357,6 +353,24 @@ function OpenRequestItem({ a }: { a: AppointmentView }) {
         </button>
       </div>
     </article>
+  );
+}
+
+/** 2.12.2: an appointment's price — an estimate at a rate, as set otherwise, or none set yet. */
+export function ApptPrice({ a }: { a: AppointmentView }) {
+  const { t } = useI18n();
+  if (a.price === null)
+    return (
+      <span className="appt-price" data-testid="appt-price-none">
+        {t("planned.noPrice")}
+      </span>
+    );
+  const estimate = a.rate !== null && a.status !== "done";
+  return (
+    <span className="appt-price" data-testid="appt-price">
+      {estimate && `${t("planned.est")} `}
+      <Money amount={a.price} currency={a.currency} />
+    </span>
   );
 }
 

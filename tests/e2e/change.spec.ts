@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
-// Siosia 2.14 on the mock backend (FR-330–335): proposing a change. Two people in two pages of one
+// Siosia 2.14 on the mock backend (FR-334–339): proposing a change. Two people in two pages of one
 // context: the client moves a confirmed appointment, the provider finds it under To answer and
 // accepts, and both see the new times; then a length change of a session under way (the clock
 // moved on in both pages), accepted from C3. Map services are blocked (straight-line routes).
@@ -60,7 +60,7 @@ const shift = (page: Page, value: string, min: number) =>
     [value, min] as const
   );
 
-test("a move: the client proposes, the provider accepts under To answer, both see the new time (FR-330, FR-333, FR-335)", async ({ context }) => {
+test("a move: the client proposes, the provider accepts under To answer, both see the new time (FR-334, FR-337, FR-339)", async ({ context }) => {
   await isolate(context);
   const ewa = await context.newPage();
   await onboard(ewa, "Ewa");
@@ -103,7 +103,7 @@ test("a move: the client proposes, the provider accepts under To answer, both se
   await expect(toria.getByTestId("appt-when")).toContainText(`${later.hhmm}–${end.hhmm}`);
 });
 
-test("a new length of a session under way: proposed by the provider, accepted by the client in C3 (FR-331, FR-333)", async ({ context }) => {
+test("a new length of a session under way: proposed by the provider, accepted by the client in C3 (FR-335, FR-337)", async ({ context }) => {
   await isolate(context);
   const ewa = await context.newPage();
   await ewa.clock.install({ time: Date.now() });

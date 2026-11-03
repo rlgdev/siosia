@@ -1040,17 +1040,17 @@ agreement — either party proposes, the other accepts — and its rides move wi
 also carry a new pickup. A session under way (or just over) can be extended or shortened the same
 way. The price follows by itself. (2.13 stays the accounts lockdown.)
 
-- **FR-330 — Propose a move.** On an `accepted` appointment before its start, either party (the
+- **FR-334 — Propose a move.** On an `accepted` appointment before its start, either party (the
   client or the provider themselves — not their families, V60) MAY propose a new start, length and
   place, plus a new pickup for each of **their own** attached rides (with the phone's route
   estimate), and an optional note (≤ 200). The new start obeys the request rules: ≥ now +
   `booking.minLeadMin`, ≤ now + `booking.maxDays`; the length the entry's min / max / step; the place
   the entry's needsPlace and the stored-place rule (V33). Nothing different from now → `no_change`.
   A pickup for a ride that is not mine → `forbidden`; for a leg I have no live ride on → `bad_leg`.
-- **FR-331 — Propose a new length.** On an `accepted` appointment under way (start ≤ now < end), or a
+- **FR-335 — Propose a new length.** On an `accepted` appointment under way (start ≤ now < end), or a
   `done` one within 24 h of its end, either party MAY propose a new length in minutes (15–1440, a
   multiple of 15 — the 2.6 correction rule); start and place stay. Same as now → `no_change`.
-- **FR-332 — One pending change per appointment.** Proposing while my own is pending replaces it
+- **FR-336 — One pending change per appointment.** Proposing while my own is pending replaces it
   (`replaced`); proposing while the other party's is pending is a counter-proposal: theirs becomes
   `declined` (its proposer is told), mine stands. The proposer MAY withdraw it (`withdrawn`). It
   lapses (`expired`, nobody told) at the moment fixed when it is proposed (`expires_at`, stored):
@@ -1061,8 +1061,8 @@ way. The price follows by itself. (2.13 stays the accounts lockdown.)
   up to that moment). Cancelling the appointment or deleting a party's profile ends it
   (`withdrawn`). Answering: only the other party, only while pending; anyone else `not_found`; a
   lapsed or answered one `illegal_transition`.
-- **FR-333 — Accept.** Everything is checked again at the moment of acceptance (the rules of
-  FR-330/331 against now; `overlap` with the provider's other accepted appointments and taken
+- **FR-337 — Accept.** Everything is checked again at the moment of acceptance (the rules of
+  FR-334/335 against now; `overlap` with the provider's other accepted appointments and taken
   bookings as a driver, V5, the appointment itself excepted; `ride_started` below), then in one
   transaction:
   - *move*: `starts_at`, `duration_min`, `place` take the proposal; `reminded` keeps only the slots
@@ -1091,24 +1091,24 @@ way. The price follows by itself. (2.13 stays the accounts lockdown.)
     (`booking_moved`, dropped) and the ride is offered to drivers again (`booking_new`) — the other
     party sees *no driver yet*.
   - The proposer gets `appt_change_accepted`; both households refresh.
-- **FR-334 — Notifications.** `appt_change_proposed` to the other party ("{who} proposes {new
+- **FR-338 — Notifications.** `appt_change_proposed` to the other party ("{who} proposes {new
   range} instead of {old range}", the new place when it changes, the note);
   `appt_change_accepted` / `appt_change_declined` to the proposer; all tagged `change:<appt>`,
   opening C3 (`./?appointment=<id>`). Drivers get `booking_moved` (tag per ride, opens Planned).
-- **FR-335 — The app.** C3 offers **Propose a change**: for a planned appointment the start, length,
+- **FR-339 — The app.** C3 offers **Propose a change**: for a planned appointment the start, length,
   place, my rides' pickups and a note — showing the new price and what each ride will do; for a
   live one or one done within 24 h, the new length with the new price or cost. A pending change is
   a card above everything with old → new and **Accept** / **Decline** (the other party) or
   **Withdraw** (the proposer). P1 *To answer* lists appointments with a change awaiting me (chip
   *Change proposed*), and the S1 badge counts them (`toAnswer`). The provider's one-sided *Correct
   the time* (2.6) gives way to proposing a new length; its server function stays for cached apps.
-- **FR-336 — Calendar.** A moved date of a series is exported as an override of that date
+- **FR-340 — Calendar.** A moved date of a series is exported as an override of that date
   (`RECURRENCE-ID` = the rule's own slot, with its own start, end and place); a cancelled moved date
   is excluded at its rule slot; the series' DTSTART and length come from the rule (first start,
   series length), not from the first occurrence. A single appointment's `.ics` shows the new time.
-- **FR-337 — Demo.** Robot Siosia accepts a change proposed to her after a moment.
+- **FR-341 — Demo.** Robot Siosia accepts a change proposed to her after a moment.
 
-**Decisions taken while building and reviewing 2.14 (2026-11-03, B13).** Both twins (Engine and
+**Decisions taken while building and reviewing 2.14 (2026-11-03, B15).** Both twins (Engine and
 SQL) implement each of these identically:
 
 - A length change on a `done` appointment has no ride effects (`rides: []`).
