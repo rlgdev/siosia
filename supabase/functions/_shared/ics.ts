@@ -7,6 +7,8 @@
 // Single events are written in UTC. A series is one VEVENT with an RRULE: its start is written as
 // local time with the deployment's TZID (and a VTIMEZONE), so every date keeps its wall-clock time
 // across a daylight-saving change, as the series itself does (§7 wall-clock rule).
+// 2.14 (FR-336, V92): the series' start and length come from the rule (first, durationMin); a date
+// moved by an accepted change is an override VEVENT (same UID, RECURRENCE-ID = its rule slot).
 
 import { apptStatusText, kidsText, rideLineText } from "./push-text.ts";
 
@@ -34,7 +36,22 @@ export interface IcsAppointment {
   /** null while the request is open (2.1: nobody took it yet). */
   provider: { nickname: string } | null;
   rides: { leg: string; status: string; driver: { nickname: string } | null }[];
-  series: { id: string; rule: "weekly" | "biweekly"; count: number; status: string; starts: number[]; gaps: number[] } | null;
+  series: {
+    id: string;
+    rule: "weekly" | "biweekly";
+    count: number;
+    status: string;
+    starts: number[];
+    /** Rule slots of the declined and cancelled dates. */
+    gaps: number[];
+    /** 2.14 (FR-336): the rule's first start and length; absent (older views) → the first date's. */
+    first?: number;
+    durationMin?: number;
+    /** 2.14: the series' own place; absent (older views) → the viewed date's. */
+    place?: IcsPlace | null;
+    /** 2.14: dates moved by an accepted change — the rule slot and where the date went. */
+    moved?: { orig: number; start: number; end: number; place: IcsPlace | null }[];
+  } | null;
   /** 2.3 (FR-202): the client's kids attached to this date, as the view carries them (AttachedKid);
    *  only the provider's event names them, a candidate gets none. */
   kids?: { name: string }[];
@@ -324,35 +341,63 @@ export function appointmentIcs(a: IcsAppointment, ctx: IcsContext): string {
   return calendar(ev);
 }
 
-/** A whole series as one repeating event, the declined and cancelled dates left out (NFR-20). */
+/** 2.14 (FR-336): the rule's start and length of a series — first and durationMin from the view,
+ *  else (an older view) the first date's start and the viewed date's length. */
+function seriesRule(a: IcsAppointment): { first: number; durMs: number; place: IcsPlace | null } {
+  const s = a.series;
+  const first = s?.first ?? s?.starts[0] ?? a.startsAt;
+  const durMs = s?.durationMin !== undefined && s.durationMin !== null && s.durationMin > 0 ? s.durationMin * 60_000 : a.endsAt - a.startsAt;
+  // The series' own place, not the viewed date's (which may have moved elsewhere).
+  const place = s?.place !== undefined ? s.place : a.place;
+  return { first, durMs, place };
+}
+
+/** A whole series as one repeating event, the declined and cancelled dates left out (NFR-20); a
+ *  moved date (2.14) as an override of its rule slot with its own time and place. */
 export function seriesIcs(a: IcsAppointment, ctx: IcsContext): string {
   const s = a.series;
   if (!s) return appointmentIcs(a, ctx);
   const tz = ctx.timezone;
-  const first = s.starts[0] ?? a.startsAt;
-  const last = s.starts[s.starts.length - 1] ?? a.startsAt;
-  const durMs = a.endsAt - a.startsAt;
+  const { first, durMs, place } = seriesRule(a);
+  const moved = s.moved ?? [];
   const summary = appointmentTitle(a, ctx.lang);
   const view = asSeries(a);
   const status = icsStatus(view.status);
   const back = link(ctx);
+  const description = `DESCRIPTION:${escapeText(appointmentDetails(view, ctx))}`;
+  const tail = [description, ...(back ? [`URL:${back}`] : []), `STATUS:${status}`, ...(status === "CANCELLED" ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary)))];
+  const stamp = `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`;
   const ev = [
     "BEGIN:VEVENT",
     `UID:${bare(s.id)}`,
-    `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
+    stamp,
     `DTSTART;TZID=${tz}:${localStamp(first, tz)}`,
     `DTEND;TZID=${tz}:${localStamp(first + durMs, tz)}`,
     `RRULE:FREQ=WEEKLY;INTERVAL=${s.rule === "biweekly" ? 2 : 1};COUNT=${s.count}`,
     ...s.gaps.map((g) => `EXDATE;TZID=${tz}:${localStamp(g, tz)}`),
     `SUMMARY:${escapeText(summary)}`,
-    ...placeLines(a.place),
-    `DESCRIPTION:${escapeText(appointmentDetails(view, ctx))}`,
-    ...(back ? [`URL:${back}`] : []),
-    `STATUS:${status}`,
-    ...(status === "CANCELLED" ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary))),
-    "END:VEVENT"
+    ...placeLines(place),
+    ...tail,
+    "END:VEVENT",
+    // 2.14 (FR-336, V92): each moved date overrides its rule slot (RFC 5545 RECURRENCE-ID).
+    ...moved.flatMap((m) => [
+      "BEGIN:VEVENT",
+      `UID:${bare(s.id)}`,
+      stamp,
+      `RECURRENCE-ID;TZID=${tz}:${localStamp(m.orig, tz)}`,
+      `DTSTART;TZID=${tz}:${localStamp(m.start, tz)}`,
+      `DTEND;TZID=${tz}:${localStamp(m.end, tz)}`,
+      `SUMMARY:${escapeText(summary)}`,
+      ...placeLines(m.place),
+      ...tail,
+      "END:VEVENT"
+    ])
   ];
-  return calendar(ev, vtimezone(tz, first - 86_400_000, last + durMs + 86_400_000));
+  // The time zone covers the rule's dates and every moved one (before or after the rule's span).
+  const times = [first, ...s.starts, ...s.gaps, ...moved.flatMap((m) => [m.orig, m.start, m.end])].filter((t) => Number.isFinite(t));
+  const from = Math.min(...times);
+  const to = Math.max(...times);
+  return calendar(ev, vtimezone(tz, from - 86_400_000, to + durMs + 86_400_000));
 }
 
 /** A booked ride (the P1 booking card): one alarm 30 min before. */
@@ -393,13 +438,14 @@ function googleUrl(p: { text: string; start: number; end: number; tz: string; lo
 /** The prefilled Google Calendar event of one appointment, or of the whole series. */
 export function appointmentGoogleLink(a: IcsAppointment, ctx: IcsContext, wholeSeries = false): string {
   const s = wholeSeries ? a.series : null;
-  const start = s ? (s.starts[0] ?? a.startsAt) : a.startsAt;
+  // 2.14 (V92): the whole series starts and lasts as its rule does.
+  const rule = s ? seriesRule(a) : { first: a.startsAt, durMs: a.endsAt - a.startsAt, place: a.place };
   return googleUrl({
     text: appointmentTitle(a, ctx.lang),
-    start,
-    end: start + (a.endsAt - a.startsAt),
+    start: rule.first,
+    end: rule.first + rule.durMs,
     tz: ctx.timezone,
-    location: a.place?.label ?? null,
+    location: rule.place?.label ?? null,
     details: appointmentDetails(s ? asSeries(a) : a, ctx),
     recur: s ? `RRULE:FREQ=WEEKLY;INTERVAL=${s.rule === "biweekly" ? 2 : 1};COUNT=${s.count}` : undefined
   });

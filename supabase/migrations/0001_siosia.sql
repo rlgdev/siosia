@@ -695,6 +695,40 @@ create table if not exists public.settlements (
 create index if not exists settlements_from_idx on public.settlements (from_party, created_at desc);
 create index if not exists settlements_to_idx on public.settlements (to_party, created_at desc);
 
+-- 2.14 (FR-330–332, V87): a proposed change of an appointment — a move (start, length, place, the
+-- proposer's new pickups [{leg, pickup, estKm, estMin, fareIsEstimate}]) or a new length (minutes)
+-- of a live or just-finished one. At most one proposed per appointment; the rest is its history.
+-- starts_at / duration_min / place are the appointment as it would be (a length change: its own).
+create table if not exists public.appointment_changes (
+  id             uuid primary key default gen_random_uuid(),
+  appointment_id uuid not null references public.appointments (id) on delete cascade,
+  proposed_by    uuid not null,
+  kind           text not null,
+  starts_at      timestamptz not null,
+  duration_min   int not null,
+  place          jsonb,
+  minutes        int,
+  pickups        jsonb not null default '[]',
+  note           text not null default '',
+  status         text not null default 'proposed',
+  created_at     timestamptz not null default now(),
+  answered_at    timestamptz,
+  expires_at     timestamptz not null
+);
+alter table public.appointment_changes drop constraint if exists appointment_changes_kind_check;
+alter table public.appointment_changes add constraint appointment_changes_kind_check check (kind in ('move', 'length'));
+alter table public.appointment_changes drop constraint if exists appointment_changes_status_check;
+alter table public.appointment_changes add constraint appointment_changes_status_check
+  check (status in ('proposed', 'accepted', 'declined', 'withdrawn', 'expired', 'replaced'));
+alter table public.appointment_changes drop constraint if exists appointment_changes_shape_check;
+alter table public.appointment_changes add constraint appointment_changes_shape_check
+  check (jsonb_typeof(pickups) = 'array' and char_length(note) <= 200
+         and duration_min between 15 and 1440 and (minutes is null or minutes between 15 and 1440));
+create unique index if not exists appointment_changes_proposed_uq on public.appointment_changes (appointment_id)
+  where status = 'proposed';
+create index if not exists appointment_changes_appt_idx on public.appointment_changes (appointment_id, created_at desc);
+create index if not exists appointment_changes_by_idx on public.appointment_changes (proposed_by);
+
 -- ---------------------------------------------------------------------------------------------
 -- Row level security: clients may only READ their own rows; all writes go through functions.
 -- ---------------------------------------------------------------------------------------------
@@ -728,6 +762,7 @@ alter table public.contracts enable row level security;
 alter table public.member_invites enable row level security;
 alter table public.notifications enable row level security;
 alter table public.settlements enable row level security;
+alter table public.appointment_changes enable row level security;
 
 -- Explicit grants, so the script also works on projects created with "automatically expose new
 -- tables" turned off (recommended).
@@ -740,7 +775,7 @@ revoke all on public.app_config, public.app_secrets, public.profiles, public.veh
               public.kids, public.appointment_kids, public.kid_ratings, public.messages, public.chat_presence,
               public.appointment_updates,
               public.families, public.family_members, public.family_invites, public.contracts,
-              public.member_invites, public.notifications, public.settlements
+              public.member_invites, public.notifications, public.settlements, public.appointment_changes
   from anon, authenticated;
 -- The sender (Edge Function, service role) reads the queue and the subscriptions.
 do $$
@@ -771,6 +806,7 @@ drop policy if exists siosia_messages_read on public.messages;
 drop policy if exists siosia_updates_read on public.appointment_updates;
 drop policy if exists siosia_family_members_read on public.family_members;
 drop policy if exists siosia_contracts_read on public.contracts;
+drop policy if exists siosia_changes_read on public.appointment_changes;
 
 create policy siosia_config_read  on public.app_config    for select to authenticated using (true);
 create policy siosia_profile_read on public.profiles      for select to authenticated using (user_id = auth.uid());
@@ -799,6 +835,9 @@ create policy siosia_updates_read on public.appointment_updates for select to au
 -- 2.6: my own family row; the contracts I hold as a provider. Everything else through the functions.
 create policy siosia_family_members_read on public.family_members for select to authenticated using (user_id = auth.uid());
 create policy siosia_contracts_read on public.contracts for select to authenticated using (provider_id = auth.uid());
+-- 2.14 (V87): a change proposal for the two parties of its appointment.
+create policy siosia_changes_read on public.appointment_changes for select to authenticated
+  using (exists (select 1 from public.appointments a where a.id = appointment_id and (a.client_id = auth.uid() or a.provider_id = auth.uid())));
 
 -- ---------------------------------------------------------------------------------------------
 -- Pure helpers
@@ -1102,12 +1141,20 @@ returns timestamptz language sql immutable as $$
   select ((t at time zone tz) + make_interval(days => 7 * weeks)) at time zone tz;
 $$;
 
+-- 2.14 (FR-336, V92): the rule's own moment of a series date (seq 1 = first_start), whatever an
+-- accepted change did to that occurrence.
+create or replace function public.siosia_series_slot(s public.appointment_series, p_seq int)
+returns timestamptz language sql stable security definer set search_path = public as $$
+  select siosia_add_weeks(s.first_start, (coalesce(p_seq, 1) - 1) * case when s.rule = 'biweekly' then 2 else 1 end,
+                          coalesce((select timezone from app_config where id = 1), 'Europe/Warsaw'));
+$$;
+
 -- How an attached ride stands for its appointment (§7 rule 7); null = not shown (removed by its
--- passenger, or cancelled together with the appointment).
+-- passenger, or cancelled together with the appointment — 2.14: or by an accepted change, too soon to move).
 create or replace function public.siosia_ride_summary(p_status text, p_driver uuid, p_by text, p_reason text)
 returns text language sql immutable as $$
   select case
-    when p_status = 'cancelled' and (p_by = 'rider' or p_reason = 'appointment_cancelled') then null
+    when p_status = 'cancelled' and (p_by = 'rider' or p_reason in ('appointment_cancelled', 'appointment_changed')) then null
     when p_status = 'scheduled' and p_driver is null then 'pending'
     when p_status = 'requested' then 'pending'
     when p_status in ('scheduled', 'accepted', 'arrived', 'in_progress') then 'confirmed'
@@ -1170,8 +1217,24 @@ returns jsonb language sql stable security definer set search_path = public as $
                    where a.series_id = s.id and a.status in ('requested', 'accepted') and a.starts_at > now()),
     'declined', coalesce((select jsonb_agg(siosia_ms(a.starts_at) order by a.starts_at) from appointments a
                            where a.series_id = s.id and a.status = 'declined'), '[]'::jsonb),
-    'gaps', coalesce((select jsonb_agg(siosia_ms(a.starts_at) order by a.starts_at) from appointments a
+    -- 2.14 (FR-336, V92): the dates left out at their rule slot (a moved date may have been cancelled)…
+    'gaps', coalesce((select jsonb_agg(siosia_ms(siosia_series_slot(s, a.seq)) order by a.seq) from appointments a
                        where a.series_id = s.id and a.status in ('declined', 'cancelled')), '[]'::jsonb),
+    -- …the rule's start and length, and the dates an accepted change moved: {orig: slot, start, end, place}.
+    'first', siosia_ms(s.first_start), 'durationMin', s.duration_min,
+    'place', case when s.place_lat is null then null
+                  else jsonb_build_object('lat', s.place_lat, 'lng', s.place_lng, 'label', s.place_label) end,
+    'moved', coalesce((select jsonb_agg(jsonb_build_object(
+                         'orig', siosia_ms(x.slot), 'start', siosia_ms(a.starts_at),
+                         'end', siosia_ms(a.starts_at + make_interval(mins => a.duration_min)),
+                         'place', case when a.place_lat is null then null
+                                       else jsonb_build_object('lat', a.place_lat, 'lng', a.place_lng, 'label', a.place_label) end)
+                       order by a.seq)
+                         from appointments a cross join lateral (select siosia_series_slot(s, a.seq) as slot) x
+                        where a.series_id = s.id and a.status not in ('declined', 'cancelled')
+                          and (a.starts_at <> x.slot or a.duration_min <> s.duration_min
+                               or (a.place_lat, a.place_lng, a.place_label) is distinct from (s.place_lat, s.place_lng, s.place_label))),
+                      '[]'::jsonb),
     'starts', coalesce((select jsonb_agg(siosia_ms(a.starts_at) order by a.seq) from appointments a
                          where a.series_id = s.id), '[]'::jsonb),
     'rideTemplates', coalesce((select jsonb_agg(
@@ -1201,6 +1264,58 @@ returns boolean language sql stable as $$
      and now() >= a.starts_at - interval '30 minutes'
      and now() <= coalesce(a.ended_at, a.starts_at + make_interval(mins => a.duration_min)) + interval '7 days';
 $$;
+
+-- 2.14: an appointment's place as the API writes it (null = none).
+create or replace function public.siosia_appt_place(a public.appointments)
+returns jsonb language sql immutable as $$
+  select case when a.place_lat is null then null
+              else jsonb_build_object('lat', a.place_lat, 'lng', a.place_lng, 'label', a.place_label) end;
+$$;
+
+-- 2.14 (FR-335, V90): the pending change as one of the two parties sees it (ChangeView), null when
+-- there is none. What each ride would do is the outcome at now, by the rules of acceptance — best
+-- effort: a ride that would block it (ride_started) shows as kept, and the view never fails.
+create or replace function public.siosia_change_json(a public.appointments, p_viewer uuid)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare ch appointment_changes; v_eff jsonb; v_len int; v_start timestamptz; v_rides jsonb := '[]'::jsonb; e jsonb;
+begin
+  select * into ch from appointment_changes where appointment_id = a.id and status = 'proposed';
+  if ch.id is null then return null; end if;
+  begin
+    v_eff := siosia_change_effects(a, ch, false);
+    if jsonb_typeof(v_eff) <> 'array' then v_eff := '[]'::jsonb; end if;
+  exception when others then
+    v_eff := '[]'::jsonb;
+  end;
+  for e in select value from jsonb_array_elements(v_eff) loop
+    v_rides := v_rides || jsonb_build_array(jsonb_build_object(
+      'rideId', e ->> 'rideId', 'leg', e ->> 'leg',
+      'passenger', case when (e ->> 'rider')::uuid = a.client_id then 'client' else 'provider' end,
+      'mine', (e ->> 'rider')::uuid = p_viewer,
+      'from', siosia_ms((e ->> 'from')::timestamptz), 'to', siosia_ms((e ->> 'to')::timestamptz),
+      'effect', e ->> 'effect')
+      -- FR-114: the new places and fare to the passenger only, when they change
+      || case when (e ->> 'rider')::uuid = p_viewer and (e ->> 'moved')::boolean
+              then jsonb_build_object('pickup', e -> 'pickup', 'dropoff', e -> 'dropoff', 'fare', (e ->> 'fare')::numeric)
+              else '{}'::jsonb end);
+  end loop;
+  v_len := case when ch.kind = 'length' then ch.minutes else ch.duration_min end;
+  v_start := case when ch.kind = 'length' then a.starts_at else ch.starts_at end;
+  return jsonb_build_object(
+    'id', ch.id, 'kind', ch.kind,
+    'by', case when ch.proposed_by = a.client_id then 'client' else 'provider' end,
+    'mine', ch.proposed_by = p_viewer,
+    -- as the Engine's changeTarget: a done one keeps its booked length; the end counts the new one
+    'startsAt', siosia_ms(v_start),
+    'durationMin', case when ch.kind = 'length' then (case when a.status = 'done' then a.duration_min else ch.minutes end)
+                        else ch.duration_min end,
+    'endsAt', siosia_ms(v_start + make_interval(mins => v_len)),
+    'place', ch.place,
+    'minutes', case when ch.kind = 'length' and a.status = 'done' then ch.minutes end,
+    'price', case when a.rate is not null then round(a.rate * v_len / 60.0, 2) else a.price end,
+    'note', ch.note, 'createdAt', siosia_ms(ch.created_at), 'expiresAt', siosia_ms(ch.expires_at),
+    'rides', v_rides);
+end $$;
 
 create or replace function public.siosia_appointment_json(a public.appointments, p_viewer uuid)
 returns jsonb language sql stable security definer set search_path = public as $$
@@ -1249,7 +1364,9 @@ returns jsonb language sql stable security definer set search_path = public as $
     'family', case when v.role = 'family' then jsonb_build_object(
                 'side', case when siosia_same_family(p_viewer, a.client_id) then 'client' else 'provider' end,
                 'member', coalesce((select p.nickname from profiles p
-                                     where p.user_id = case when siosia_same_family(p_viewer, a.client_id) then a.client_id else a.provider_id end), '')) end)
+                                     where p.user_id = case when siosia_same_family(p_viewer, a.client_id) then a.client_id else a.provider_id end), '')) end,
+    -- 2.14 (FR-335, V90): the pending change proposal — the two parties only.
+    'change', case when v.party then siosia_change_json(a, p_viewer) end)
   from (select r.role, r.role in ('client', 'provider') as party, r.role <> 'candidate' as sees
           from (select case when a.client_id = p_viewer then 'client' when a.provider_id = p_viewer then 'provider'
                             when siosia_sees(p_viewer, a) then 'family' else 'candidate' end as role) r) v;
@@ -1834,7 +1951,11 @@ begin
           and x.rider_id <> p_user and not (p_user = any (x.excluded)) and siosia_same_realm(p_user, x.rider_id)) end,
     -- 2.0 (V22): requests waiting for my answer (a series counts once), upcoming items, the next one.
     'toAnswer', (select count(distinct coalesce(series_id, id)) from appointments
-                  where provider_id = p_user and status = 'requested' and starts_at > now()),
+                  where provider_id = p_user and status = 'requested' and starts_at > now())
+                -- 2.14 (FR-335, V90): + changes the other party proposed to me
+              + (select count(*) from appointment_changes ch join appointments a on a.id = ch.appointment_id
+                  where ch.status = 'proposed' and ch.proposed_by <> p_user
+                    and (a.client_id = p_user or a.provider_id = p_user)),
     -- 2.1 (FR-161): others' open requests I could take (a series counts once) — the S1 badge.
     'openRequests', (select count(*) from siosia_open_rows(p_user)),
     -- 2.3 (FR-221): unread chat messages across my rooms (the S1 badge).
@@ -2273,6 +2394,7 @@ begin
   update contracts set provider_id = v_uid where provider_id = v_old;
   update contracts set proposed_by = v_uid where proposed_by = v_old;
   update contracts set ended_by = v_uid where ended_by = v_old;
+  update appointment_changes set proposed_by = v_uid where proposed_by = v_old; -- 2.14
   update member_invites set from_user = v_uid where from_user = v_old; -- 2.8: links made and used follow the account
   update member_invites set used_by = v_uid where used_by = v_old;
   delete from notifications where user_id = v_uid; -- 2.9: the bell follows the account
@@ -2480,6 +2602,10 @@ begin
   end if;
   update appointment_series set status = 'cancelled'
    where (client_id = v_uid or provider_id = v_uid) and status in ('requested', 'answered');
+  -- 2.14 (FR-332): pending changes of my appointments end (a done one's new length too).
+  update appointment_changes x set status = 'withdrawn', answered_at = now()
+    from appointments y
+   where y.id = x.appointment_id and x.status = 'proposed' and (y.client_id = v_uid or y.provider_id = v_uid);
   for r in select id, driver_id, scheduled_for, pickup_label from rides
            where rider_id = v_uid and status = 'scheduled' and driver_id is not null loop
     perform siosia_push(r.driver_id, 'booking_cancelled', r.id, jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label));
@@ -3212,6 +3338,7 @@ returns jsonb language sql stable security definer set search_path = public as $
 $$;
 
 -- The provider is busy then: an accepted appointment or a booked ride taken as driver overlaps.
+-- The appointment p_except and its own rides do not count (2.14, V88: they follow the change).
 create or replace function public.siosia_provider_busy(p_user uuid, p_start timestamptz, p_min int, p_except uuid)
 returns boolean language sql stable security definer set search_path = public as $$
   select exists (select 1 from appointments x
@@ -3220,6 +3347,7 @@ returns boolean language sql stable security definer set search_path = public as
                     and p_start < x.starts_at + make_interval(mins => x.duration_min))
       or exists (select 1 from rides r
                   where r.driver_id = p_user and r.scheduled_for is not null
+                    and r.appointment_id is distinct from p_except
                     and r.status in ('scheduled', 'accepted', 'arrived', 'in_progress')
                     and r.scheduled_for < p_start + make_interval(mins => p_min)
                     and p_start < r.scheduled_for + make_interval(mins => greatest(r.est_min, 1)));
@@ -3242,6 +3370,32 @@ begin
   end loop;
 end $$;
 
+-- A new booking (or, 2.14, one that lost its driver to a change) to every driver who could take it.
+create or replace function public.siosia_announce_booking(r public.rides)
+returns void language plpgsql security definer set search_path = public as $$
+declare v_driver uuid; c app_config;
+begin
+  select * into c from app_config where id = 1;
+  -- 2.9 (V73): everyone who can take it finds it in the bell…
+  for v_driver in select v.user_id from vehicles v join profiles p on p.user_id = v.user_id and not p.deleted
+                   where v.user_id <> r.rider_id and siosia_master_role(v.user_id) is distinct from 'rider'
+                     and siosia_member_ok(v.user_id) and siosia_same_realm(r.rider_id, v.user_id) loop
+    perform siosia_keep_notification(v_driver, 'booking_new', r.id, null,
+      jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label));
+  end loop;
+  -- …and those who turned notifications on hear about it.
+  insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
+  select distinct s.user_id, 'booking_new', r.id,
+         jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label),
+         p.language, c.timezone
+    from push_subscriptions s
+    join vehicles v on v.user_id = s.user_id
+    join profiles p on p.user_id = s.user_id and not p.deleted
+   where s.user_id <> r.rider_id and siosia_master_role(s.user_id) is distinct from 'rider' and siosia_member_ok(s.user_id)
+     and siosia_same_realm(r.rider_id, s.user_id);
+  perform siosia_kick_push();
+end $$;
+
 -- A booked ride for p_uid (v1 rules: lead, horizon, open bookings, fare frozen), optionally as
 -- part of an appointment (V9): the passenger is a party, the appointment is accepted, the leg is
 -- free, "there" before the start and "back" at or after it. Template bookings (series) do not
@@ -3252,7 +3406,7 @@ create or replace function public.siosia_book_for(p_uid uuid, p_pickup jsonb, p_
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   c app_config; r rides; a appointments;
-  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric; v_driver uuid;
+  plat float8; plng float8; dlat float8; dlng float8; v_km float8; v_min float8; v_fixed numeric;
 begin
   if siosia_master_role(p_uid) = 'driver' then return siosia_err('driver_only'); end if;
   begin
@@ -3315,24 +3469,7 @@ begin
           v_fixed is null and coalesce(p_fare_is_estimate, false),
           p_appointment, case when p_appointment is null then null else p_leg end, coalesce(p_template, false))
   returning * into r;
-  -- 2.9 (V73): everyone who can take it finds it in the bell…
-  for v_driver in select v.user_id from vehicles v join profiles p on p.user_id = v.user_id and not p.deleted
-                   where v.user_id <> p_uid and siosia_master_role(v.user_id) is distinct from 'rider'
-                     and siosia_member_ok(v.user_id) and siosia_same_realm(p_uid, v.user_id) loop
-    perform siosia_keep_notification(v_driver, 'booking_new', r.id, null,
-      jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label));
-  end loop;
-  -- …and those who turned notifications on hear about it.
-  insert into push_outbox (user_id, kind, ride_id, params, lang, tz)
-  select distinct s.user_id, 'booking_new', r.id,
-         jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label, 'dropoff', r.dropoff_label),
-         p.language, c.timezone
-    from push_subscriptions s
-    join vehicles v on v.user_id = s.user_id
-    join profiles p on p.user_id = s.user_id and not p.deleted
-   where s.user_id <> p_uid and siosia_master_role(s.user_id) is distinct from 'rider' and siosia_member_ok(s.user_id)
-     and siosia_same_realm(p_uid, s.user_id);
-  perform siosia_kick_push();
+  perform siosia_announce_booking(r);
   -- The other party hears that a ride was added (a series template tells once, when it is set).
   if a.id is not null and not coalesce(p_template, false) then
     perform siosia_push_appt(case when a.client_id = p_uid then a.provider_id else a.client_id end, 'appt_ride_added', a.id,
@@ -3378,11 +3515,27 @@ end $$;
 -- once per party and slot (marked in the same statement), template rides enter the horizon daily.
 create or replace function public.siosia_sweep_appointments()
 returns void language plpgsql security definer set search_path = public as $$
-declare a appointments; s appointment_series; c app_config; v_slot int; v_max int;
+declare a appointments; s appointment_series; c app_config; v_slot int; v_max int; ch appointment_changes;
 begin
   select * into c from app_config where id = 1;
   -- Every row below is handled in its own block: one bad row is skipped with a warning and never
   -- fails the sweep, which runs inside every API call (and every 10 s from pg_cron).
+  -- 2.14 (FR-332, V87): a change proposal lapses unanswered (expired) at its moment, and ends
+  -- (withdrawn) when its appointment is no longer accepted or done. Nobody is told; both refetch.
+  for ch in select x.* from appointment_changes x join appointments y on y.id = x.appointment_id
+             where x.status = 'proposed' and (now() >= x.expires_at or y.status not in ('accepted', 'done'))
+             for update of x skip locked loop
+    begin
+      select * into a from appointments where id = ch.appointment_id;
+      update appointment_changes set status = case when a.status in ('accepted', 'done') then 'expired' else 'withdrawn' end,
+                                     answered_at = now()
+       where id = ch.id and status = 'proposed';
+      perform siosia_notify_household(a.client_id);
+      perform siosia_notify_household(a.provider_id);
+    exception when others then
+      raise warning 'siosia_sweep_appointments: change % skipped: %', ch.id, sqlerrm;
+    end;
+  end loop;
   -- An unanswered series expires as a whole when its first occurrence starts (one notification).
   for s in select * from appointment_series where status = 'requested' and first_start <= now() for update skip locked loop
     begin
@@ -3829,6 +3982,9 @@ begin
                           cancel_reason = nullif(left(btrim(coalesce(p_reason, '')), 60), '')
    where id = any (v_ids) and status in ('requested', 'accepted');
   perform siosia_cascade_rides(v_ids);
+  -- 2.14 (FR-332): a pending change of a cancelled date ends with it (nobody is told).
+  update appointment_changes set status = 'withdrawn', answered_at = now()
+   where appointment_id = any (v_ids) and status = 'proposed';
   if a.series_id is not null and not exists (select 1 from appointments where series_id = a.series_id
                                                and status in ('requested', 'accepted') and starts_at > now()) then
     update appointment_series set status = 'cancelled' where id = a.series_id and status in ('requested', 'answered');
@@ -3959,8 +4115,13 @@ begin
   return siosia_ok(jsonb_build_object(
     'appointments', coalesce((select jsonb_agg(siosia_appointment_json(a, v_uid) order by a.starts_at)
                                 from appointments a
-                               where siosia_sees(v_uid, a) and a.status in ('requested', 'accepted')
-                                 and a.starts_at + make_interval(mins => a.duration_min) > now()), '[]'::jsonb),
+                               where siosia_sees(v_uid, a)
+                                 and ((a.status in ('requested', 'accepted')
+                                       and a.starts_at + make_interval(mins => a.duration_min) > now())
+                                      -- 2.14 (FR-335): a finished one with a new length pending between its parties
+                                      or (a.status = 'done' and (a.client_id = v_uid or a.provider_id = v_uid)
+                                          and exists (select 1 from appointment_changes ch
+                                                       where ch.appointment_id = a.id and ch.status = 'proposed')))), '[]'::jsonb),
     'rides', coalesce((select jsonb_agg(siosia_ride_json(x, v_uid) order by coalesce(x.scheduled_for, x.requested_at))
                          from rides x
                         where (x.rider_id = v_uid or x.driver_id = v_uid)
@@ -5927,6 +6088,7 @@ begin
   update contracts set provider_id = p_into where provider_id = p_from;
   update contracts set proposed_by = p_into where proposed_by = p_from;
   update contracts set ended_by = p_into where ended_by = p_from;
+  update appointment_changes set proposed_by = p_into where proposed_by = p_from; -- 2.14
   update member_invites set from_user = p_into where from_user = p_from;
   update member_invites set used_by = p_into where used_by = p_from;
   update notifications set user_id = p_into where user_id = p_from;
@@ -6086,6 +6248,445 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------
+-- Siosia 2.14: proposing a change — move, extend, shorten (siosia-spec-v2.0.md "Amendment 2.14",
+-- SPEC.md V87–V92). Twin of the Engine's proposeChange / answerChange / withdrawChange.
+-- ---------------------------------------------------------------------------------------------
+
+-- 2.14 (FR-334, V91): what a change notification names — the appointment as the change makes it
+-- ({at}, {end}, {place}), as it was ({fromAt}, {fromEnd}, {fromPlace} when the place moves), the
+-- kind, who did it, the note and (a length) the minutes.
+create or replace function public.siosia_change_params(a public.appointments, ch public.appointment_changes, p_who uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select siosia_appt_params(a) || jsonb_build_object(
+      'at', ch.starts_at,
+      'end', ch.starts_at + make_interval(mins => case when ch.kind = 'length' then ch.minutes else ch.duration_min end),
+      'place', coalesce(ch.place ->> 'label', ''),
+      'fromAt', a.starts_at,
+      'fromEnd', a.starts_at + make_interval(mins => case when a.status = 'done' then coalesce(a.actual_min, a.duration_min)
+                                                          else a.duration_min end),
+      'change', ch.kind, 'who', siosia_nick(p_who))
+    || case when ch.kind = 'move' and ch.place is distinct from siosia_appt_place(a)
+            then jsonb_build_object('fromPlace', coalesce(a.place_label, '')) else '{}'::jsonb end
+    || case when ch.note <> '' then jsonb_build_object('text', ch.note) else '{}'::jsonb end
+    || case when ch.kind = 'length' then jsonb_build_object('minutes', ch.minutes) else '{}'::jsonb end;
+$$;
+
+-- 2.14 (FR-330/331, V87): a change checked against now — its window, the request rules (lead and
+-- horizon, the entry's length, its place, V33), the note, the proposer's pickups (their own live
+-- rides only) and that something changes. Null = fine, else the error code. Run when proposing
+-- and again when accepting (V88).
+create or replace function public.siosia_change_check(a public.appointments, ch public.appointment_changes)
+returns text language plpgsql stable security definer set search_path = public as $$
+declare c app_config; e jsonb; d jsonb; p jsonb; v_leg text; v_legs text[] := '{}'; v_end timestamptz;
+begin
+  select * into c from app_config where id = 1;
+  if ch.kind = 'move' then
+    if a.status <> 'accepted' or now() >= a.starts_at then return 'illegal_transition'; end if;
+    e := siosia_service(a.service_id);
+    d := e -> 'duration';
+    if jsonb_typeof(d) is distinct from 'object' then return 'bad_service'; end if;
+    if ch.starts_at is null or ch.starts_at < now() + make_interval(mins => c.booking_min_lead_min)
+       or ch.starts_at > now() + make_interval(days => c.booking_max_days) then
+      return 'bad_time';
+    end if;
+    if ch.duration_min is null
+       or ch.duration_min < (d ->> 'min')::int or ch.duration_min > (d ->> 'max')::int
+       or (ch.duration_min - (d ->> 'min')::int) % (d ->> 'step')::int <> 0 then
+      return 'bad_duration';
+    end if;
+    if (ch.place is null and coalesce((e ->> 'needsPlace')::boolean, true))
+       or (ch.place is not null and (not siosia_valid_place(ch.place) or ch.place -> 'lat' is null)) then
+      return 'bad_input';
+    end if;
+    if char_length(coalesce(ch.note, '')) > 200 then return 'bad_input'; end if;
+    -- A new pickup only for a live ride of mine on that leg (FR-330): someone else's → forbidden.
+    for p in select value from jsonb_array_elements(coalesce(ch.pickups, '[]'::jsonb)) loop
+      v_leg := case when jsonb_typeof(p) = 'object' then p ->> 'leg' end;
+      if v_leg is null or v_leg not in ('there', 'back') then return 'bad_leg'; end if;
+      if not exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg and r.rider_id = ch.proposed_by
+                       and r.status in ('scheduled', 'requested', 'accepted', 'arrived')) then
+        return case when exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg
+                                   and r.status in ('scheduled', 'requested', 'accepted', 'arrived'))
+                    then 'forbidden' else 'bad_leg' end;
+      end if;
+      if v_leg = any (v_legs) or jsonb_typeof(p -> 'pickup') is distinct from 'object' or not siosia_valid_place(p -> 'pickup')
+         or jsonb_typeof(p -> 'estKm') is distinct from 'number' or jsonb_typeof(p -> 'estMin') is distinct from 'number'
+         -- in numeric, as a template: no number however huge or tiny fails a cast; 3 decimals kept
+         or round((p ->> 'estKm')::numeric, 3) <= 0 or (p ->> 'estKm')::numeric > 100000
+         or (p ->> 'estMin')::numeric < 0 or (p ->> 'estMin')::numeric > 1440 then
+        return 'bad_input';
+      end if;
+      v_legs := v_legs || v_leg;
+    end loop;
+    if ch.starts_at = a.starts_at and ch.duration_min = a.duration_min and cardinality(v_legs) = 0
+       and (case when ch.place is null then null else siosia_clean_place(ch.place) end) is not distinct from siosia_appt_place(a) then
+      return 'no_change';
+    end if;
+  else
+    -- FR-331: under way (start ≤ now < end) or done, within 24 h of its end.
+    v_end := a.starts_at + make_interval(mins => a.duration_min);
+    if a.status = 'done' then
+      -- at accepting, the stored lapse moment bounds it (a length proposed live: 24 h after the later end)
+      if now() > coalesce(ch.expires_at, coalesce(a.ended_at, v_end) + interval '24 hours') then return 'window_closed'; end if;
+    elsif not (a.status = 'accepted' and a.starts_at <= now() and now() < v_end) then
+      return 'illegal_transition';
+    end if;
+    if ch.minutes is null or ch.minutes not between 15 and 1440 or ch.minutes % 15 <> 0 then return 'bad_duration'; end if;
+    if char_length(coalesce(ch.note, '')) > 200 then return 'bad_input'; end if;
+    if ch.minutes = (case when a.status = 'done' then coalesce(a.actual_min, a.duration_min) else a.duration_min end) then
+      return 'no_change';
+    end if;
+  end if;
+  return null;
+end $$;
+
+-- 2.14 (FR-333, V89): what each attached ride does if the change is accepted now — one list for
+-- the preview and for the acceptance: [{rideId, leg, rider, driver, status, from, to, effect
+-- move|cancel|keep, moved (places), pickup, dropoff, estKm, estMin, fare, fareIsEstimate}].
+-- A there ride moves by the start's shift, a back ride by the end's (never before the new start);
+-- the proposer's pickup applies to their ride; with the place moved, a ride at the old place (≤ 150 m:
+-- there dropoff, back pickup) follows it. A ride already dispatched that would change → ride_started;
+-- one that would start within the booking lead → cancel. Changed places → distance and fare by the
+-- booking rules. p_strict = false (the view): never an error, a blocking ride shows as kept.
+create or replace function public.siosia_change_effects(a public.appointments, ch public.appointment_changes, p_strict boolean)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  c app_config; r rides; v_out jsonb := '[]'::jsonb; v_ns timestamptz; v_ne timestamptz; v_ds interval; v_de interval;
+  v_follow boolean; v_t timestamptz; v_pick jsonb; v_pu jsonb; v_do jsonb; v_opu jsonb; v_odo jsonb; v_moved boolean;
+  v_effect text; v_km float8; v_min float8; v_ratio float8; v_est boolean; v_fixed numeric; v_fare numeric;
+  v_ekm numeric; v_emin int; v_code text;
+begin
+  -- A done appointment's new length moves no ride.
+  if ch.kind = 'length' and a.status = 'done' then return v_out; end if;
+  select * into c from app_config where id = 1;
+  if ch.kind = 'move' then
+    v_ns := ch.starts_at; v_ne := ch.starts_at + make_interval(mins => ch.duration_min);
+  else
+    v_ns := a.starts_at; v_ne := a.starts_at + make_interval(mins => ch.minutes);
+  end if;
+  v_ds := v_ns - a.starts_at;
+  v_de := v_ne - (a.starts_at + make_interval(mins => a.duration_min));
+  v_follow := ch.kind = 'move' and a.place_lat is not null and ch.place is not null
+              and ch.place is distinct from siosia_appt_place(a);
+  for r in select * from rides x where x.appointment_id = a.id and x.status in ('scheduled', 'requested', 'accepted', 'arrived')
+            order by x.scheduled_for, x.leg loop
+    v_t := case when r.leg = 'there' then r.scheduled_for + v_ds else greatest(v_ns, r.scheduled_for + v_de) end;
+    v_opu := jsonb_build_object('lat', r.pickup_lat, 'lng', r.pickup_lng, 'label', r.pickup_label);
+    v_odo := jsonb_build_object('lat', r.dropoff_lat, 'lng', r.dropoff_lng, 'label', r.dropoff_label);
+    v_pu := v_opu; v_do := v_odo; v_pick := null;
+    if ch.kind = 'move' and r.rider_id = ch.proposed_by then
+      select value into v_pick from jsonb_array_elements(ch.pickups) where value ->> 'leg' = r.leg limit 1;
+    end if;
+    -- the two rules are independent (FR-333): a new pickup of a there ride still takes it to the new place
+    if v_pick is not null then v_pu := siosia_clean_place(v_pick -> 'pickup'); end if;
+    if v_follow then
+      if r.leg = 'there' and siosia_km(r.dropoff_lat, r.dropoff_lng, a.place_lat, a.place_lng) <= 0.15 then
+        v_do := ch.place;
+      elsif r.leg = 'back' and v_pick is null and siosia_km(r.pickup_lat, r.pickup_lng, a.place_lat, a.place_lng) <= 0.15 then
+        v_pu := ch.place;
+      end if;
+    end if;
+    v_moved := v_pu <> v_opu or v_do <> v_odo;
+    v_ekm := r.est_km; v_emin := r.est_min; v_fare := r.fare; v_est := r.fare_is_estimate;
+    if v_t = r.scheduled_for and not v_moved then
+      v_effect := 'keep';
+    elsif r.status <> 'scheduled' then
+      if p_strict then return siosia_err('ride_started'); end if;
+      v_effect := 'keep'; v_t := r.scheduled_for; v_pu := v_opu; v_do := v_odo; v_moved := false;
+    elsif v_t < now() + make_interval(mins => c.booking_min_lead_min) then
+      v_effect := 'cancel';
+    else
+      v_effect := 'move';
+      if v_moved then
+        if v_pick is not null then
+          -- the phone's route, never shorter than the straight line
+          v_km := greatest((v_pick ->> 'estKm')::float8,
+                           siosia_km((v_pu ->> 'lat')::float8, (v_pu ->> 'lng')::float8, (v_do ->> 'lat')::float8, (v_do ->> 'lng')::float8));
+          v_min := greatest(1, (v_pick ->> 'estMin')::float8);
+          v_est := coalesce(v_pick -> 'fareIsEstimate' = 'true'::jsonb, false);
+        else
+          -- the place followed: the old route's ratio to the straight line (1–3), an estimate
+          v_ratio := least(3, greatest(1, r.est_km::float8
+                                          / greatest(siosia_km(r.pickup_lat, r.pickup_lng, r.dropoff_lat, r.dropoff_lng), 0.1)));
+          v_km := siosia_km((v_pu ->> 'lat')::float8, (v_pu ->> 'lng')::float8, (v_do ->> 'lat')::float8, (v_do ->> 'lng')::float8)
+                  * v_ratio;
+          v_min := greatest(1, round((r.est_min * v_km / greatest(r.est_km::float8, 0.1))::numeric));
+          v_est := true;
+        end if;
+        v_code := case when c.service_lat is not null and c.service_lng is not null and c.service_radius_km is not null
+                         and siosia_km(c.service_lat, c.service_lng, (v_pu ->> 'lat')::float8, (v_pu ->> 'lng')::float8) > c.service_radius_km
+                         then 'outside_area' when v_km > c.max_trip_km then 'too_far' end;
+        if v_code is not null and p_strict then return siosia_err(v_code); end if;
+      end if;
+    end if;
+    if v_code is not null then
+      -- the view: a ride the new places would not pass shows as kept (as the Engine's best effort)
+      v_effect := 'keep'; v_t := r.scheduled_for; v_pu := v_opu; v_do := v_odo; v_moved := false;
+      v_code := null;
+    elsif v_effect = 'move' and v_moved then
+      v_fixed := case when (siosia_master_of(r.rider_id)).role = 'rider' then (siosia_master_of(r.rider_id)).fixed_fare end;
+      v_fare := coalesce(v_fixed, siosia_fare(v_km::numeric, v_min::numeric));
+      v_est := v_fixed is null and v_est;
+      v_ekm := round(v_km::numeric, 1); v_emin := round(v_min::numeric)::int;
+    end if;
+    v_out := v_out || jsonb_build_array(jsonb_build_object(
+      'rideId', r.id, 'leg', r.leg, 'rider', r.rider_id, 'driver', r.driver_id, 'status', r.status,
+      'from', r.scheduled_for, 'to', case when v_effect = 'cancel' then null else v_t end,
+      'effect', v_effect, 'moved', v_moved, 'pickup', v_pu, 'dropoff', v_do,
+      'estKm', v_ekm, 'estMin', v_emin, 'fare', v_fare, 'fareIsEstimate', v_est));
+  end loop;
+  return v_out;
+end $$;
+
+-- 2.14 (FR-333, V89): the rides follow an accepted change (the appointment already updated): too
+-- soon → cancelled (appointment_changed; its driver hears booking_cancelled); moved → new time (and
+-- dispatch time), places, estimate and fare. First all of them, then each driver: kept when the
+-- final times fit their other bookings (the claim rule) and their other accepted appointments
+-- (booking_moved); otherwise the ride is offered again (booking_moved dropped to them, booking_new
+-- to every driver). A driver on both legs is judged at both new times (twin of applyRideEffects).
+create or replace function public.siosia_change_apply_rides(a public.appointments, p_effects jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare e jsonb; r rides; v_t timestamptz; v_driver uuid;
+begin
+  for e in select value from jsonb_array_elements(p_effects) loop
+    continue when e ->> 'effect' not in ('move', 'cancel');
+    select * into r from rides where id = (e ->> 'rideId')::uuid and status = 'scheduled' for update;
+    continue when r.id is null;
+    if e ->> 'effect' = 'cancel' then
+      if r.driver_id is not null then
+        perform siosia_push(r.driver_id, 'booking_cancelled', r.id,
+                            jsonb_build_object('at', r.scheduled_for, 'pickup', r.pickup_label));
+      end if;
+      perform siosia_end_ride(r.id, 'cancelled', 'system', 'appointment_changed', array['scheduled']);
+      continue;
+    end if;
+    v_t := (e ->> 'to')::timestamptz;
+    update rides set scheduled_for = v_t, dispatch_started_at = v_t,
+                     pickup_lat = (e -> 'pickup' ->> 'lat')::float8, pickup_lng = (e -> 'pickup' ->> 'lng')::float8,
+                     pickup_label = e -> 'pickup' ->> 'label',
+                     dropoff_lat = (e -> 'dropoff' ->> 'lat')::float8, dropoff_lng = (e -> 'dropoff' ->> 'lng')::float8,
+                     dropoff_label = e -> 'dropoff' ->> 'label',
+                     est_km = (e ->> 'estKm')::numeric, est_min = (e ->> 'estMin')::int,
+                     fare = (e ->> 'fare')::numeric, fare_is_estimate = (e ->> 'fareIsEstimate')::boolean
+     where id = r.id and status = 'scheduled';
+  end loop;
+  for e in select value from jsonb_array_elements(p_effects) loop
+    continue when e ->> 'effect' <> 'move';
+    select * into r from rides where id = (e ->> 'rideId')::uuid and status = 'scheduled' and driver_id is not null;
+    continue when r.id is null;
+    if not exists (select 1 from rides x where x.status = 'scheduled' and x.driver_id = r.driver_id and x.id <> r.id
+                     and abs(extract(epoch from x.scheduled_for - r.scheduled_for)) < (greatest(x.est_min, r.est_min) + 30) * 60)
+       and not exists (select 1 from appointments y where y.provider_id = r.driver_id and y.status = 'accepted'
+                         and y.id is distinct from r.appointment_id
+                         and y.starts_at < r.scheduled_for + make_interval(mins => greatest(r.est_min, 1))
+                         and r.scheduled_for < y.starts_at + make_interval(mins => y.duration_min)) then
+      perform siosia_push(r.driver_id, 'booking_moved', r.id,
+                          jsonb_build_object('at', r.scheduled_for, 'fromAt', (e ->> 'from')::timestamptz,
+                                             'pickup', r.pickup_label, 'dropped', false));
+    else
+      v_driver := r.driver_id;
+      update rides set driver_id = null where id = r.id returning * into r;
+      perform siosia_push(v_driver, 'booking_moved', r.id,
+                          jsonb_build_object('at', r.scheduled_for, 'fromAt', (e ->> 'from')::timestamptz,
+                                             'pickup', r.pickup_label, 'dropped', true));
+      perform siosia_announce_booking(r);
+    end if;
+  end loop;
+end $$;
+
+-- 2.14 (FR-330–332, V87): either party proposes a change of their appointment — kind move (start,
+-- durationMin, place: the appointment's when left out; pickups for my own rides; note) or length
+-- (minutes). Mine pending → replaced; the other party's pending → declined (they are told).
+create or replace function public.siosia_propose_change(p_id uuid, p_input jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; ch appointment_changes; o appointment_changes;
+  v_sid uuid; v_in jsonb := coalesce(p_input, '{}'::jsonb); v_code text; v_eff jsonb; v_t text;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  -- Locks in the order of siosia_cancel_appointment: the series row first, then the occurrence.
+  select series_id into v_sid from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid);
+  if v_sid is not null then perform 1 from appointment_series where id = v_sid for update; end if;
+  select * into a from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid) for update;
+  if a.id is null then return siosia_err('not_found'); end if;
+  if jsonb_typeof(v_in) <> 'object' or coalesce(v_in ->> 'kind', '') not in ('move', 'length') then
+    return siosia_err('bad_input');
+  end if;
+  ch.id := gen_random_uuid(); ch.appointment_id := a.id; ch.proposed_by := v_uid; ch.kind := v_in ->> 'kind';
+  ch.status := 'proposed'; ch.created_at := now(); ch.pickups := '[]'::jsonb;
+  if jsonb_typeof(v_in -> 'note') = 'string' then ch.note := btrim(v_in ->> 'note', E' \t\n\r\f' || chr(11));
+  elsif coalesce(jsonb_typeof(v_in -> 'note'), 'null') = 'null' then ch.note := '';
+  else return siosia_err('bad_input'); end if;
+  if ch.kind = 'move' then
+    -- the start: ms or an ISO timestamp; left out = as it is
+    v_t := jsonb_typeof(v_in -> 'startsAt');
+    begin
+      ch.starts_at := case when v_t = 'number' then to_timestamp((v_in ->> 'startsAt')::float8 / 1000)
+                           when v_t = 'string' then (v_in ->> 'startsAt')::timestamptz
+                           when coalesce(v_t, 'null') = 'null' then a.starts_at end;
+    exception when others then return siosia_err('bad_time');
+    end;
+    if ch.starts_at is null then return siosia_err('bad_time'); end if;
+    v_t := jsonb_typeof(v_in -> 'durationMin');
+    if v_t = 'number' then
+      if (v_in ->> 'durationMin')::numeric <> trunc((v_in ->> 'durationMin')::numeric)
+         or abs((v_in ->> 'durationMin')::numeric) > 100000 then
+        return siosia_err('bad_duration');
+      end if;
+      ch.duration_min := (v_in ->> 'durationMin')::int;
+    elsif coalesce(v_t, 'null') = 'null' then ch.duration_min := a.duration_min;
+    else return siosia_err('bad_duration'); end if;
+    ch.place := case when not (v_in ? 'place') then siosia_appt_place(a)
+                     when jsonb_typeof(v_in -> 'place') = 'null' then null else v_in -> 'place' end;
+    v_t := jsonb_typeof(v_in -> 'pickups');
+    if v_t = 'array' then ch.pickups := v_in -> 'pickups';
+    elsif coalesce(v_t, 'null') <> 'null' then return siosia_err('bad_input'); end if;
+  else
+    v_t := jsonb_typeof(v_in -> 'minutes');
+    if v_t = 'number' and (v_in ->> 'minutes')::numeric = trunc((v_in ->> 'minutes')::numeric)
+       and abs((v_in ->> 'minutes')::numeric) <= 100000 then
+      ch.minutes := (v_in ->> 'minutes')::int;
+    end if;
+    ch.starts_at := a.starts_at;
+    ch.duration_min := case when a.status = 'done' then a.duration_min else ch.minutes end;
+    ch.place := siosia_appt_place(a);
+  end if;
+  v_code := siosia_change_check(a, ch);
+  if v_code is not null then return siosia_err(v_code); end if;
+  -- Stored as cleaned (V33): {lat, lng, label}; each pickup with its numbers.
+  if ch.kind = 'move' then
+    ch.place := case when ch.place is null then null else siosia_clean_place(ch.place) end;
+    ch.pickups := coalesce((select jsonb_agg(jsonb_build_object(
+                     'leg', p ->> 'leg', 'pickup', siosia_clean_place(p -> 'pickup'),
+                     'estKm', round((p ->> 'estKm')::numeric, 3)::float8, 'estMin', round((p ->> 'estMin')::numeric, 3)::float8,
+                     'fareIsEstimate', coalesce(p -> 'fareIsEstimate' = 'true'::jsonb, false)))
+                     from jsonb_array_elements(ch.pickups) p), '[]'::jsonb);
+    -- when it could no longer be accepted: the current start, or the booking lead before the new one
+    ch.expires_at := least(a.starts_at, ch.starts_at - make_interval(mins => (select booking_min_lead_min from app_config where id = 1)));
+  elsif a.status = 'done' then
+    ch.expires_at := coalesce(a.ended_at, a.starts_at + make_interval(mins => a.duration_min)) + interval '24 hours';
+  else
+    ch.expires_at := greatest(a.starts_at + make_interval(mins => a.duration_min),
+                              a.starts_at + make_interval(mins => ch.minutes)) + interval '24 hours';
+  end if;
+  v_eff := siosia_change_effects(a, ch, true);
+  if jsonb_typeof(v_eff) = 'object' then return v_eff; end if;
+  -- FR-332: one pending per appointment — mine is replaced, theirs declined by this counter-proposal.
+  select * into o from appointment_changes where appointment_id = a.id and status = 'proposed' for update;
+  if o.id is not null then
+    update appointment_changes set status = case when o.proposed_by = v_uid then 'replaced' else 'declined' end,
+                                   answered_at = now()
+     where id = o.id;
+    if o.proposed_by <> v_uid then
+      perform siosia_push_appt(o.proposed_by, 'appt_change_declined', a.id, siosia_change_params(a, o, v_uid));
+    end if;
+  end if;
+  insert into appointment_changes (id, appointment_id, proposed_by, kind, starts_at, duration_min, place, minutes, pickups,
+                                   note, status, created_at, expires_at)
+  values (ch.id, ch.appointment_id, ch.proposed_by, ch.kind, ch.starts_at, ch.duration_min, ch.place, ch.minutes, ch.pickups,
+          ch.note, 'proposed', ch.created_at, ch.expires_at);
+  perform siosia_push_appt(case when a.client_id = v_uid then a.provider_id else a.client_id end, 'appt_change_proposed', a.id,
+                           siosia_change_params(a, ch, v_uid));
+  perform siosia_notify_household(a.client_id);
+  perform siosia_notify_household(a.provider_id);
+  return siosia_ok(siosia_appointment_json(a, v_uid));
+end $$;
+
+-- 2.14 (FR-332/333, V88): the other party answers the pending change. Accept checks everything
+-- again against now (+ overlap, V5, the appointment itself excepted), then in this transaction the
+-- appointment, its price (rate × length, V62), its reminders, its rides and (done) its cost follow.
+create or replace function public.siosia_answer_change(p_id uuid, p_decision text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; v_old appointments; ch appointment_changes;
+  c app_config; v_sid uuid; v_code text; v_eff jsonb; v_start timestamptz; v_min int;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  if coalesce(p_decision, '') not in ('accept', 'decline') then return siosia_err('bad_input'); end if;
+  perform siosia_sweep();
+  select series_id into v_sid from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid);
+  if v_sid is not null then perform 1 from appointment_series where id = v_sid for update; end if;
+  select * into a from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid) for update;
+  if a.id is null then return siosia_err('not_found'); end if;
+  select * into ch from appointment_changes where appointment_id = a.id
+   order by (status = 'proposed') desc, created_at desc limit 1 for update;
+  if ch.id is null then return siosia_err('not_found'); end if;
+  if ch.status <> 'proposed' then return siosia_err('illegal_transition'); end if;
+  if ch.proposed_by = v_uid then return siosia_err('not_found'); end if;
+  if p_decision = 'decline' then
+    update appointment_changes set status = 'declined', answered_at = now() where id = ch.id;
+    perform siosia_push_appt(ch.proposed_by, 'appt_change_declined', a.id, siosia_change_params(a, ch, v_uid));
+    perform siosia_notify_household(a.client_id);
+    perform siosia_notify_household(a.provider_id);
+    return siosia_ok(siosia_appointment_json(a, v_uid));
+  end if;
+  v_code := siosia_change_check(a, ch);
+  if v_code is not null then return siosia_err(v_code); end if;
+  -- The live rides locked before their effects are read: a ride the cron sweep is starting right now
+  -- is waited for and then seen dispatched (ride_started), never left behind at the old time.
+  perform 1 from rides where appointment_id = a.id and status in ('scheduled', 'requested', 'accepted', 'arrived')
+   order by id for update;
+  v_eff := siosia_change_effects(a, ch, true);
+  if jsonb_typeof(v_eff) = 'object' then return v_eff; end if;
+  if ch.kind = 'move' or a.status = 'accepted' then
+    v_start := case when ch.kind = 'move' then ch.starts_at else a.starts_at end;
+    v_min := case when ch.kind = 'move' then ch.duration_min else ch.minutes end;
+    if siosia_provider_busy(a.provider_id, v_start, v_min, a.id) then return siosia_err('overlap'); end if;
+  end if;
+  select * into c from app_config where id = 1;
+  v_old := a;
+  if ch.kind = 'move' then
+    -- the reminders whose moment for the new start has passed count as sent (no burst)
+    update appointments set starts_at = ch.starts_at, duration_min = ch.duration_min,
+                            place_lat = (ch.place ->> 'lat')::float8, place_lng = (ch.place ->> 'lng')::float8,
+                            place_label = ch.place ->> 'label',
+                            reminded = array(select x from unnest(c.appt_reminder_min) with ordinality u(x, o)
+                                              where ch.starts_at - make_interval(mins => x) <= now() order by o),
+                            price = case when rate is not null then round(rate * ch.duration_min / 60.0, 2) else price end
+     where id = a.id and status = 'accepted' returning * into a;
+  elsif a.status = 'accepted' then
+    update appointments set duration_min = ch.minutes,
+                            price = case when rate is not null then round(rate * ch.minutes / 60.0, 2) else price end
+     where id = a.id and status = 'accepted' returning * into a;
+  else
+    update appointments set actual_min = case when ch.minutes = duration_min then null else ch.minutes end
+     where id = a.id and status = 'done' returning * into a;
+  end if;
+  if a.id is null then return siosia_err('illegal_transition'); end if;
+  update appointment_changes set status = 'accepted', answered_at = now() where id = ch.id;
+  perform siosia_change_apply_rides(a, v_eff);
+  -- V63: the cost of a done one goes out again, corrected.
+  if ch.kind = 'length' and v_old.status = 'done' then perform siosia_announce_cost(a, true); end if;
+  perform siosia_push_appt(ch.proposed_by, 'appt_change_accepted', a.id, siosia_change_params(v_old, ch, v_uid));
+  perform siosia_notify_household(a.client_id);
+  perform siosia_notify_household(a.provider_id);
+  return siosia_ok(siosia_appointment_json(a, v_uid));
+end $$;
+
+-- 2.14 (FR-332): the proposer takes the pending change back (nobody is told; both refetch).
+create or replace function public.siosia_withdraw_change(p_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_err text := siosia_guard(true); v_uid uuid := auth.uid(); a appointments; ch appointment_changes; v_sid uuid;
+begin
+  if v_err is not null then return siosia_err(v_err); end if;
+  perform siosia_sweep();
+  select series_id into v_sid from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid);
+  if v_sid is not null then perform 1 from appointment_series where id = v_sid for update; end if;
+  select * into a from appointments where id = p_id and (client_id = v_uid or provider_id = v_uid) for update;
+  if a.id is null then return siosia_err('not_found'); end if;
+  select * into ch from appointment_changes where appointment_id = a.id
+   order by (status = 'proposed') desc, created_at desc limit 1 for update;
+  if ch.id is null then return siosia_err('not_found'); end if;
+  if ch.status <> 'proposed' then return siosia_err('illegal_transition'); end if;
+  if ch.proposed_by <> v_uid then return siosia_err('not_found'); end if;
+  update appointment_changes set status = 'withdrawn', answered_at = now() where id = ch.id;
+  perform siosia_notify_household(a.client_id);
+  perform siosia_notify_household(a.provider_id);
+  return siosia_ok(siosia_appointment_json(a, v_uid));
+end $$;
+
+-- ---------------------------------------------------------------------------------------------
 -- Function privileges: clients get the API above, nothing else.
 -- ---------------------------------------------------------------------------------------------
 
@@ -6188,6 +6789,10 @@ grant execute on function public.siosia_comment_settlement(uuid, text) to authen
 grant execute on function public.siosia_whoami(text) to authenticated;
 grant execute on function public.siosia_absorb(text, text, boolean) to authenticated;
 grant execute on function public.siosia_absorb_preview(text) to authenticated;
+-- 2.14
+grant execute on function public.siosia_propose_change(uuid, jsonb) to authenticated;
+grant execute on function public.siosia_answer_change(uuid, text) to authenticated;
+grant execute on function public.siosia_withdraw_change(uuid) to authenticated;
 -- evaluated by the Storage policies as the reading / uploading user — about themselves only (the
 -- 2-argument rules stay the server's: revoked above with everything else)
 grant execute on function public.siosia_can_see_photo(text) to authenticated;

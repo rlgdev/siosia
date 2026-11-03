@@ -47,6 +47,7 @@ export function endedNotice(t: Translate, r: RideView): string | null {
   if (r.status !== "cancelled" || r.cancelledBy === "rider") return null;
   // Cancelling an appointment also ends its rides (by the system): not the driver's doing.
   if (r.cancelReason === "appointment_cancelled") return t("active.appointmentCancelled");
+  if (r.cancelReason === "appointment_changed") return t("active.appointmentChanged"); // 2.14
   return t("active.cancelledByDriver", { reason: reasonText(t, r.cancelReason) });
 }
 

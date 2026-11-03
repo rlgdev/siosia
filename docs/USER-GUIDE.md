@@ -196,6 +196,28 @@ pick you up there. Only you see it.
   anyone.
 - When it's done, both may give 1–5 stars within 24 hours (in **History**).
 
+## Moving or changing an appointment
+
+Plans change. On a confirmed appointment either of you taps **Propose a change**:
+
+- **Before it starts** — a new start, length or place, and for each of *your* rides a new pickup
+  (Siosia estimates the route again). A note (up to 200 characters) helps. The new end and price
+  show before you send.
+- **While it runs, or within 24 hours after the end** — just a new length (in 15-minute steps);
+  the new end and price (or the total) show before you send.
+
+Nothing changes until the other person answers. They get a notification and see the proposal at the
+top of the appointment — old → new, the new price and what each ride will do — with **Accept** or
+**Decline**; **Planned → To answer** lists it too (*Change proposed*). You can **Withdraw** yours
+while it waits (*Change sent*). Proposing while theirs waits declines theirs and sends yours
+instead. A proposal no one answers lapses at the start (or 24 hours after the end).
+
+When it is accepted, the appointment, its price (at the rate it was booked with) and the rides move
+together: a ride there moves with the start, a ride back with the end, and the driver is told — or,
+if the new time doesn't fit their day, the ride goes back to other drivers (*no driver yet*). A ride
+that would now be too soon is cancelled; ask for a ride under **Siosia → Ride** at the time. A ride
+already on its way can't be moved.
+
 ## Add to calendar
 
 On a confirmed appointment, on a whole repeating series and on a booked ride: **Add to calendar**
@@ -269,8 +291,9 @@ your family only, at the contract rate.
 
 **What it cost.** When an appointment is over, its page shows a **Summary** — the time, the rate and
 the total — and everyone in the family and the person who looked after the kids get a notification.
-Came back an hour late? The person who looked after them can *Correct the time* within 24 hours; the
-total follows the rate and you hear about it. Siosia never charges anything — settle between you.
+Came back an hour late? Within 24 hours either of you can *Propose another length* (see *Moving or
+changing an appointment*); once the other accepts, the total follows the rate and the family hears
+about it. Siosia never charges anything — settle between you.
 
 **Weekly report.** History → **Weekly report**: Monday to Sunday, what you spent (services as a
 client, rides as a passenger) and earned (services you gave, rides you drove), per person and
@@ -551,6 +574,29 @@ przejazd na termin. Widzisz je tylko Ty.
   nie liczy.
 - Po wszystkim obie strony mogą w ciągu 24 godzin wystawić 1–5 gwiazdek (w **Historii**).
 
+## Przesunięcie lub zmiana terminu
+
+Plany się zmieniają. W potwierdzonym terminie każde z was może dotknąć **Zaproponuj zmianę**:
+
+- **Przed początkiem** — nowy początek, czas trwania albo miejsce, a dla każdego *swojego*
+  przejazdu nowe miejsce odbioru (Siosia ponownie szacuje trasę). Przyda się notatka (do 200
+  znaków). Nowy koniec i cenę widać przed wysłaniem.
+- **W trakcie albo do 24 godzin po zakończeniu** — tylko nowa długość (co 15 minut); nowy koniec i
+  cenę (albo kwotę) widać przed wysłaniem.
+
+Nic się nie zmienia, dopóki druga osoba nie odpowie. Dostaje powiadomienie i widzi propozycję na
+górze terminu — było → będzie, nową cenę i co stanie się z każdym przejazdem — z przyciskami
+**Przyjmij zmianę** i **Odrzuć**; pokazują ją też **Zaplanowane → Do odpowiedzi** (*Propozycja
+zmiany*). Swoją możesz **Wycofać**, póki czeka (*Zmiana wysłana*). Twoja propozycja w czasie, gdy
+czeka propozycja drugiej strony, odrzuca tamtą i trafia na jej miejsce. Propozycja bez odpowiedzi
+wygasa z początkiem terminu (albo 24 godziny po zakończeniu).
+
+Po akceptacji termin, jego cena (według stawki z rezerwacji) i przejazdy zmieniają się razem:
+przejazd tam przesuwa się z początkiem, powrotny z końcem, a kierowca dostaje informację — a jeśli
+nowa godzina mu nie pasuje, przejazd wraca do innych kierowców (*jeszcze bez kierowcy*). Przejazd,
+który byłby teraz za wcześnie, zostanie odwołany; w tym czasie zamów przejazd: **Siosia →
+Przejazd**. Przejazdu, który już jedzie, nie da się przesunąć.
+
 ## Dodaj do kalendarza
 
 Przy potwierdzonym terminie, całej serii i zarezerwowanym przejeździe: **Dodaj do kalendarza** →
@@ -623,8 +669,9 @@ stawce z umowy.
 
 **Ile to kosztowało.** Po zakończeniu termin pokazuje **Podsumowanie** — czas, stawkę i kwotę — a cała
 rodzina i osoba, która zajmowała się dziećmi, dostają powiadomienie. Wróciliście godzinę później?
-Opiekun(ka) może w ciągu 24 godzin *Poprawić czas*; kwota liczy się ze stawki, a Ty dostajesz
-informację. Siosia niczego nie pobiera — rozliczacie się sami.
+W ciągu 24 godzin każde z was może *Zaproponować inną długość* (zob. *Przesunięcie lub zmiana
+terminu*); po akceptacji drugiej strony kwota liczy się ze stawki, a rodzina dostaje informację.
+Siosia niczego nie pobiera — rozliczacie się sami.
 
 **Raport tygodniowy.** Historia → **Raport tygodniowy**: od poniedziałku do niedzieli, ile wydałeś
 (usługi jako klient, przejazdy jako pasażer) i zarobiłeś (usługi, które dałeś, kursy, które

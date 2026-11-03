@@ -193,6 +193,13 @@ export interface SeriesView {
   starts: number[];
   rideTemplates: RideTemplate[];
   ics: string | null;
+  /** 2.14 (FR-336): the rule's own start of the first date and its length (calendar export of moved dates). */
+  first?: number;
+  durationMin?: number;
+  /** 2.14 (FR-336): the series' own place (the calendar's repeating event; a moved date has its own). */
+  place?: Place | null;
+  /** 2.14 (FR-336): dates moved by an accepted change — the rule's slot (orig) and where it went. */
+  moved?: { orig: number; start: number; end: number; place: Place | null }[];
 }
 
 export interface AppointmentView {
@@ -256,6 +263,75 @@ export interface AppointmentView {
   tip: { amount: number; by: string; at: number } | null;
   /** 2.6 (FR-254): role "family" — whose appointment this is (that member's side and nickname). */
   family: { side: PartyRole; member: string } | null;
+  /** 2.14 (FR-330–335): the pending change proposal (the two parties only; others null). */
+  change: ChangeView | null;
+}
+
+/** 2.14 (FR-330): a move of a planned appointment, or a new length of a live or just-finished one. */
+export type ChangeKind = "move" | "length";
+
+/** 2.14: what an attached ride does when the pending change is accepted. */
+export interface ChangeRide {
+  rideId: string;
+  leg: Leg;
+  passenger: PartyRole;
+  mine: boolean;
+  /** Pickup time before / after the change. */
+  from: number | null;
+  to: number | null;
+  /** "move" (new time and/or pickup), "cancel" (would start too soon — booked again by hand), "keep". */
+  effect: "move" | "cancel" | "keep";
+  /** The passenger only (FR-114): the new pickup and fare when they change. */
+  pickup?: Place;
+  dropoff?: Place;
+  fare?: number;
+}
+
+/** 2.14 (FR-330–335): a pending change as one party sees it. */
+export interface ChangeView {
+  id: string;
+  kind: ChangeKind;
+  /** Who proposed it. */
+  by: PartyRole;
+  /** I proposed it (I may withdraw); otherwise I may answer it. */
+  mine: boolean;
+  /** The appointment as it would be: start, length, end, place. */
+  startsAt: number;
+  durationMin: number;
+  endsAt: number;
+  place: Place | null;
+  /** kind "length" on a done appointment: the minutes counted (the cost follows). */
+  minutes: number | null;
+  /** The new price (planned) or cost total (done); null = no price agreed. */
+  price: number | null;
+  note: string;
+  createdAt: number;
+  /** When it lapses unanswered. */
+  expiresAt: number;
+  rides: ChangeRide[];
+}
+
+/** 2.14 (FR-330): a new pickup for one of my own attached rides, with the phone's route estimate. */
+export interface ChangePickup {
+  leg: Leg;
+  pickup: Place;
+  estKm: number;
+  estMin: number;
+  fareIsEstimate: boolean;
+}
+
+/**
+ * 2.14 (FR-330, FR-333): a proposal. move = before the start: startsAt, durationMin, place (as the
+ * appointment has them when left out), my rides' pickups. length = live or done: minutes only.
+ */
+export interface ChangeInput {
+  kind: ChangeKind;
+  startsAt?: number;
+  durationMin?: number;
+  place?: Place | null;
+  minutes?: number;
+  pickups?: ChangePickup[];
+  note?: string;
 }
 
 /** 2.6 (FR-270): the summary of a done appointment. */
@@ -928,7 +1004,10 @@ export type ServerErrorCode =
   | "email_not_allowed"
   | "sign_in_instead"
   | "use_merge"
-  | "code_wait";
+  | "code_wait"
+  // 2.14 change proposals
+  | "no_change"
+  | "ride_started";
 
 export class ServerError extends Error {
   readonly code: ServerErrorCode;

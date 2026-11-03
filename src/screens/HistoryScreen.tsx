@@ -3,10 +3,11 @@
 // month earnings on top (v1 FR-027). A done appointment not yet rated offers Rate (C3) for 24 h.
 // Replaces the v1 Ride history and Earnings & history panels; an online driver, who keeps D1,
 // opens the same list as a panel.
+// 2.14 (FR-335): a done appointment with a pending change of its length shows the change chip.
 
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
-import { otherName, partyText, statusChip } from "../components/apptWords";
+import { changeChip, otherName, partyText, statusChip } from "../components/apptWords";
 import { HistoryFeed } from "../components/SessionFeed";
 import { Money, Page, Panel } from "../components/ui";
 import type { AppointmentView, Earnings, HistoryItem, RideView } from "../core/types";
@@ -123,6 +124,7 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
   const status = a.status === "accepted" || a.status === "requested" ? "done" : a.status;
   // An open request that nobody took reads so (V37); the other endings keep their words.
   const word = status === "expired" ? statusChip(a, lang, t).text : t(`appt.status.${status}` as MessageKey);
+  const change = changeChip(a, t);
   return (
     <li className="history-item" data-testid="history-appointment">
       <button type="button" className="planned-open" onClick={() => store.openPanel("appointment", a.id)}>
@@ -145,6 +147,11 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
           )}
         </span>
         {a.myRating !== null && <small className="muted">{t("history.rated", { n: a.myRating })}</small>}
+        {change && (
+          <span className={`chip chip-${change.kind}`} data-testid="history-change-chip">
+            {change.text}
+          </span>
+        )}
       </button>
       {canRate && (
         <button type="button" className="btn btn-secondary btn-small" onClick={() => store.openPanel("appointment", a.id)} data-testid="history-rate">

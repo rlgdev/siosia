@@ -152,6 +152,8 @@ export const en = {
   "active.waitingFix": "Waiting for the driver's position…",
   "active.cancelledByDriver": "The driver ended the ride: {reason}.",
   "active.appointmentCancelled": "The appointment was cancelled, so this ride was cancelled too.",
+  // 2.14 (FR-333): an accepted change left too little time to move the ride
+  "active.appointmentChanged": "The appointment was moved too close to this ride, so the ride was cancelled. Book it again if you still need it.",
   "active.awayFromPin": "You are {m} m from the pickup pin — your driver is heading to the pin. Walk back to it or turn sharing on.",
 
   "receipt.title": "Trip complete",
@@ -294,6 +296,7 @@ export const en = {
   "trip.noShowIn": "No-show available in {t}",
   "trip.riderCancelled": "The rider cancelled the ride.",
   "trip.appointmentCancelled": "The appointment this ride was for was cancelled, so the ride is cancelled too.",
+  "trip.appointmentChanged": "The appointment this ride was for was moved, too soon to move the ride, so the ride is cancelled.",
   "trip.distance": "Driven: {km} km",
 
   "reason.no_show": "Rider no-show",
@@ -303,6 +306,7 @@ export const en = {
   "reason.driver_lost": "driver lost connection",
   "reason.late_cancel": "late cancellation",
   "reason.appointment_cancelled": "the appointment was cancelled",
+  "reason.appointment_changed": "the appointment was moved",
 
   "summary.title": "Trip summary",
   "summary.collected": "Collected",
@@ -861,7 +865,45 @@ export const en = {
   "absorb.two_families": "the two accounts are in different families — the operator decides which one stays.",
   "err.sign_in_instead": "This account is signed in — sign in here with the same email or Google instead of using a code.",
   "err.use_merge": "A signed-in account does not take a move code — use ☰ → Account → Merge another account here: nothing is lost.",
-  "err.code_wait": "Wait a minute before another code — or type the code you already have."
+  "err.code_wait": "Wait a minute before another code — or type the code you already have.",
+  // 2.14: change proposals (FR-330–335)
+  "change.propose": "Propose a change",
+  "change.titleMove": "Propose a change",
+  "change.titleLength": "Propose a new length",
+  "change.hintMove": "{name} answers; nothing changes until they accept. Your rides move with the appointment; a ride that would be too soon is cancelled.",
+  "change.hintLength": "{name} answers; the price or the total follows the rate once they accept.",
+  "change.start": "New start",
+  "change.duration": "Length",
+  "change.place": "Place",
+  "change.pickup": "New pickup for the ride {leg}",
+  "change.note": "Note (optional)",
+  "change.minutes": "New length",
+  "change.ends": "Ends {time}",
+  "change.price": "New price",
+  "change.total": "New total",
+  "change.same": "Change something first.",
+  "change.send": "Send the proposal",
+  "change.cardTheirs": "{name} proposes a change",
+  "change.cardMine": "Your proposal — waiting for {name}",
+  "change.when": "When",
+  "change.was": "was {old}",
+  "change.length": "Length",
+  "change.counted": "Time counted",
+  "change.ride.move": "Ride {leg}: moves to {time}",
+  "change.ride.cancel": "Ride {leg}: will be cancelled (too soon) — at the time, ask for a ride now under Siosia → Ride.",
+  "change.ride.keep": "Ride {leg}: stays at {time}",
+  "change.ride.pickup": "pickup: {place}",
+  "change.expires": "Lapses {when} if nobody answers.",
+  "change.accept": "Accept the change",
+  "change.providerBusy": "{name} is no longer free at that time.",
+  "change.decline": "Decline",
+  "change.withdraw": "Withdraw",
+  "change.chip": "Change proposed",
+  "change.chipSent": "Change sent",
+  "change.lengthEntry": "Propose another length",
+  "change.lengthHint": "Within 24 h after the end either of you may propose the time actually spent; once the other accepts, the total follows the rate and the family is told.",
+  "err.no_change": "That is the same as now — change something first.",
+  "err.ride_started": "A ride for this appointment is already on its way — it can't be moved now."
 } as const;
 
 export type MessageKey = keyof typeof en;

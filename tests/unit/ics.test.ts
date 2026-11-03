@@ -279,6 +279,104 @@ describe(".ics (V27)", () => {
   });
 });
 
+describe("2.14 moved dates of a series (FR-336, V92)", () => {
+  const H = 3600_000;
+  // Tue 16:00 local, weekly ×4: 20 Oct (CEST), 27 Oct, 3 Nov, 10 Nov (CET).
+  const slots = [0, 1, 2, 3].map((i) => START + i * WEEK + (i > 0 ? H : 0));
+  const PARK = { lat: 52.24, lng: 21.03, label: "Park Skaryszewski" };
+  const series = (over: Partial<NonNullable<IcsAppointment["series"]>> = {}) =>
+    appt({
+      series: { id: "6f1c1d2e-0000-4000-8000-0000000000ss", rule: "weekly", count: 4, status: "answered", starts: slots, gaps: [], first: START, durationMin: 60, ...over }
+    });
+  const events = (l: string[]) => {
+    const out: string[][] = [];
+    l.forEach((x, i) => {
+      if (x === "BEGIN:VEVENT") out.push(l.slice(i, l.indexOf("END:VEVENT", i) + 1));
+    });
+    return out;
+  };
+
+  it("writes a moved date as an override of its rule slot (RECURRENCE-ID across DST), with its own time and place", () => {
+    // 27 Oct (after the change to winter time) moved to Wed 28 Oct 18:00–19:30 local at the park.
+    const moved = { orig: slots[1], start: slots[1] + 26 * H, end: slots[1] + 27.5 * H, place: PARK };
+    const a = series({ starts: [slots[0], moved.start, slots[2], slots[3]], moved: [moved] });
+    const [main, over, ...rest] = events(lines(seriesIcs(a, CTX)));
+    expect(rest).toHaveLength(0);
+    expect(main).toContain("DTSTART;TZID=Europe/Warsaw:20261020T160000");
+    expect(main).toContain("DTEND;TZID=Europe/Warsaw:20261020T170000");
+    expect(main).toContain("LOCATION:Warszawska 269\\, Ożarów");
+    expect(over).toContain("UID:6f1c1d2e-0000-4000-8000-0000000000ss");
+    expect(over).toContain("RECURRENCE-ID;TZID=Europe/Warsaw:20261027T160000");
+    expect(over).toContain("DTSTART;TZID=Europe/Warsaw:20261028T180000");
+    expect(over).toContain("DTEND;TZID=Europe/Warsaw:20261028T193000");
+    expect(over).toContain("LOCATION:Park Skaryszewski");
+    expect(over).toContain("GEO:52.240000;21.030000");
+    expect(over).not.toContain("RRULE:FREQ=WEEKLY;INTERVAL=1;COUNT=4");
+    expect(over.filter((x) => x.startsWith("TRIGGER:"))).toHaveLength(2);
+    expect(over).toContain("STATUS:CONFIRMED");
+  });
+
+  it("excludes a cancelled date at its rule slot, not where it had moved", () => {
+    const a = series({ starts: [slots[0], slots[1], slots[2] + 2 * H, slots[3]], gaps: [slots[2]] });
+    const l = lines(seriesIcs(a, CTX));
+    expect(l).toContain("EXDATE;TZID=Europe/Warsaw:20261103T160000");
+    expect(l.filter((x) => x.startsWith("EXDATE"))).toHaveLength(1);
+  });
+
+  it("takes the start and length from the rule even when the first date moved; without them, the first date's", () => {
+    const moved = { orig: slots[0], start: slots[0] + 2 * H, end: slots[0] + 4 * H, place: null };
+    // Viewed from the moved first date (2 h long): the rule still says 16:00 for 1 h.
+    const a = series({ starts: [moved.start, ...slots.slice(1)], moved: [moved] });
+    const viewed = { ...a, startsAt: moved.start, endsAt: moved.end, durationMin: 120 };
+    const [main, over] = events(lines(seriesIcs(viewed, CTX)));
+    expect(main).toContain("DTSTART;TZID=Europe/Warsaw:20261020T160000");
+    expect(main).toContain("DTEND;TZID=Europe/Warsaw:20261020T170000");
+    expect(over).toContain("RECURRENCE-ID;TZID=Europe/Warsaw:20261020T160000");
+    expect(over).toContain("DTSTART;TZID=Europe/Warsaw:20261020T180000");
+    expect(over.some((x) => x.startsWith("LOCATION:") || x.startsWith("GEO:"))).toBe(false);
+    const g = new URL(appointmentGoogleLink(viewed, CTX, true));
+    expect(g.searchParams.get("dates")).toBe("20261020T160000/20261020T170000");
+    // An older view (no first, durationMin, moved): the first date and the viewed length, as before.
+    const old = { ...viewed, series: { ...viewed.series!, first: undefined, durationMin: undefined, moved: undefined } };
+    const l = lines(seriesIcs(old, CTX));
+    expect(l).toContain("DTSTART;TZID=Europe/Warsaw:20261020T180000");
+    expect(l).toContain("DTEND;TZID=Europe/Warsaw:20261020T200000");
+    expect(l.filter((x) => x === "BEGIN:VEVENT")).toHaveLength(1);
+    expect(new URL(appointmentGoogleLink(old, CTX, true)).searchParams.get("dates")).toBe("20261020T180000/20261020T200000");
+  });
+
+  it("puts the series' own place on the repeating event, not the viewed date's (moved elsewhere); none → none", () => {
+    const HOME = { lat: 52.25, lng: 20.82, label: "Warszawska 269" };
+    const moved = { orig: slots[1], start: slots[1] + 2 * H, end: slots[1] + 3 * H, place: PARK };
+    const a = series({ starts: [slots[0], moved.start, slots[2], slots[3]], moved: [moved], place: HOME });
+    // viewed from the moved date at the park
+    const viewed = { ...a, startsAt: moved.start, endsAt: moved.end, place: PARK };
+    const [main, over] = events(lines(seriesIcs(viewed, CTX)));
+    expect(main).toContain("LOCATION:Warszawska 269");
+    expect(main).toContain("GEO:52.250000;20.820000");
+    expect(over).toContain("LOCATION:Park Skaryszewski");
+    expect(new URL(appointmentGoogleLink(viewed, CTX, true)).searchParams.get("location")).toBe("Warszawska 269");
+    // a series without a place: no LOCATION on the repeating event even when the viewed date has one
+    const [bare] = events(lines(seriesIcs({ ...viewed, series: { ...viewed.series!, place: null } }, CTX)));
+    expect(bare.some((x) => x.startsWith("LOCATION:") || x.startsWith("GEO:"))).toBe(false);
+    // the single date's own link keeps its own place
+    expect(new URL(appointmentGoogleLink(viewed, CTX)).searchParams.get("location")).toBe("Park Skaryszewski");
+  });
+
+  it("covers a date moved across the daylight-saving change in the VTIMEZONE", () => {
+    // A series from Tue 27 Oct (winter time), its first date moved to Sat 24 Oct (still summer time).
+    const s0 = slots[1];
+    const s2 = [0, 1, 2].map((i) => s0 + i * WEEK);
+    const moved = { orig: s0, start: s0 - 3 * 86_400_000 - H, end: s0 - 3 * 86_400_000, place: PARK };
+    const a = series({ first: s0, count: 3, starts: [moved.start, ...s2.slice(1)], moved: [moved] });
+    const l = lines(seriesIcs(a, CTX));
+    expect(l).toContain("DTSTART;TZID=Europe/Warsaw:20261024T160000");
+    const tz = l.slice(l.indexOf("BEGIN:VTIMEZONE"), l.indexOf("END:VTIMEZONE") + 1);
+    expect(tz).toContain("DTSTART:20261025T030000");
+    expect(tz).toContain("TZOFFSETTO:+0100");
+  });
+});
+
 describe("Google Calendar link (V28)", () => {
   it("prefills title, local dates with the time zone, place, details and, for a series, the rule", () => {
     const u = new URL(appointmentGoogleLink(appt(), CTX));

@@ -5,6 +5,7 @@
 import { Engine, type EngineConfig } from "../../core/engine";
 import type {
   BookingInput,
+  ChangeInput,
   ChatMessage,
   ChatRoom,
   ContractInput,
@@ -371,6 +372,16 @@ export class MockBackend implements Backend {
   }
   setActualTime(appointmentId: string, minutes: number) {
     return this.call((e) => e.setActualTime(this.uid, appointmentId, minutes));
+  }
+  // 2.14 (FR-330–335): change proposals
+  proposeChange(appointmentId: string, input: ChangeInput) {
+    return this.call((e) => e.proposeChange(this.uid, appointmentId, input));
+  }
+  answerChange(appointmentId: string, decision: "accept" | "decline") {
+    return this.call((e) => e.answerChange(this.uid, appointmentId, decision));
+  }
+  withdrawChange(appointmentId: string) {
+    return this.call((e) => e.withdrawChange(this.uid, appointmentId));
   }
   report(week: string | null, scope: "me" | "family") {
     return this.call((e) => e.report(this.uid, week, scope));

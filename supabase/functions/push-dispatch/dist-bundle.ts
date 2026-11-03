@@ -132,7 +132,13 @@ var TEXTS = {
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Tap to add a comment."],
     pay_comment: ["{sender} answered your dobry Pancio", "{text}"],
     sign_in: ["Keep your Siosia account", "Tap to sign in. Your profile and history then stay with you on every phone."],
-    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"]
+    ride_tip: ["{sender} left you a tip: {total}", "For the ride from {pickup}. Thank you!"],
+    // 2.14 (FR-334): {newrange} / {fromrange} are the new and the old date (a move) or length (a
+    // length change); {note} is the proposer's own words, quoted.
+    appt_change_proposed: ["Change proposed: {service}", "{who} proposes {newrange}{newplace} instead of {fromrange}.{note}"],
+    appt_change_accepted: ["{who} accepted the change", "{service} is now {newrange}{newplace}."],
+    appt_change_declined: ["{who} declined the change", "{service} stays {fromrange}."],
+    booking_moved: ["Booking moved", "From {pickup}: now {when}{was}."]
   },
   pl: {
     booking_new: ["Nowa rezerwacja {when}", "{pickup} \u2192 {dropoff}. We\u017A j\u0105 w Siosi \u2192 Rezerwacje."],
@@ -173,7 +179,11 @@ var TEXTS = {
     pay_settled: ["{sender}: dobry Pancio!", "{settled} Stuknij, aby doda\u0107 komentarz."],
     pay_comment: ["{sender} odpowiada na dobry Pancio", "{text}"],
     sign_in: ["Zachowaj swoje konto w Siosi", "Stuknij, aby si\u0119 zalogowa\u0107. Profil i historia zostan\u0105 z Tob\u0105 na ka\u017Cdym telefonie."],
-    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dzi\u0119kujemy!"]
+    ride_tip: ["{sender} zostawia Ci napiwek: {total}", "Za kurs z {pickup}. Dzi\u0119kujemy!"],
+    appt_change_proposed: ["Propozycja zmiany: {service}", "{who} proponuje {newrange}{newplace} zamiast {fromrange}.{note}"],
+    appt_change_accepted: ["{who} przyjmuje zmian\u0119", "{service} jest teraz {newrange}{newplace}."],
+    appt_change_declined: ["{who} odrzuca zmian\u0119", "{service} bez zmian: {fromrange}."],
+    booking_moved: ["Rezerwacja przesuni\u0119ta", "Z {pickup}: teraz {when}{was}."]
   }
 };
 function moneyText(amount, currency, lang) {
@@ -202,6 +212,10 @@ var OPEN_TEXTS = {
   en: { appt_expired: ["Nobody took it", "Nobody took your request: {service} {range}."] },
   pl: { appt_expired: ["Nikt si\u0119 nie zg\u0142osi\u0142", "Nikt nie przyj\u0105\u0142 Twojej pro\u015Bby: {service} {range}."] }
 };
+var DROPPED_TEXTS = {
+  en: ["Booking no longer yours", "{when} from {pickup}: the new time clashes with your other plans, so it went back to other drivers."],
+  pl: ["Rezerwacja nie jest ju\u017C Twoja", "{when} z {pickup}: nowy termin koliduje z Twoimi innymi planami, wi\u0119c wraca do innych kierowc\xF3w."]
+};
 var SETTLED = {
   en: {
     received: (t) => `Your ${t} is marked received \u2014 you\u2019re square.`,
@@ -220,7 +234,7 @@ var YOUR_OPEN = { en: "Your open request", pl: "Twoja otwarta pro\u015Bba" };
 function pushText(kind, params, lang, tz, id) {
   const l = lang === "pl" ? "pl" : "en";
   const open = kind.startsWith("appt_") && (!!params.open || params.status === "open" || !params.provider && params.role !== "provider");
-  const [title, body] = (open ? OPEN_TEXTS[l][kind] : void 0) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
+  const [title, body] = (open ? OPEN_TEXTS[l][kind] : void 0) ?? (kind === "booking_moved" && params.dropped ? DROPPED_TEXTS[l] : void 0) ?? TEXTS[l][kind] ?? TEXTS[l].booking_open;
   const ms = toMs(params.at);
   const series = !!params.rule && (kind === "appt_new" || kind === "appt_open" || kind === "appt_accepted" || kind === "appt_declined" || kind === "appt_expired");
   const status = params.status === "waiting" && open ? "open" : params.status;
@@ -230,6 +244,11 @@ function pushText(kind, params, lang, tz, id) {
   const kids = params.role === "client" ? "" : kidsText(params.kids, l);
   const chat = (params.text ?? "").replace(/\s+/g, " ").trim();
   const cut = chat.length > CHAT_PUSH_CHARS ? `${chat.slice(0, CHAT_PUSH_CHARS).trimEnd()}\u2026` : chat;
+  const fromMs = toMs(params.fromAt);
+  const fromLen = fromMs !== null && toMs(params.fromEnd) !== null ? (toMs(params.fromEnd) - fromMs) / 6e4 : null;
+  const newLen = params.minutes ?? (ms !== null && toMs(params.end) !== null ? (toMs(params.end) - ms) / 6e4 : null);
+  const length = params.change === "length";
+  const untilText = (end) => end === null ? "" : l === "pl" ? ` (do ${fmt(end, l, tz, false)})` : ` (until ${fmt(end, l, tz, false)})`;
   const vars = {
     sender: params.sender || SOMEONE[l],
     text: cut,
@@ -264,17 +283,23 @@ function pushText(kind, params, lang, tz, id) {
     status: apptStatusText(status, params.provider, l),
     rides: (params.rides ?? []).length ? ` ${(params.rides ?? []).map((r) => rideLineText(r, l)).join(" \xB7 ")}` : "",
     clashes: declined.length ? l === "pl" ? ` ${params.accepted} z ${total} potwierdzone; odrzucone: ${declined.join(", ")}` : ` ${params.accepted} of ${total} confirmed; declined: ${declined.join(", ")}` : "",
+    newrange: length ? `${durationText(newLen, l)}${untilText(ms !== null && newLen !== null ? ms + newLen * 6e4 : toMs(params.end))}` : rangeText(params.at, params.end, l, tz),
+    fromrange: length ? durationText(fromLen, l) : rangeText(params.fromAt, params.fromEnd, l, tz),
+    // A place change: fromPlace is there (even "", an appointment that had none); the new place named.
+    newplace: typeof params.fromPlace === "string" && params.place ? l === "pl" ? ` (${params.place})` : ` at ${params.place}` : "",
+    note: cut ? l === "pl" ? ` \u201E${cut}\u201D` : ` \u201C${cut}\u201D` : "",
+    was: fromMs !== null && fromMs !== ms ? l === "pl" ? ` (by\u0142o ${fmt(fromMs, l, tz, true)})` : ` (was ${fmt(fromMs, l, tz, true)})` : "",
     since: params.since ? dayMonth(Date.parse(`${params.since}T12:00:00Z`), l, tz) : "",
     count: params.count === void 0 || params.count === null ? "" : String(params.count),
     // 2.11 (FR-323): a dobry Pancio, as its receiver reads it — they paid, they got paid, or both ways
     settled: SETTLED[l][params.status === "received" || params.status === "paid" ? params.status : "even"](moneyText(params.total, params.currency, l)),
     remaining: params.left !== void 0 && params.from !== void 0 ? l === "pl" ? ` Od ${dayMonth(toMs(params.from), l, tz)}, ${params.left} ${params.left === 1 ? "termin" : "pozosta\u0142e"}.` : ` From ${dayMonth(toMs(params.from), l, tz)}, ${params.left} left.` : ""
   };
-  const tidy = (s) => kind === "chat_message" || kind === "session_update" || kind === "pay_comment" ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
+  const tidy = (s) => kind === "chat_message" || kind === "session_update" || kind === "pay_comment" || kind.startsWith("appt_change_") && !!cut ? s : s.replace(/\s+([.,])/g, "$1").replace(/\.\./g, ".").trim().replace(/^[.,·]\s*/, "");
   const fill = (s) => tidy(
     s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "").replace(/\s+/g, " ").trim()
   );
-  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind === "appt_tip" || kind === "ride_tip" ? `tip:${id ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
+  const tag = kind === "chat_message" ? `chat:${params.room ?? id ?? ""}` : kind === "session_update" ? `update:${id ?? ""}` : kind === "client_coming" ? `coming:${id ?? ""}` : kind === "appt_summary" ? `summary:${id ?? ""}` : kind === "weekly_report" ? `report:${params.week ?? ""}` : kind === "appt_tip" || kind === "ride_tip" ? `tip:${id ?? ""}` : kind.startsWith("appt_change_") ? `change:${id ?? ""}` : kind.startsWith("family_") ? "family" : kind.startsWith("contract_") ? "contract" : `${kind}:${id ?? ""}`;
   return { title: fill(title), body: fill(body), tag };
 }
 function pushUrl(kind, params, appointmentId) {
@@ -285,6 +310,8 @@ function pushUrl(kind, params, appointmentId) {
   if (kind.startsWith("family_") || kind.startsWith("contract_")) return "./?open=family";
   if (kind === "weekly_report") return params?.week ? `./?open=report&week=${params.week}` : "./?open=report";
   if (kind.startsWith("pay_")) return "./?open=report";
+  if (kind.startsWith("appt_change_")) return appointmentId ? `./?appointment=${appointmentId}` : "./?open=planned";
+  if (kind === "booking_moved") return "./?open=planned";
   if (kind === "sign_in") return "./?open=account";
   return kind.startsWith("appt_") || kind.startsWith("booking_") ? "./?open=planned" : "./";
 }

@@ -15,6 +15,7 @@ import {
   type AppointmentView,
   type BookingInput,
   type CatalogItem,
+  type ChangeInput,
   type ChatMessage,
   type ChatRoom,
   type ChatThread,
@@ -103,7 +104,9 @@ const withOpen = (a: AppointmentView): AppointmentView => ({
   contractId: a.contractId ?? null,
   actualMin: a.actualMin ?? null,
   cost: a.cost ?? null,
-  family: a.family ?? null
+  family: a.family ?? null,
+  // 2.14 (a server still on 2.12 sends none)
+  change: a.change ?? null
 });
 const withOpenCount = (s: MyState): MyState => ({ ...s, openRequests: s.openRequests ?? 0, unreadChats: s.unreadChats ?? 0 });
 const withPaint = (v: Vehicle): Vehicle => ({ ...v, paint: v.paint ?? null });
@@ -698,6 +701,18 @@ export class SupabaseBackend implements Backend {
 
   async setActualTime(appointmentId: string, minutes: number) {
     return withOpen(await this.rpc<AppointmentView>("siosia_set_actual", { p_id: appointmentId, p_minutes: minutes }));
+  }
+  // 2.14 (FR-330–335): change proposals — the input as jsonb, its start as an ISO timestamp.
+  async proposeChange(appointmentId: string, input: ChangeInput) {
+    const p_input: Record<string, unknown> = { ...input };
+    if (input.startsAt !== undefined) p_input.startsAt = new Date(input.startsAt).toISOString();
+    return withOpen(await this.rpc<AppointmentView>("siosia_propose_change", { p_id: appointmentId, p_input }));
+  }
+  async answerChange(appointmentId: string, decision: "accept" | "decline") {
+    return withOpen(await this.rpc<AppointmentView>("siosia_answer_change", { p_id: appointmentId, p_decision: decision }));
+  }
+  async withdrawChange(appointmentId: string) {
+    return withOpen(await this.rpc<AppointmentView>("siosia_withdraw_change", { p_id: appointmentId }));
   }
   report(week: string | null, scope: "me" | "family") {
     return this.rpc<WeeklyReport>("siosia_report", { p_week: week, p_scope: scope });

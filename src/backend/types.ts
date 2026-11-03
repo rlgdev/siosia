@@ -15,6 +15,7 @@ import type {
   AppointmentView,
   BookingInput,
   CatalogItem,
+  ChangeInput,
   ChatMessage,
   ChatRoom,
   ChatThread,
@@ -251,6 +252,16 @@ export interface Backend {
   applyContractToPast(id: string, from: string): Promise<{ count: number }>;
   /** The provider corrects the time of a done appointment within 24 h (FR-272). */
   setActualTime(appointmentId: string, minutes: number): Promise<AppointmentView>;
+  /**
+   * 2.14 (FR-330–335): either party proposes a change — a move of a planned appointment (start,
+   * length, place, my rides' pickups) or a new length of a live or just-finished one. The other party
+   * answers; a counter-proposal replaces the pending one.
+   */
+  proposeChange(appointmentId: string, input: ChangeInput): Promise<AppointmentView>;
+  /** 2.14: the other party accepts (the appointment, its rides and its price follow) or declines. */
+  answerChange(appointmentId: string, decision: "accept" | "decline"): Promise<AppointmentView>;
+  /** 2.14: the proposer takes the pending change back. */
+  withdrawChange(appointmentId: string): Promise<AppointmentView>;
   /** One week's spent and earned (`week` = any day "YYYY-MM-DD", null = this week). */
   report(week: string | null, scope: "me" | "family"): Promise<WeeklyReport>;
   /** 2.11 (FR-322): ask the side of this public id to pay what they owe my side (once per 12 h). */

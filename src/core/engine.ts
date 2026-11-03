@@ -27,6 +27,10 @@ import {
   type CatalogEntry,
   type CatalogItem,
   type CatalogProvider,
+  type ChangeInput,
+  type ChangeKind,
+  type ChangePickup,
+  type ChangeView,
   type ChatMessage,
   type ContractInput,
   type ContractRate,
@@ -245,6 +249,47 @@ export interface ApptRow {
   settledAmount?: number | null;
 }
 
+/**
+ * 2.14 (FR-330–332): a proposed change of an appointment (Supabase: appointment_changes). A move
+ * holds the appointment as it would be (start, length, place) and the proposer's new pickups; a
+ * length change holds the minutes. At most one "proposed" per appointment.
+ */
+export interface ChangeRow {
+  id: string;
+  appointmentId: string;
+  proposedBy: string;
+  kind: ChangeKind;
+  startsAt: number | null;
+  durationMin: number | null;
+  place: Place | null;
+  minutes: number | null;
+  pickups: ChangePickup[];
+  note: string;
+  status: "proposed" | "accepted" | "declined" | "withdrawn" | "expired" | "replaced";
+  createdAt: number;
+  /** When it lapses unanswered (fixed at proposing, like appointment_changes.expires_at). */
+  expiresAt: number;
+  answeredAt: number | null;
+}
+
+/** 2.14: a change as checked (the row's own fields). */
+type ChangeDraft = Pick<ChangeRow, "kind" | "startsAt" | "durationMin" | "place" | "minutes" | "pickups" | "note">;
+
+/** 2.14 (FR-333, V89): what one attached ride does when a change is accepted. */
+interface RideEffect {
+  r: RideRow;
+  from: number;
+  to: number;
+  effect: "move" | "cancel" | "keep";
+  pickup: Place;
+  dropoff: Place;
+  estKm: number;
+  estMin: number;
+  fare: number;
+  fareIsEstimate: boolean;
+  placed: boolean;
+}
+
 export interface StoredTemplate {
   passenger: PartyRole;
   leg: Leg;
@@ -429,6 +474,8 @@ export interface DbState {
   notifications?: NotificationRow[];
   /** 2.11 (FR-322–324): reminders to pay and dobry Pancios (Supabase: settlements). */
   settlements?: SettlementRow[];
+  /** 2.14 (FR-330–333): change proposals (Supabase: appointment_changes). */
+  changes?: Record<string, ChangeRow>;
 }
 
 /**
@@ -830,6 +877,7 @@ export class Engine {
       if (a.providerId === old) a.providerId = uid;
       if ("tipBy" in a && a.tipBy === old) a.tipBy = uid; // 2.9
     }
+    for (const c of Object.values(this.db.changes ?? {})) if (c.proposedBy === old) c.proposedBy = uid; // 2.14
     // Both accounts may hold a card for the same ride, or have rated the same ride: keep the new one.
     for (const [k, o] of Object.entries(this.db.offers))
       if (o.driverId === old && Object.values(this.db.offers).some((n) => n.driverId === uid && n.rideId === o.rideId && n.round === o.round))
@@ -1078,6 +1126,7 @@ export class Engine {
       if (a.providerId === from) a.providerId = into;
       if ("tipBy" in a && a.tipBy === from) a.tipBy = into;
     }
+    for (const c of Object.values(this.db.changes ?? {})) if (c.proposedBy === from) c.proposedBy = into; // 2.14
     for (const [k, o] of Object.entries(this.db.offers))
       if (o.driverId === from && Object.values(this.db.offers).some((n) => n.driverId === into && n.rideId === o.rideId && n.round === o.round))
         delete this.db.offers[k];
@@ -1391,6 +1440,8 @@ export class Engine {
       this.notifyAppt(a);
     }
     this.cascadeRides(upcoming.map((a) => a.id));
+    // 2.14 (FR-332): a pending change of any of my appointments ends (withdrawn, nobody told).
+    this.withdrawChanges(Object.values(this.db.appointments ?? {}).filter((a) => a.clientId === uid || a.providerId === uid).map((a) => a.id));
     // 2.1: open requests of this client leave everyone's "You could help" list (no provider to tell).
     if (upcoming.some((a) => a.providerId === null)) this.notifyMembers();
     const told = new Set<string>();
@@ -1488,7 +1539,7 @@ export class Engine {
         Object.values(this.db.appointments ?? {})
           .filter((a) => a.providerId === uid && a.status === "requested" && a.startsAt > this.now)
           .map((a) => a.seriesId ?? a.id)
-      ).size,
+      ).size + this.changesToAnswer(uid).length,
       openRequests: this.openFor(uid).length,
       planned: appts.length + rides.length,
       nextPlanned: next ? { ...next, title: this.serviceName(next.serviceId, lang) } : null
@@ -1654,10 +1705,7 @@ export class Engine {
     ride.apptSummary = a ? "pending" : null;
     this.db.rides[ride.id] = ride;
     this.effects.notify.add(uid);
-    // Everyone who can take it hears about it (Supabase: only those with notifications on).
-    for (const d of Object.keys(this.db.vehicles))
-      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider" && this.isMember(d) && this.sameRealm(uid, d))
-        this.pushTo(d, "booking_new", ride, { pickup: ride.pickup.label, dropoff: ride.dropoff.label });
+    this.offerBooking(ride);
     if (a) {
       this.notifyAppt(a);
       // The other party hears that a ride was added (a series template tells once, when it is set).
@@ -1665,6 +1713,14 @@ export class Engine {
         this.pushAppt(a.clientId === uid ? a.providerId : a.clientId, "appt_ride_added", a, { leg: leg ?? undefined, time: t, who: this.db.users[uid]?.nickname ?? "" });
     }
     return this.rideView(ride, uid);
+  }
+
+  /** Everyone who can take a booking hears about it (Supabase: only those with notifications on). */
+  private offerBooking(ride: RideRow): void {
+    const uid = ride.riderId;
+    for (const d of Object.keys(this.db.vehicles))
+      if (d !== uid && this.db.users[d] && !this.db.users[d].deleted && this.linkedRole(d) !== "rider" && this.isMember(d) && this.sameRealm(uid, d))
+        this.pushTo(d, "booking_new", ride, { pickup: ride.pickup.label, dropoff: ride.dropoff.label });
   }
 
   /** My upcoming bookings, as rider or as the driver who took them, soonest first. */
@@ -2455,6 +2511,7 @@ export class Engine {
     // 2.1: a withdrawn open request leaves everyone's "You could help" list (nobody else is told).
     if (targets.some((x) => x.providerId === null)) this.notifyMembers();
     this.cascadeRides(targets.map((x) => x.id));
+    this.withdrawChanges(targets.map((x) => x.id)); // 2.14 (FR-332)
     if (a.seriesId && !this.occurrences(a.seriesId).some((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now)) {
       const s = this.db.series![a.seriesId];
       if (s.status === "requested" || s.status === "answered") s.status = "cancelled";
@@ -2549,7 +2606,13 @@ export class Engine {
     this.sweep();
     return {
       appointments: Object.values(this.db.appointments ?? {})
-        .filter((a) => this.sees(uid, a) && (a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now)
+        .filter(
+          (a) =>
+            this.sees(uid, a) &&
+            (((a.status === "requested" || a.status === "accepted") && this.endOf(a) > this.now) ||
+              // 2.14 (FR-335): a finished one with a new length pending between its parties
+              (a.status === "done" && this.isParty(uid, a) && this.pendingChange(a.id) !== null))
+        )
         .sort((x, y) => x.startsAt - y.startsAt)
         .map((a) => this.apptView(a, uid)),
       rides: Object.values(this.db.rides)
@@ -3141,7 +3204,10 @@ export class Engine {
     return a.startsAt + a.durationMin * 60_000;
   }
 
-  /** The provider is busy then: an accepted appointment or a booked ride taken as driver overlaps. */
+  /**
+   * The provider is busy then: an accepted appointment or a booked ride taken as driver overlaps.
+   * The appointment `except` and its own rides do not count (2.14, V88: they follow the change).
+   */
   private providerBusy(uid: string, start: number, min: number, except: string): boolean {
     const end = start + min * 60_000;
     return (
@@ -3149,6 +3215,7 @@ export class Engine {
       Object.values(this.db.rides).some(
         (r) =>
           r.driverId === uid &&
+          r.appointmentId !== except &&
           r.scheduledFor != null &&
           (r.status === "scheduled" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress") &&
           r.scheduledFor < end &&
@@ -3249,6 +3316,22 @@ export class Engine {
           s.templatesAt = this.now;
         }
       }
+    // 2.14 (FR-332): pending changes lapse unanswered (expired), or end with their appointment
+    // (withdrawn); nobody is told. One bad row never stops the sweep (V30).
+    for (const c of Object.values(this.db.changes ?? {})) {
+      if (c.status !== "proposed") continue;
+      try {
+        const a = all[c.appointmentId];
+        // Twin of the SQL step: an appointment no longer accepted or done → withdrawn, else past its moment → expired.
+        const gone = !a || (a.status !== "accepted" && a.status !== "done");
+        if (!gone && this.now < c.expiresAt) continue;
+        c.status = gone ? "withdrawn" : "expired";
+        c.answeredAt = this.now;
+        if (a) this.notifyAppt(a);
+      } catch {
+        /* a malformed row: left for the next run */
+      }
+    }
   }
 
   private reminderParams(a: ApptRow, slot: number, role: PartyRole): Partial<PushParams> {
@@ -3407,8 +3490,20 @@ export class Engine {
             status: s.status,
             remaining: occ.filter((x) => (x.status === "requested" || x.status === "accepted") && x.startsAt > this.now).length,
             declined: occ.filter((x) => x.status === "declined").map((x) => x.startsAt).sort((x, y) => x - y),
-            gaps: occ.filter((x) => x.status === "declined" || x.status === "cancelled").map((x) => x.startsAt).sort((x, y) => x - y),
+            // 2.14 (FR-336): a gap is the rule's own slot (a moved date cancelled is excluded there).
+            gaps: occ.filter((x) => x.status === "declined" || x.status === "cancelled").map((x) => this.slotOf(s, x)).sort((x, y) => x - y),
             starts: occ.map((x) => x.startsAt),
+            first: s.firstStart,
+            durationMin: s.durationMin,
+            place: s.place ? { ...s.place } : null,
+            moved: occ
+              .filter(
+                (x) =>
+                  x.status !== "declined" &&
+                  x.status !== "cancelled" &&
+                  (x.startsAt !== this.slotOf(s, x) || x.durationMin !== s.durationMin || !samePlaceOrNull(x.place, s.place))
+              )
+              .map((x) => ({ orig: this.slotOf(s, x), start: x.startsAt, end: this.endOf(x), place: x.place ? { ...x.place } : null })),
             // 2.6: the family sees no templates (siosia_series_json: parties only).
             rideTemplates: candidate || family
               ? []
@@ -3418,8 +3513,15 @@ export class Engine {
             ics: null
           }
         : null,
-      calendar: { google: null, ics: null }
+      calendar: { google: null, ics: null },
+      // 2.14 (FR-335, V90): the pending change — the two parties only.
+      change: this.changeView(a, viewer)
     };
+  }
+
+  /** 2.14 (FR-336): the rule's own start of an occurrence (twin of siosia_add_weeks(first_start, …)). */
+  private slotOf(s: SeriesRow, x: ApptRow): number {
+    return addWeeksWallClock(s.firstStart, ((x.seq ?? 1) - 1) * (s.rule === "biweekly" ? 2 : 1), this.cfg.timezone);
   }
 
   // ---------- 2.6: family (FR-250–256, V58–V60) ----------
@@ -3954,6 +4056,420 @@ export class Engine {
     this.notifyAppt(a);
     this.announceCost(a, true);
     return this.apptView(a, uid);
+  }
+
+  // ---------- 2.14: proposing a change (FR-330–335, V87–V91) ----------
+
+  /**
+   * Either party proposes a move of a planned appointment or a new length of a live or just-finished
+   * one (FR-330, FR-331). My own pending one is replaced; the other party's is declined (FR-332).
+   */
+  proposeChange(uid: string, id: string, input: ChangeInput): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || !this.isParty(uid, a)) throw new ServerError("not_found");
+    if (!input || typeof input !== "object") throw new ServerError("bad_input");
+    const draft = this.checkChange(uid, a, input);
+    // V89: a ride already dispatched cannot follow, and new places must pass the booking rules.
+    this.changeEffects(a, { ...draft, proposedBy: uid }, true);
+    const pending = this.pendingChange(a.id);
+    if (pending) {
+      pending.answeredAt = this.now;
+      if (pending.proposedBy === uid) pending.status = "replaced";
+      else {
+        // A counter-proposal: theirs is declined, and its proposer hears it.
+        pending.status = "declined";
+        this.pushAppt(pending.proposedBy, "appt_change_declined", a, this.changeParams(a, pending, uid));
+      }
+    }
+    const c: ChangeRow = {
+      ...draft,
+      id: this.nextId("c"),
+      appointmentId: a.id,
+      proposedBy: uid,
+      status: "proposed",
+      createdAt: this.now,
+      expiresAt: this.changeExpiresAt(a, draft),
+      answeredAt: null
+    };
+    (this.db.changes ??= {})[c.id] = c;
+    this.pushAppt(this.counterpart(a, uid), "appt_change_proposed", a, this.changeParams(a, c, uid));
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
+  /** The other party accepts (everything checked again; the appointment, rides and price follow) or declines (FR-333). */
+  answerChange(uid: string, id: string, decision: "accept" | "decline"): AppointmentView {
+    this.requireUser(uid);
+    if (decision !== "accept" && decision !== "decline") throw new ServerError("bad_input");
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || !this.isParty(uid, a)) throw new ServerError("not_found");
+    const c = this.changeFor(a);
+    if (c.proposedBy === uid) throw new ServerError("not_found");
+    if (decision === "decline") {
+      c.status = "declined";
+      c.answeredAt = this.now;
+      this.pushAppt(c.proposedBy, "appt_change_declined", a, this.changeParams(a, c, uid));
+      this.notifyAppt(a);
+      return this.apptView(a, uid);
+    }
+    // FR-333: the rules of FR-330/331 against now, the rides, then the provider's time (V5).
+    this.checkChange(c.proposedBy, a, c, c.expiresAt);
+    const effects = this.changeEffects(a, c, true);
+    const t = this.changeTarget(a, c);
+    const done = a.status === "done";
+    if (!done && a.providerId && this.providerBusy(a.providerId, t.start, t.durationMin, a.id)) throw new ServerError("overlap");
+    const params = this.changeParams(a, c, uid);
+    if (c.kind === "move") {
+      a.startsAt = t.start;
+      a.durationMin = t.durationMin;
+      a.place = t.place ? { ...t.place } : null;
+      // V88: the slots already past for the new start count as sent (no burst); the rest go out anew.
+      a.reminded = this.cfg.appointment.reminderMin.filter((s) => t.start - s * 60_000 <= this.now);
+    } else if (!done) a.durationMin = t.durationMin;
+    else a.actualMin = c.minutes === a.durationMin ? null : c.minutes;
+    // V62: the stored rate, never the contract again; a fixed price stays.
+    if (!done && a.rate != null) a.price = round2((a.rate * a.durationMin) / 60);
+    this.applyRideEffects(effects);
+    c.status = "accepted";
+    c.answeredAt = this.now;
+    this.pushAppt(c.proposedBy, "appt_change_accepted", a, params);
+    this.notifyAppt(a);
+    if (done) this.announceCost(a, true);
+    return this.apptView(a, uid);
+  }
+
+  /** The proposer takes the pending change back (nobody is told). */
+  withdrawChange(uid: string, id: string): AppointmentView {
+    this.requireUser(uid);
+    this.sweep();
+    const a = this.db.appointments?.[id];
+    if (!a || !this.isParty(uid, a)) throw new ServerError("not_found");
+    const c = this.changeFor(a);
+    if (c.proposedBy !== uid) throw new ServerError("not_found");
+    c.status = "withdrawn";
+    c.answeredAt = this.now;
+    this.notifyAppt(a);
+    return this.apptView(a, uid);
+  }
+
+  /** Strictly the client or the provider themselves (V60: not their families). */
+  private isParty(uid: string, a: ApptRow): boolean {
+    return a.clientId === uid || a.providerId === uid;
+  }
+
+  private counterpart(a: ApptRow, uid: string): string | null {
+    return a.clientId === uid ? a.providerId : a.clientId;
+  }
+
+  private pendingChange(apptId: string): ChangeRow | null {
+    return Object.values(this.db.changes ?? {}).find((c) => c.appointmentId === apptId && c.status === "proposed") ?? null;
+  }
+
+  /** The pending change to answer or withdraw: none at all → not_found, only finished ones → illegal_transition. */
+  private changeFor(a: ApptRow): ChangeRow {
+    const c = this.pendingChange(a.id);
+    if (c) return c;
+    if (Object.values(this.db.changes ?? {}).some((x) => x.appointmentId === a.id)) throw new ServerError("illegal_transition");
+    throw new ServerError("not_found");
+  }
+
+  /** Cancelled or gone appointments end their pending change (FR-332; nobody is told). */
+  private withdrawChanges(ids: string[]): void {
+    for (const c of Object.values(this.db.changes ?? {}))
+      if (c.status === "proposed" && ids.includes(c.appointmentId)) {
+        c.status = "withdrawn";
+        c.answeredAt = this.now;
+      }
+  }
+
+  /** Appointments whose pending change waits for my answer (V90: toAnswer, P1). */
+  private changesToAnswer(uid: string): string[] {
+    const all = this.db.appointments ?? {};
+    return Object.values(this.db.changes ?? {})
+      .filter((c) => {
+        const a = all[c.appointmentId];
+        return c.status === "proposed" && !!a && this.isParty(uid, a) && c.proposedBy !== uid;
+      })
+      .map((c) => c.appointmentId);
+  }
+
+  /**
+   * When a pending change lapses (FR-332): a move when it could no longer be accepted — at the current
+   * start, or the booking lead before the new one, whichever is first; a length 24 h after the (later) end.
+   */
+  private changeExpiresAt(a: ApptRow, c: ChangeDraft): number {
+    if (c.kind === "move") return Math.min(a.startsAt, (c.startsAt ?? a.startsAt) - this.cfg.booking.minLeadMin * 60_000);
+    if (a.status === "done") return (a.endedAt ?? this.endOf(a)) + SERVER.apptRatingWindowS * 1000;
+    return Math.max(this.endOf(a), a.startsAt + (c.minutes ?? a.durationMin) * 60_000) + SERVER.apptRatingWindowS * 1000;
+  }
+
+  /** The appointment as it would be: start, booked length, end, place; the length the price counts. */
+  private changeTarget(a: ApptRow, c: ChangeDraft): { start: number; durationMin: number; end: number; place: Place | null; length: number } {
+    if (c.kind === "move") {
+      const d = c.durationMin ?? a.durationMin;
+      const start = c.startsAt ?? a.startsAt;
+      return { start, durationMin: d, end: start + d * 60_000, place: c.place, length: d };
+    }
+    const m = c.minutes ?? a.durationMin;
+    return { start: a.startsAt, durationMin: a.status === "done" ? a.durationMin : m, end: a.startsAt + m * 60_000, place: a.place, length: m };
+  }
+
+  /** The checks of FR-330 / FR-331 against now (at proposing and again at accepting); the change as stored. */
+  private checkChange(uid: string, a: ApptRow, input: ChangeInput | ChangeDraft, expiresAt?: number): ChangeDraft {
+    const note = trimWs(String(input.note ?? ""));
+    if (input.kind === "move") {
+      if (a.status !== "accepted" || this.now >= a.startsAt) throw new ServerError("illegal_transition");
+      const e = this.service(a.serviceId);
+      if (!e?.duration) throw new ServerError("bad_service");
+      const { minLeadMin, maxDays } = this.cfg.booking;
+      const start = input.startsAt ?? a.startsAt;
+      if (typeof start !== "number" || !Number.isFinite(start) || start < this.now + minLeadMin * 60_000 || start > this.now + maxDays * 86_400_000)
+        throw new ServerError("bad_time");
+      const d = input.durationMin ?? a.durationMin;
+      if (typeof d !== "number" || !Number.isInteger(d) || d < e.duration.min || d > e.duration.max || (d - e.duration.min) % e.duration.step !== 0)
+        throw new ServerError("bad_duration");
+      const place = input.place === undefined ? a.place : input.place;
+      if ((place === null && e.needsPlace) || (place != null && (!isValidLatLng(place) || !String(place.label ?? "").trim()))) throw new ServerError("bad_input");
+      if (note.length > NOTE_MAX) throw new ServerError("bad_input");
+      if (input.pickups != null && !Array.isArray(input.pickups)) throw new ServerError("bad_input");
+      const live = this.liveRides(a);
+      const pickups: ChangePickup[] = [];
+      for (const p of input.pickups ?? []) {
+        if (!p || (p.leg !== "there" && p.leg !== "back")) throw new ServerError("bad_leg");
+        if (pickups.some((x) => x.leg === p.leg)) throw new ServerError("bad_input");
+        const onLeg = live.filter((r) => r.leg === p.leg);
+        // Only for my own live ride on that leg (FR-330).
+        if (!onLeg.some((r) => r.riderId === uid)) throw new ServerError(onLeg.length ? "forbidden" : "bad_leg");
+        if (!p.pickup || !isValidLatLng(p.pickup) || !String(p.pickup.label ?? "").trim()) throw new ServerError("bad_input");
+        if (typeof p.estKm !== "number" || typeof p.estMin !== "number" || !Number.isFinite(p.estKm) || !Number.isFinite(p.estMin)) throw new ServerError("bad_input");
+        // As a template (siosia_change_check in numeric): kept to 3 decimals; a trip that rounds to 0 km is none.
+        if (round3(p.estKm) <= 0 || p.estKm > 100_000 || p.estMin < 0 || p.estMin > MAX_EST_MIN) throw new ServerError("bad_input");
+        pickups.push({ leg: p.leg, pickup: cleanPlace(p.pickup), estKm: round3(p.estKm), estMin: round3(p.estMin), fareIsEstimate: p.fareIsEstimate === true });
+      }
+      const stored = place ? cleanPlace(place) : null;
+      if (start === a.startsAt && d === a.durationMin && samePlaceOrNull(stored, a.place) && !pickups.length) throw new ServerError("no_change");
+      return { kind: "move", startsAt: start, durationMin: d, place: stored, minutes: null, pickups, note };
+    }
+    if (input.kind !== "length") throw new ServerError("bad_input");
+    const live = a.status === "accepted" && a.startsAt <= this.now && this.now < this.endOf(a);
+    if (a.status === "done") {
+      // At accepting, the stored lapse moment bounds it (a length proposed live lapses 24 h after the later end).
+      if (this.now > (expiresAt ?? (a.endedAt ?? this.endOf(a)) + SERVER.apptRatingWindowS * 1000)) throw new ServerError("window_closed");
+    } else if (!live) throw new ServerError("illegal_transition");
+    const m = input.minutes;
+    if (typeof m !== "number" || !Number.isInteger(m) || m < ACTUAL_MIN || m > ACTUAL_MAX || m % 15 !== 0) throw new ServerError("bad_duration");
+    if (note.length > NOTE_MAX) throw new ServerError("bad_input");
+    if (m === (a.status === "done" ? a.actualMin ?? a.durationMin : a.durationMin)) throw new ServerError("no_change");
+    return { kind: "length", startsAt: null, durationMin: null, place: null, minutes: m, pickups: [], note };
+  }
+
+  /** The rides of an appointment that may still follow it (or refuse to: ride_started), soonest first. */
+  private liveRides(a: ApptRow): RideRow[] {
+    return Object.values(this.db.rides)
+      .filter((r) => r.appointmentId === a.id && (r.status === "scheduled" || r.status === "requested" || r.status === "accepted" || r.status === "arrived"))
+      .sort((x, y) => (x.scheduledFor ?? 0) - (y.scheduledFor ?? 0));
+  }
+
+  /**
+   * What each attached ride does on acceptance (FR-333, V89) — the preview and the outcome alike.
+   * strict: refuse (ride_started, outside_area, too_far); otherwise the offending ride shows "keep".
+   */
+  private changeEffects(a: ApptRow, c: ChangeDraft & { proposedBy: string }, strict: boolean): RideEffect[] {
+    // A length change of a done appointment moves nothing.
+    if (c.kind === "length" && a.status === "done") return [];
+    const t = this.changeTarget(a, c);
+    const dStart = t.start - a.startsAt;
+    const dEnd = t.end - this.endOf(a);
+    const moved = c.kind === "move" && a.place !== null && t.place !== null && !samePlace(t.place, a.place);
+    const out: RideEffect[] = [];
+    for (const r of this.liveRides(a)) {
+      const from = r.scheduledFor ?? r.requestedAt;
+      const keep: RideEffect = {
+        r,
+        from,
+        to: from,
+        effect: "keep",
+        pickup: r.pickup,
+        dropoff: r.dropoff,
+        estKm: r.estKm,
+        estMin: r.estMin,
+        fare: r.fare,
+        fareIsEstimate: r.fareIsEstimate,
+        placed: false
+      };
+      try {
+        const to = r.leg === "there" ? from + dStart : Math.max(t.start, from + dEnd);
+        // The proposer's new pickup for their ride; else a ride at the old place follows the new one.
+        const own = r.riderId === c.proposedBy ? c.pickups.find((p) => p.leg === r.leg) : undefined;
+        let pickup = r.pickup;
+        let dropoff = r.dropoff;
+        // The two rules are independent (FR-333): a new pickup of a there ride still takes it to the new place.
+        if (own) pickup = own.pickup;
+        if (moved) {
+          if (r.leg === "there" && haversineKm(r.dropoff, a.place!) <= CHANGE_FOLLOW_KM) dropoff = t.place!;
+          if (r.leg === "back" && !own && haversineKm(r.pickup, a.place!) <= CHANGE_FOLLOW_KM) pickup = t.place!;
+        }
+        const placed = !samePlace(pickup, r.pickup) || !samePlace(dropoff, r.dropoff);
+        if (to === from && !placed) {
+          out.push(keep);
+          continue;
+        }
+        if (r.status !== "scheduled") throw new ServerError("ride_started");
+        if (to < this.now + this.cfg.booking.minLeadMin * 60_000) {
+          out.push({ ...keep, to, effect: "cancel" });
+          continue;
+        }
+        if (!placed) {
+          out.push({ ...keep, to, effect: "move" });
+          continue;
+        }
+        // The booking rules for the new places: straight-line minimum, area, too_far, a master's fixed fare.
+        const straight = haversineKm(pickup, dropoff);
+        let km: number;
+        let min: number;
+        let est: boolean;
+        if (own) {
+          km = Math.max(own.estKm, straight);
+          min = Math.max(1, own.estMin);
+          est = own.fareIsEstimate;
+        } else {
+          // No phone estimate: the old route's ratio to the straight line (1–3), marked an estimate.
+          const ratio = Math.min(3, Math.max(1, r.estKm / Math.max(haversineKm(r.pickup, r.dropoff), 0.1)));
+          km = straight * ratio;
+          min = Math.max(1, Math.round((r.estMin * km) / Math.max(r.estKm, 0.1)));
+          est = true;
+        }
+        const area = this.cfg.serviceArea;
+        if (area && haversineKm(area, pickup) > area.radiusKm) throw new ServerError("outside_area");
+        if (km > this.cfg.maxTripKm) throw new ServerError("too_far");
+        const fixed = this.riderMaster(r.riderId)?.fixedFare ?? null;
+        out.push({
+          r,
+          from,
+          to,
+          effect: "move",
+          pickup,
+          dropoff,
+          estKm: round1(km),
+          estMin: Math.round(min),
+          fare: fixed ?? computeFare(this.cfg.tariff, km, min),
+          fareIsEstimate: fixed === null && est,
+          placed: true
+        });
+      } catch (err) {
+        if (strict) throw err;
+        out.push(keep);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The rides follow an accepted change (V89): cancelled, or moved — first all of them, then each
+   * driver kept when still free at the final times (a driver on both legs is judged at both new times).
+   */
+  private applyRideEffects(effects: RideEffect[]): void {
+    for (const x of effects) {
+      const r = x.r;
+      if (x.effect === "cancel") {
+        if (r.driverId) this.pushTo(r.driverId, "booking_cancelled", r, { pickup: r.pickup.label });
+        this.endRide(r, "cancelled", "system", "appointment_changed");
+      } else if (x.effect === "move") {
+        r.scheduledFor = x.to;
+        r.dispatchStartedAt = x.to;
+        if (x.placed) Object.assign(r, { pickup: { ...x.pickup }, dropoff: { ...x.dropoff }, estKm: x.estKm, estMin: x.estMin, fare: x.fare, fareIsEstimate: x.fareIsEstimate });
+        this.effects.notify.add(r.riderId);
+      }
+    }
+    for (const x of effects) {
+      const r = x.r;
+      const d = r.driverId;
+      if (x.effect !== "move" || !d) continue;
+      this.effects.notify.add(d);
+      // The claim rule (this ride excepted) and the driver's other accepted appointments then (their own
+      // appointment, which this ride serves, excepted).
+      const at = r.scheduledFor ?? x.to;
+      const clash =
+        Object.values(this.db.rides).some(
+          (y) => y.id !== r.id && y.status === "scheduled" && y.driverId === d && Math.abs((y.scheduledFor ?? 0) - at) < (Math.max(y.estMin, r.estMin) + 30) * 60_000
+        ) ||
+        Object.values(this.db.appointments ?? {}).some(
+          (y) => y.id !== r.appointmentId && y.providerId === d && y.status === "accepted" && y.startsAt < at + Math.max(r.estMin, 1) * 60_000 && at < this.endOf(y)
+        );
+      const params = { fromAt: x.from, pickup: r.pickup.label };
+      if (!clash) {
+        this.pushTo(d, "booking_moved", r, { ...params, dropped: false });
+        continue;
+      }
+      // Back to the pool: the old driver hears, drivers are offered it again; the other party hears
+      // there is no driver yet (appt_ride_lost, as the rides trigger tells it).
+      r.driverId = null;
+      this.pushTo(d, "booking_moved", r, { ...params, dropped: true });
+      this.offerBooking(r);
+      this.attachedChanged(r);
+    }
+  }
+
+  /** The pending change as one of the two parties sees it (V90); others see none. */
+  private changeView(a: ApptRow, viewer: string): ChangeView | null {
+    if (!this.isParty(viewer, a)) return null;
+    const c = this.pendingChange(a.id);
+    if (!c) return null;
+    const t = this.changeTarget(a, c);
+    // Never fails the view: a ride that would refuse shows "keep".
+    let effects: RideEffect[] = [];
+    try {
+      effects = this.changeEffects(a, c, false);
+    } catch {
+      effects = [];
+    }
+    return {
+      id: c.id,
+      kind: c.kind,
+      by: c.proposedBy === a.clientId ? "client" : "provider",
+      mine: c.proposedBy === viewer,
+      startsAt: t.start,
+      durationMin: t.durationMin,
+      endsAt: t.end,
+      place: t.place ? { ...t.place } : null,
+      minutes: c.kind === "length" && a.status === "done" ? c.minutes : null,
+      price: a.rate != null ? round2((a.rate * t.length) / 60) : a.price,
+      note: c.note,
+      createdAt: c.createdAt,
+      expiresAt: c.expiresAt,
+      rides: effects.map((x) => ({
+        rideId: x.r.id,
+        leg: x.r.leg!,
+        passenger: x.r.riderId === a.clientId ? ("client" as const) : ("provider" as const),
+        mine: x.r.riderId === viewer,
+        from: x.from,
+        to: x.effect === "cancel" ? null : x.to,
+        effect: x.effect,
+        // FR-114: the new places and fare to the passenger only.
+        ...(x.r.riderId === viewer && x.placed ? { pickup: { ...x.pickup }, dropoff: { ...x.dropoff }, fare: x.fare } : {})
+      }))
+    };
+  }
+
+  /** A change notification's params (FR-334): {at}/{end}/{place} as proposed, {fromAt}/{fromEnd}/{fromPlace} as before. */
+  private changeParams(a: ApptRow, c: ChangeDraft, who: string): Partial<PushParams> {
+    const t = this.changeTarget(a, c);
+    const before = a.status === "done" ? a.actualMin ?? a.durationMin : a.durationMin;
+    return {
+      at: t.start,
+      end: t.end,
+      place: t.place?.label ?? "",
+      fromAt: a.startsAt,
+      fromEnd: a.startsAt + before * 60_000,
+      ...(samePlaceOrNull(t.place, a.place) ? {} : { fromPlace: a.place?.label ?? "" }),
+      change: c.kind,
+      who: this.nick(who),
+      ...(c.note ? { text: c.note } : {}),
+      ...(c.kind === "length" && c.minutes != null ? { minutes: c.minutes } : {})
+    };
   }
 
   // ---------- 2.6: weekly reports (FR-280–284, V64, V65) ----------
@@ -4583,10 +5099,13 @@ const round3 = (x: number) => Math.round(x * 1000) / 1000;
 
 /** The longest ride estimate accepted, in minutes (twin of the 1440 in siosia_book_for). */
 const MAX_EST_MIN = 1440;
+/** 2.14 (V89): a ride within 150 m of the old place follows the new one. */
+const CHANGE_FOLLOW_KM = 0.15;
 
 /** How an attached ride stands for its appointment (§7 rule 7); null = not shown (twin of siosia_ride_summary). */
 export function rideSummary(r: Pick<RideRow, "status" | "driverId" | "cancelledBy" | "cancelReason">): AttachedStatus | null {
-  if (r.status === "cancelled" && (r.cancelledBy === "rider" || r.cancelReason === "appointment_cancelled")) return null;
+  // 2.14 (V89): a ride an accepted change cancelled (too soon to move) goes like a cancelled appointment's.
+  if (r.status === "cancelled" && (r.cancelledBy === "rider" || r.cancelReason === "appointment_cancelled" || r.cancelReason === "appointment_changed")) return null;
   if ((r.status === "scheduled" && !r.driverId) || r.status === "requested") return "pending";
   if (r.status === "scheduled" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress") return "confirmed";
   if (r.status === "completed") return "done";
@@ -4618,6 +5137,8 @@ function cleanPlace(p: Place): Place {
 }
 
 const samePlace = (a: Place, b: Place) => a.lat === b.lat && a.lng === b.lng && a.label === b.label;
+/** 2.14: two places (or none) are the same — coordinates and label (twin of the jsonb equality). */
+const samePlaceOrNull = (a: Place | null, b: Place | null) => (a === null || b === null ? a === b : samePlace(a, b));
 
 /** Two stored templates are the same (twin of the jsonb equality in siosia_set_ride_template). */
 function sameTemplate(a: StoredTemplate, b: StoredTemplate): boolean {

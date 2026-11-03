@@ -237,34 +237,56 @@ function appointmentIcs(a, ctx) {
   ];
   return calendar(ev);
 }
+function seriesRule(a) {
+  const s = a.series;
+  const first = s?.first ?? s?.starts[0] ?? a.startsAt;
+  const durMs = s?.durationMin !== void 0 && s.durationMin !== null && s.durationMin > 0 ? s.durationMin * 6e4 : a.endsAt - a.startsAt;
+  const place = s?.place !== void 0 ? s.place : a.place;
+  return { first, durMs, place };
+}
 function seriesIcs(a, ctx) {
   const s = a.series;
   if (!s) return appointmentIcs(a, ctx);
   const tz = ctx.timezone;
-  const first = s.starts[0] ?? a.startsAt;
-  const last = s.starts[s.starts.length - 1] ?? a.startsAt;
-  const durMs = a.endsAt - a.startsAt;
+  const { first, durMs, place } = seriesRule(a);
+  const moved = s.moved ?? [];
   const summary = appointmentTitle(a, ctx.lang);
   const view = asSeries(a);
   const status = icsStatus(view.status);
   const back = link(ctx);
+  const description = `DESCRIPTION:${escapeText(appointmentDetails(view, ctx))}`;
+  const tail = [description, ...back ? [`URL:${back}`] : [], `STATUS:${status}`, ...status === "CANCELLED" ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary))];
+  const stamp = `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`;
   const ev = [
     "BEGIN:VEVENT",
     `UID:${bare(s.id)}`,
-    `DTSTAMP:${utcStamp(ctx.now ?? Date.now())}`,
+    stamp,
     `DTSTART;TZID=${tz}:${localStamp(first, tz)}`,
     `DTEND;TZID=${tz}:${localStamp(first + durMs, tz)}`,
     `RRULE:FREQ=WEEKLY;INTERVAL=${s.rule === "biweekly" ? 2 : 1};COUNT=${s.count}`,
     ...s.gaps.map((g) => `EXDATE;TZID=${tz}:${localStamp(g, tz)}`),
     `SUMMARY:${escapeText(summary)}`,
-    ...placeLines(a.place),
-    `DESCRIPTION:${escapeText(appointmentDetails(view, ctx))}`,
-    ...back ? [`URL:${back}`] : [],
-    `STATUS:${status}`,
-    ...status === "CANCELLED" ? [] : ctx.reminderMin.flatMap((m) => alarm(m, summary)),
-    "END:VEVENT"
+    ...placeLines(place),
+    ...tail,
+    "END:VEVENT",
+    // 2.14 (FR-336, V92): each moved date overrides its rule slot (RFC 5545 RECURRENCE-ID).
+    ...moved.flatMap((m) => [
+      "BEGIN:VEVENT",
+      `UID:${bare(s.id)}`,
+      stamp,
+      `RECURRENCE-ID;TZID=${tz}:${localStamp(m.orig, tz)}`,
+      `DTSTART;TZID=${tz}:${localStamp(m.start, tz)}`,
+      `DTEND;TZID=${tz}:${localStamp(m.end, tz)}`,
+      `SUMMARY:${escapeText(summary)}`,
+      ...placeLines(m.place),
+      ...tail,
+      "END:VEVENT"
+    ])
   ];
-  return calendar(ev, vtimezone(tz, first - 864e5, last + durMs + 864e5));
+  const times = [first, ...s.starts, ...s.gaps, ...moved.flatMap((m) => [m.orig, m.start, m.end])].filter((t) => Number.isFinite(t));
+  const from = Math.min(...times);
+  const to = Math.max(...times);
+  return calendar(ev, vtimezone(tz, from - 864e5, to + durMs + 864e5));
 }
 function rideIcs(r, ctx) {
   const at = r.scheduledFor ?? r.requestedAt;

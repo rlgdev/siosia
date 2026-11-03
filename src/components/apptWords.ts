@@ -5,6 +5,7 @@
 
 import { apptStatusText, rideLineText } from "../../supabase/functions/_shared/push-text";
 import type { AppointmentView, PublicProvider } from "../core/types";
+import { ServerError } from "../core/types";
 import type { MessageKey } from "../i18n/en";
 
 type T = (key: MessageKey, vars?: Record<string, string | number>) => string;
@@ -29,6 +30,15 @@ export function statusChip(a: AppointmentView, lang: string, t: T): { text: stri
   // An open request nobody took before its start: its own words.
   if (a.status === "expired" && !a.provider) return { text: t("appt.status.expiredOpen"), kind: "muted" };
   return { text: t(`appt.status.${a.status}` as MessageKey), kind: "muted" };
+}
+
+/**
+ * 2.14 (FR-335): the chip of a pending change — "Change proposed" (to answer) or "Change sent"
+ * (mine, waiting); null without one (the view gives it to the two parties only).
+ */
+export function changeChip(a: AppointmentView, t: T): { text: string; kind: ChipKind } | null {
+  if (!a.change) return null;
+  return a.change.mine ? { text: t("change.chipSent"), kind: "info" } : { text: t("change.chip"), kind: "warn" };
 }
 
 /**
@@ -98,3 +108,13 @@ export function kidsLine(a: AppointmentView, lang: string, t: T): string | null 
 /** A room exists once the appointment was accepted (FR-220); it stays readable after the end. */
 export const apptRoom = (a: AppointmentView): `appt:${string}` | null =>
   a.role === "family" ? null : a.status === "accepted" || a.status === "done" || (a.status === "cancelled" && a.answeredAt !== null) ? `appt:${a.id}` : null;
+
+/** Accept the pending change; an overlap seen by the client (the provider's own clash) calls `theirs`. */
+export async function answerChangeOrBusy(api: { answerChange: (id: string, d: "accept" | "decline") => Promise<unknown> }, a: AppointmentView, theirs: () => void) {
+  try {
+    await api.answerChange(a.id, "accept");
+  } catch (e) {
+    if (e instanceof ServerError && e.code === "overlap" && a.role !== "provider") return theirs();
+    throw e;
+  }
+}

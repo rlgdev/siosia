@@ -4,11 +4,13 @@
 // 2.1 (FR-161): You could help (N) — others' open requests, soonest first, with I can do it.
 // 2.3 (FR-202, FR-221): "with Zosia and Kuba" on an item with kids attached (a candidate: the
 // count), the other party's photo, and the chat of an accepted appointment with its unread count.
+// 2.14 (FR-335): To answer also lists appointments with a change awaiting me (chip Change
+// proposed, Accept / Decline); my own pending change reads Change sent.
 
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { apptRoom, kidsLine, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { answerChangeOrBusy, apptRoom, changeChip, kidsLine, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ChatButton } from "../components/ChatSheet";
 import { PartyAvatar } from "../components/ProfileIcon";
 import { comingText, updateCountText } from "../components/SessionFeed";
@@ -57,12 +59,13 @@ export function Planned() {
   };
 
   const now = store.serverNow();
-  const toAnswer = data?.appointments.filter((a) => a.status === "requested" && a.role === "provider") ?? [];
+  const toAnswer = data?.appointments.filter((a) => (a.status === "requested" && a.role === "provider") || (a.change && !a.change.mine)) ?? [];
   // Others' open requests this user could take (a backend without them sends none).
   const could = data?.open ?? [];
   const items: Item[] = data
     ? [
-        ...data.appointments.filter((a) => !toAnswer.includes(a)).map((a): Item => ({ kind: "appointment", at: a.startsAt, a })),
+        // A finished one comes only for its pending new length (2.14); mine waits in H1, not here.
+        ...data.appointments.filter((a) => !toAnswer.includes(a) && a.status !== "done").map((a): Item => ({ kind: "appointment", at: a.startsAt, a })),
         // A rider's ride attached to an appointment is shown in the appointment's ride line.
         ...data.rides.filter((r) => !(r.role === "rider" && r.appointmentId && r.status === "scheduled")).map((r): Item => ({ kind: "ride", at: r.scheduledFor ?? r.requestedAt, r }))
       ]
@@ -95,7 +98,7 @@ export function Planned() {
             <section className="stack" data-testid="to-answer">
               <h2 className="section-title">{t("planned.toAnswer", { n: toAnswer.length })}</h2>
               {toAnswer.map((a) => (
-                <AppointmentItem key={a.id} a={a} now={now} onChanged={changed} answer />
+                <AppointmentItem key={a.id} a={a} now={now} onChanged={changed} answer={a.change && !a.change.mine ? "change" : true} />
               ))}
             </section>
           )}
@@ -141,16 +144,32 @@ export function Planned() {
 }
 
 /** An appointment in P1: service, time, the other party, status chip, ride lines; tap opens C3. */
-function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; now: number; onChanged: () => void; answer?: boolean }) {
+function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; now: number; onChanged: () => void; answer?: boolean | "change" }) {
   const { t, lang, locale } = useI18n();
   const app = useApp();
   const store = useStore();
-  const [busy, run, error] = useBusy();
+  const [busy, run, error, setError] = useBusy();
   const chip = statusChip(a, lang, t);
+  const change = changeChip(a, t);
   const other = otherOf(a);
   const inProgress = a.status === "accepted" && a.startsAt <= now && now < a.endsAt;
   const marker = seriesMarker(a, t);
   const soon = a.startsAt - now;
+  // 2.14: the other party's change answered right here (C3 shows it in full).
+  // An overlap seen by the client is the provider's own clash (named so, not "you have a booking").
+  const answerChange = async (decision: "accept" | "decline") => {
+    let theirs = false;
+    await run(async () => {
+      try {
+        if (decision === "accept") await answerChangeOrBusy(store.api, a, () => (theirs = true));
+        else await store.api.answerChange(a.id, decision);
+      } finally {
+        onChanged();
+        await store.refresh().catch(() => {});
+      }
+    });
+    if (theirs) setError(t("change.providerBusy", { name: otherName(a, t) }));
+  };
   // "Now until 17:00" / "In 40 min" / "In 2 h" markers (FR-123), then the time range.
   const soonMark = inProgress
     ? t("appt.nowUntil", { time: timeText(a.endsAt, locale) })
@@ -170,6 +189,18 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
             {chip.text}
           </span>
         </span>
+        {change && (
+          <span className="row">
+            <span className={`chip chip-${change.kind}`} data-testid="appt-change-chip">
+              {change.text}
+            </span>
+            {a.change && (a.change.startsAt !== a.startsAt || a.change.endsAt !== a.endsAt) && (
+              <span className="small" data-testid="planned-change-when">
+                → {dayText(a.change.startsAt, now, locale, t)} · {rangeTimes(a.change.startsAt, a.change.endsAt, locale)}
+              </span>
+            )}
+          </span>
+        )}
         <span className="row">
           {soonMark && (
             <span className="chip chip-info" data-testid="appt-soon">
@@ -224,7 +255,23 @@ function AppointmentItem({ a, now, onChanged, answer }: { a: AppointmentView; no
           {apptRoom(a) && <ChatButton room={apptRoom(a)!} unread={a.unread} small />}
         </div>
       )}
-      {answer && (
+      {answer === "change" && (
+        <div className="row">
+          <button
+            type="button"
+            className="btn btn-primary grow"
+            disabled={busy}
+            onClick={() => void answerChange("accept")}
+            data-testid="planned-change-accept"
+          >
+            {t("change.accept")}
+          </button>
+          <button type="button" className="btn btn-secondary grow" disabled={busy} onClick={() => void answerChange("decline")} data-testid="planned-change-decline">
+            {t("change.decline")}
+          </button>
+        </div>
+      )}
+      {answer === true && (
         <div className="row">
           <button type="button" className="btn btn-primary grow" disabled={busy} onClick={() => store.openPanel("appointment", `accept:${a.id}`)} data-testid="answer-accept">
             {t("appt.accept")}

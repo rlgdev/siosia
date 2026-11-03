@@ -262,6 +262,7 @@ function appt(over: Partial<AppointmentView> = {}): AppointmentView {
     cost: null,
     tip: null,
     family: null,
+    change: null,
     ...over
   };
 }

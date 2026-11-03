@@ -800,5 +800,93 @@ describe("2.6 family, contract, summary and weekly report texts (FR-250–282)",
   it("ships the 2.6 kinds and their URLs in the push-dispatch bundle (B8)", () => {
     const bundle = readFileSync("supabase/functions/push-dispatch/dist-bundle.ts", "utf-8");
     for (const s of ["family_invite", "contract_proposed", "appt_summary", "weekly_report", "./?open=family", "./?open=report", "sign_in", "./?open=account"]) expect(bundle).toContain(s);
+    // 2.14 (V43, V91): the change kinds, their tag and their URL.
+    for (const s of ["appt_change_proposed", "appt_change_accepted", "appt_change_declined", "booking_moved", "change:", "./?appointment="]) expect(bundle).toContain(s);
+  });
+});
+
+describe("2.14 change texts (FR-334, V91)", () => {
+  const TZ = "Europe/Warsaw";
+  const H = 3600_000;
+  // Proposed: Mon 12 Oct 14:30–16:30 → Tue 13 Oct 15:00–17:00 at a new place.
+  const move = {
+    serviceId: "childcare",
+    service: "Childcare",
+    client: "Toria",
+    provider: "Siosia",
+    who: "Toria",
+    change: "move",
+    fromAt: AT,
+    fromEnd: AT + 2 * H,
+    fromPlace: "Husarska 16",
+    at: AT + 24 * H + 30 * 60_000,
+    end: AT + 26 * H + 30 * 60_000,
+    place: "Parkowa 3"
+  };
+
+  it("proposes a move: new date and place instead of the old date, the note quoted as typed, tagged per appointment, opening C3", () => {
+    expect(pushText("appt_change_proposed", { ...move, text: "Sorry...  dentist" }, "en", TZ, "a1")).toEqual({
+      title: "Change proposed: Childcare",
+      body: "Toria proposes Tue 13 Oct, 15:00–17:00 at Parkowa 3 instead of Mon 12 Oct, 14:30–16:30. “Sorry... dentist”",
+      tag: "change:a1"
+    });
+    const pl = pushText("appt_change_proposed", { ...move, service: "Opieka nad dziećmi" }, "pl", TZ, "a1");
+    expect(pl.title).toBe("Propozycja zmiany: Opieka nad dziećmi");
+    expect(pl.body).toMatch(/^Toria proponuje wt\.?,? 13 paź\.?,? 15:00–17:00 \(Parkowa 3\) zamiast pon\.?,? 12 paź\.?,? 14:30–16:30\.$/);
+    // The place unchanged (no fromPlace): no place in the text.
+    expect(pushText("appt_change_proposed", { ...move, fromPlace: null }, "en", TZ, "a1").body).toBe(
+      "Toria proposes Tue 13 Oct, 15:00–17:00 instead of Mon 12 Oct, 14:30–16:30."
+    );
+    // B13: an appointment that had no place (fromPlace "") moved to one still names the new place.
+    const fromNone = { ...move, fromPlace: "", place: "Park" };
+    expect(pushText("appt_change_proposed", fromNone, "en", TZ, "a1").body).toBe("Toria proposes Tue 13 Oct, 15:00–17:00 at Park instead of Mon 12 Oct, 14:30–16:30.");
+    expect(pushText("appt_change_proposed", fromNone, "pl", TZ, "a1").body).toContain("15:00–17:00 (Park) zamiast");
+    expect(pushText("appt_change_accepted", fromNone, "en", TZ, "a1").body).toContain(" at Park.");
+    expect(pushText("appt_change_accepted", fromNone, "pl", TZ, "a1").body).toContain(" (Park).");
+    for (const k of ["appt_change_proposed", "appt_change_accepted", "appt_change_declined"] as const) {
+      expect(openUrl(k, move, "a1")).toBe("./?appointment=a1");
+      expect(pushText(k, move, "en", TZ, "a1").tag).toBe("change:a1");
+    }
+  });
+
+  it("proposes a new length as lengths with the new end", () => {
+    const len = { ...move, change: "length", fromPlace: null, at: AT, end: AT + 3 * H, minutes: 180, place: "Husarska 16" };
+    expect(pushText("appt_change_proposed", len, "en", TZ, "a1").body).toBe("Toria proposes 3 h (until 17:30) instead of 2 h.");
+    expect(pushText("appt_change_proposed", len, "pl", TZ, "a1").body).toBe("Toria proponuje 3 godz. (do 17:30) zamiast 2 godz.");
+    expect(pushText("appt_change_accepted", { ...len, who: "Siosia" }, "en", TZ, "a1")).toEqual({
+      title: "Siosia accepted the change",
+      body: "Childcare is now 3 h (until 17:30).",
+      tag: "change:a1"
+    });
+    expect(pushText("appt_change_declined", { ...len, who: "Siosia" }, "pl", TZ, "a1").body).toBe("Childcare bez zmian: 2 godz.");
+  });
+
+  it("tells the proposer the answer", () => {
+    expect(pushText("appt_change_accepted", { ...move, who: "Siosia" }, "en", TZ, "a1").body).toBe("Childcare is now Tue 13 Oct, 15:00–17:00 at Parkowa 3.");
+    expect(pushText("appt_change_accepted", { ...move, who: "Siosia" }, "pl", TZ, "a1").title).toBe("Siosia przyjmuje zmianę");
+    expect(pushText("appt_change_declined", { ...move, who: "Siosia" }, "en", TZ, "a1")).toEqual({
+      title: "Siosia declined the change",
+      body: "Childcare stays Mon 12 Oct, 14:30–16:30.",
+      tag: "change:a1"
+    });
+    expect(pushText("appt_change_declined", { ...move, who: "Siosia" }, "pl", TZ, "a1").title).toBe("Siosia odrzuca zmianę");
+  });
+
+  it("tells a driver their booking moved, or that it went back to other drivers, tagged per ride, opening Planned", () => {
+    const p = { at: AT + H, fromAt: AT, pickup: "Husarska 16", dropped: false };
+    expect(pushText("booking_moved", p, "en", TZ, "r1")).toEqual({
+      title: "Booking moved",
+      body: "From Husarska 16: now Mon 12 Oct, 15:30 (was Mon 12 Oct, 14:30).",
+      tag: "booking_moved:r1"
+    });
+    expect(pushText("booking_moved", p, "pl", TZ, "r1").title).toBe("Rezerwacja przesunięta");
+    expect(pushText("booking_moved", { ...p, fromAt: AT + H }, "en", TZ, "r1").body).toBe("From Husarska 16: now Mon 12 Oct, 15:30.");
+    expect(pushText("booking_moved", { ...p, dropped: true }, "en", TZ, "r1")).toEqual({
+      title: "Booking no longer yours",
+      body: "Mon 12 Oct, 15:30 from Husarska 16: the new time clashes with your other plans, so it went back to other drivers.",
+      tag: "booking_moved:r1"
+    });
+    expect(pushText("booking_moved", { ...p, dropped: true }, "pl", TZ, "r1").title).toBe("Rezerwacja nie jest już Twoja");
+    expect(openUrl("booking_moved", p)).toBe("./?open=planned");
   });
 });

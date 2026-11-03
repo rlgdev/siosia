@@ -11,14 +11,17 @@
 // 2.5 (FR-230–233, FR-240–241): the session feed (updates with photos, about everyone or one kid)
 // while it is open or has anything, the client's "I'm heading home" during the session and the
 // notice it leaves for both parties.
+// 2.14 (FR-330–335): either party proposes a change — a planned appointment's start, length, place
+// and their own rides' pickups, or a live / just-finished one's length; the pending change is a
+// card above everything with Accept / Decline (the other party) or Withdraw (the proposer).
 
 import { Icon } from "../components/Icon";
 import { InfoTip } from "../components/InfoTip";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
-import { apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
+import { answerChangeOrBusy, apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ChatButton } from "../components/ChatSheet";
-import { fromInput, toLocalInput } from "../components/datetime";
+import { fromInput, roundUp, toLocalInput } from "../components/datetime";
 import { AttachedKidCards, KidPicker, RateKidBox, useMyKids } from "../components/Kids";
 import { PlaceInput } from "../components/PlaceInput";
 import { PartyAvatar } from "../components/ProfileIcon";
@@ -27,8 +30,9 @@ import { TipBox } from "../components/Tip";
 import { rangeTimes, timeText, whenText } from "../components/when";
 import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui";
 import { computeFare } from "../core/fare";
+import { haversineKm } from "../core/geo";
 import { derivedPickup } from "../core/time";
-import type { AppointmentView, Leg, Place, RideTemplateInput } from "../core/types";
+import type { AppointmentView, CatalogItem, ChangeInput, ChangeKind, ChangePickup, ChangeView, Leg, Place, RideTemplateInput } from "../core/types";
 import { ServerError } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
@@ -42,10 +46,12 @@ export function AppointmentPanel() {
   const app = useApp();
   const store = useStore();
   const arg = app.panelArg ?? "";
-  // "accept:<id>" opens C4 at once (To answer), "take:<id>" the take sheet (You could help).
+  // "accept:<id>" opens C4 at once (To answer), "take:<id>" the take sheet (You could help),
+  // 2.14 "change:<id>" the Propose a change sheet.
   const accepting = arg.startsWith("accept:");
   const taking = arg.startsWith("take:");
-  const id = accepting ? arg.slice(7) : taking ? arg.slice(5) : arg;
+  const changing = arg.startsWith("change:");
+  const id = accepting || changing ? arg.slice(7) : taking ? arg.slice(5) : arg;
   const [a, setA] = useState<AppointmentView | null>(null);
   const [failed, setFailed] = useState(false);
   // The reload said not_found: no longer this viewer's — an open request someone else took or the
@@ -74,21 +80,29 @@ export function AppointmentPanel() {
       ) : !a ? (
         <p className="muted">{t("common.loading")}</p>
       ) : (
-        <AppointmentDetails a={a} reload={load} accepting={accepting} taking={taking} />
+        <AppointmentDetails a={a} reload={load} accepting={accepting} taking={taking} changing={changing} />
       )}
     </Panel>
   );
 }
 
-function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentView; reload: () => void; accepting: boolean; taking: boolean }) {
+function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: AppointmentView; reload: () => void; accepting: boolean; taking: boolean; changing?: boolean }) {
   const { t, lang, locale } = useI18n();
   const app = useApp();
   const store = useStore();
   const dep = app.deployment!;
   const now = store.serverNow();
-  const [busy, run, error] = useBusy();
-  const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | "kids" | Leg>(
-    accepting && a.status === "requested" && a.role === "provider" ? "accept" : taking && a.status === "requested" && a.role === "candidate" ? "take" : "view"
+  const [busy, run, error, setError] = useBusy();
+  // 2.14 (FR-335): a party may propose a change (a pending one of the other side is countered by it).
+  const canPropose = proposeKind(a, now) !== null && !a.change?.mine;
+  const [mode, setMode] = useState<"view" | "accept" | "take" | "cancel" | "kids" | "change" | Leg>(
+    accepting && a.status === "requested" && a.role === "provider"
+      ? "accept"
+      : taking && a.status === "requested" && a.role === "candidate"
+        ? "take"
+        : changing && canPropose
+          ? "change"
+          : "view"
   );
   const other = otherOf(a);
   const chip = statusChip(a, lang, t);
@@ -122,6 +136,12 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
         await store.refresh().catch(() => {});
       }
     });
+  // 2.14: an overlap on accepting is the provider's clash — the client is told so, not "you have a booking".
+  const acceptChange = async () => {
+    let theirs = false;
+    await act(() => answerChangeOrBusy(store.api, a, () => (theirs = true)));
+    if (theirs) setError(t("change.providerBusy", { name: otherName(a, t) }));
+  };
 
   return (
     <div className="stack" data-testid="appointment">
@@ -182,6 +202,8 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
         )}
       </section>
 
+      {a.change && <ChangeCard a={a} c={a.change} busy={busy} act={act} accept={acceptChange} />}
+
       {showKids && (
         <section className="card stack" data-testid="appt-kids">
           <div className="row spread">
@@ -203,7 +225,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
       )}
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
-      {a.cost && <CostSection a={a} reload={reload} />}
+      {a.cost && <CostSection a={a} onPropose={canPropose && mode === "view" ? () => setMode("change") : undefined} />}
       <TipSection a={a} reload={reload} />
 
       {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
@@ -240,6 +262,7 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
       {mode === "accept" && <AcceptSheet a={a} onDone={() => setMode("view")} reload={reload} />}
       {mode === "take" && <AcceptSheet a={a} take onDone={() => setMode("view")} reload={reload} />}
       {(mode === "there" || mode === "back") && <AddRide a={a} leg={mode} onDone={() => setMode("view")} reload={reload} />}
+      {mode === "change" && <ProposeChange a={a} onDone={() => setMode("view")} reload={reload} />}
 
       {mode === "cancel" && (
         <section className="card stack" data-testid="cancel-box">
@@ -304,6 +327,11 @@ function AppointmentDetails({ a, reload, accepting, taking }: { a: AppointmentVi
               ))}
             </section>
           )}
+          {canPropose && (
+            <button type="button" className="btn btn-secondary" onClick={() => setMode("change")} data-testid="appt-change">
+              <Icon name="calendar" className="ico-inline" /> {t("change.propose")}
+            </button>
+          )}
           {canCancel && (
             <button type="button" className="btn btn-danger-outline" onClick={() => setMode("cancel")} data-testid="appt-cancel">
               {t(a.status === "accepted" ? "appt.cancel" : "appt.withdraw")}
@@ -359,16 +387,9 @@ function TipSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
   );
 }
 
-function CostSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
+function CostSection({ a, onPropose }: { a: AppointmentView; onPropose?: () => void }) {
   const { t, locale } = useI18n();
-  const store = useStore();
-  const [busy, run, error] = useBusy();
-  const [editing, setEditing] = useState(false);
   const cost = a.cost!;
-  const [minutes, setMinutes] = useState(cost.minutes);
-  const canCorrect = a.role === "provider" && store.serverNow() < (a.endedAt ?? a.endsAt) + 24 * 3600_000;
-  const choices: number[] = [];
-  for (let m = Math.max(15, a.durationMin - 180); m <= Math.min(1440, a.durationMin + 360); m += 15) choices.push(m);
   return (
     <section className="card stack" data-testid="appt-cost">
       <strong>{t("cost.title")}</strong>
@@ -397,52 +418,14 @@ function CostSection({ a, reload }: { a: AppointmentView; reload: () => void }) 
           </strong>
         )}
       </div>
-      {canCorrect &&
-        (editing ? (
-          <div className="stack">
-            <label className="field">
-              <span className="with-info">
-                {t("cost.correct")}
-                <InfoTip text={t("cost.correctHint")} testId="cost-correct" />
-              </span>
-              <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} data-testid="cost-minutes">
-                {choices.map((m) => (
-                  <option key={m} value={m}>
-                    {durationText(m, t)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="row">
-              <button
-                type="button"
-                className="btn btn-primary grow"
-                disabled={busy || minutes === cost.minutes}
-                onClick={() =>
-                  void run(async () => {
-                    await store.api.setActualTime(a.id, minutes);
-                    setEditing(false);
-                    reload();
-                  })
-                }
-                data-testid="cost-save"
-              >
-                {t("cost.correctSave")}
-              </button>
-              <button type="button" className="btn btn-secondary grow" onClick={() => setEditing(false)}>
-                {t("common.cancel")}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button type="button" className="btn btn-link btn-small" onClick={() => setEditing(true)} data-testid="cost-correct">
-            {t("cost.correct")}
+      {/* 2.14 (FR-335): the provider's one-sided Correct the time (2.6) gave way to a proposal of a new length. */}
+      {onPropose && (
+        <span className="with-info">
+          <button type="button" className="btn btn-link btn-small" onClick={onPropose} data-testid="cost-propose">
+            {t("change.lengthEntry")}
           </button>
-        ))}
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
+          <InfoTip text={t("change.lengthHint")} testId="cost-propose" />
+        </span>
       )}
     </section>
   );
@@ -746,6 +729,338 @@ function RateBox({ a, onRated }: { a: AppointmentView; onRated: () => void }) {
       >
         {t("receipt.sendRating")}
       </button>
+    </section>
+  );
+}
+
+// ---------- 2.14: proposing a change (FR-330–335) ----------
+
+const DAY_MS = 24 * 3600_000;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * What the viewer may propose now (FR-330, FR-331): a move before the start, a new length while it
+ * runs or within 24 h after the end — the two parties only (not their families, V60); null = nothing.
+ */
+export function proposeKind(a: AppointmentView, now: number): ChangeKind | null {
+  if (a.role !== "client" && a.role !== "provider") return null;
+  if (a.status === "accepted" && now < a.startsAt) return "move";
+  if (a.status === "accepted" && now < a.endsAt) return "length";
+  if (a.status === "done" && now <= (a.endedAt ?? a.endsAt) + DAY_MS) return "length";
+  return null;
+}
+
+const samePlace = (p: Place | null, q: Place | null) => (p === null || q === null ? p === q : p.label === q.label && p.lat === q.lat && p.lng === q.lng);
+
+/** The pending change as a card above everything (FR-335): old → new, what each ride does, the note, the answer. */
+function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: ChangeView; busy: boolean; act: (fn: () => Promise<unknown>) => unknown; accept: () => unknown }) {
+  const { t, locale } = useI18n();
+  const store = useStore();
+  const now = store.serverNow();
+  const name = otherName(a, t);
+  const done = a.status === "done";
+  const was = (old: string) => <small className="muted"> ({t("change.was", { old })})</small>;
+  const timeChanged = c.startsAt !== a.startsAt || c.endsAt !== a.endsAt;
+  const counted = a.cost?.minutes ?? a.actualMin ?? a.durationMin;
+  const oldPrice = done ? (a.cost?.total ?? null) : a.price;
+  const legWord = (leg: Leg) => t(`appt.leg.${leg}` as MessageKey);
+  const rideTime = (ms: number | null) => (ms !== null ? timeText(ms, locale) : "—");
+  return (
+    <section className="card stack" data-testid="change-card">
+      <strong>{c.mine ? t("change.cardMine", { name }) : t("change.cardTheirs", { name })}</strong>
+      {!done && timeChanged && (
+        <p data-testid="change-when">
+          {t("change.when")}: {whenText(c.startsAt, now, locale, t)} · {rangeTimes(c.startsAt, c.endsAt, locale)}
+          {was(`${whenText(a.startsAt, now, locale, t)} · ${rangeTimes(a.startsAt, a.endsAt, locale)}`)}
+        </p>
+      )}
+      {!done && c.durationMin !== a.durationMin && (
+        <p data-testid="change-length">
+          {t("change.length")}: {durationText(c.durationMin, t)}
+          {was(durationText(a.durationMin, t))}
+        </p>
+      )}
+      {done && c.minutes !== null && (
+        <p data-testid="change-length">
+          {t("change.counted")}: {durationText(c.minutes, t)}
+          {was(durationText(counted, t))}
+        </p>
+      )}
+      {!samePlace(c.place, a.place) && (
+        <p data-testid="change-place-line">
+          <Icon name="place" className="ico-inline" /> {c.place ? c.place.label : t("appt.noPlace")}
+          {was(a.place ? a.place.label : t("appt.noPlace"))}
+        </p>
+      )}
+      {c.price !== null && (
+        <p data-testid="change-price">
+          {t(done ? "change.total" : "change.price")}: <Money amount={c.price} currency={a.currency} />
+          {oldPrice !== null && oldPrice !== c.price && was(money(oldPrice, a.currency, locale))}
+        </p>
+      )}
+      {c.rides.map((r) => (
+        <p key={r.rideId} className="ride-line small" data-testid={`change-ride-${r.leg}`}>
+          {r.effect === "cancel"
+            ? t("change.ride.cancel", { leg: legWord(r.leg) })
+            : r.effect === "move"
+              ? t("change.ride.move", { leg: legWord(r.leg), time: rideTime(r.to) })
+              : t("change.ride.keep", { leg: legWord(r.leg), time: rideTime(r.from ?? r.to) })}
+          {r.effect === "move" && r.pickup && ` · ${t("change.ride.pickup", { place: r.pickup.label })}`}
+          {r.effect === "move" && r.fare !== undefined && (
+            <>
+              {" · "}
+              <Money amount={r.fare} currency={a.currency} />
+            </>
+          )}
+        </p>
+      ))}
+      {c.note && (
+        <p className="note" data-testid="change-note-text">
+          „{c.note}”
+        </p>
+      )}
+      <small className="muted" data-testid="change-expires">
+        {t("change.expires", { when: whenText(c.expiresAt, now, locale, t) })}
+      </small>
+      {c.mine ? (
+        <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void act(() => store.api.withdrawChange(a.id))} data-testid="change-withdraw">
+          {t("change.withdraw")}
+        </button>
+      ) : (
+        <div className="row">
+          <button type="button" className="btn btn-primary grow" disabled={busy} onClick={() => void accept()} data-testid="change-accept">
+            {t("change.accept")}
+          </button>
+          <button type="button" className="btn btn-secondary grow" disabled={busy} onClick={() => void act(() => store.api.answerChange(a.id, "decline"))} data-testid="change-decline">
+            {t("change.decline")}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Where a new pickup's route goes: a there ride at the old place follows a moved place (FR-333). */
+function pickupTarget(leg: Leg, dropoff: Place | null | undefined, from: Place | null, to: Place | null): Place | null {
+  if (leg === "there" && dropoff && from && to && !samePlace(to, from) && haversineKm(dropoff, from) <= 0.15) return to;
+  return dropoff ?? from;
+}
+
+interface PickupDraft {
+  pickup: Place | null;
+  estKm: number | null;
+  estMin: number | null;
+  fareIsEstimate: boolean;
+}
+
+const NO_PICKUP: PickupDraft = { pickup: null, estKm: null, estMin: null, fareIsEstimate: true };
+
+/** A new pickup for one of my rides, with the phone's route estimate to its dropoff (as in RideFields). */
+function PickupField({ leg, to, value, onChange }: { leg: Leg; to: Place | null; value: PickupDraft; onChange: (d: PickupDraft) => void }) {
+  const { t } = useI18n();
+  const app = useApp();
+  const dep = app.deployment!;
+  const { pickup } = value;
+  const key = pickup && to ? `${pickup.lat},${pickup.lng}>${to.lat},${to.lng}` : "";
+  useEffect(() => {
+    if (!pickup || !to) return;
+    let live = true;
+    void getRoute(pickup, to, { timeoutMs: 2000 }).then((r) => {
+      if (live) onChange({ pickup, estKm: r.km, estMin: r.min, fareIsEstimate: r.estimate });
+    });
+    return () => {
+      live = false;
+    };
+    // Recompute only when the places change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const fare = value.estKm !== null && value.estMin !== null ? (app.profile?.fixedFare ?? computeFare(dep.tariff, value.estKm, value.estMin)) : null;
+  return (
+    <div className="stack">
+      <PlaceInput
+        label={t("change.pickup", { leg: t(`appt.leg.${leg}` as MessageKey) })}
+        value={pickup}
+        onChange={(p) => {
+          // The same place again (a double tap on Home) keeps its estimate: no new route would come.
+          if (p && pickup && p.lat === pickup.lat && p.lng === pickup.lng) {
+            if (p.label !== pickup.label) onChange({ ...value, pickup: p });
+            return;
+          }
+          onChange({ ...NO_PICKUP, pickup: p });
+        }}
+        home={app.profile?.home ?? null}
+        testId={`change-pickup-${leg}`}
+        optional
+      />
+      {pickup && fare !== null && (
+        <p className="muted small" data-testid={`change-pickup-${leg}-fare`}>
+          <Money amount={fare} currency={dep.tariff.currency} /> {value.fareIsEstimate && app.profile?.fixedFare == null ? `(${t("common.estimate")})` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Propose a change sheet (FR-330, FR-331): before the start the start, length, place, a new
+ * pickup for each of my rides and a note; while it runs or within 24 h after the end the new length.
+ * The new end and price (or total) show as previews; the server checks everything again.
+ */
+function ProposeChange({ a, onDone, reload }: { a: AppointmentView; onDone: () => void; reload: () => void }) {
+  const { t, locale } = useI18n();
+  const app = useApp();
+  const store = useStore();
+  const dep = app.deployment!;
+  const kind = proposeKind(a, store.serverNow()) ?? "length";
+  const done = a.status === "done";
+  const [busy, run, error] = useBusy();
+  const [entry, setEntry] = useState<CatalogItem | null>(null);
+  useEffect(() => {
+    let live = true;
+    store.api.catalog().then(
+      (all) => {
+        if (live) setEntry(all.find((x) => x.id === a.serviceId) ?? null);
+      },
+      () => {}
+    );
+    return () => {
+      live = false;
+    };
+  }, [store, a.serviceId]);
+  const [start, setStart] = useState(() => toLocalInput(a.startsAt));
+  const [duration, setDuration] = useState(a.durationMin);
+  const [place, setPlace] = useState<Place | null>(a.place);
+  const [pickups, setPickups] = useState<Partial<Record<Leg, PickupDraft>>>({});
+  const current = done ? (a.cost?.minutes ?? a.actualMin ?? a.durationMin) : a.durationMin;
+  const [minutes, setMinutes] = useState(current);
+  const [note, setNote] = useState("");
+
+  // The entry's lengths (as C2 offers them), the current one always among them.
+  const d = entry?.duration ?? { min: 15, max: 1440, step: 15 };
+  const durations: number[] = [];
+  for (let m = d.min; m <= d.max; m += Math.max(5, d.step)) durations.push(m);
+  if (!durations.includes(a.durationMin)) durations.push(a.durationMin);
+  durations.sort((x, y) => x - y);
+  // A new length in 15-minute steps around the booked one (as the 2.6 correction offered).
+  const lengths: number[] = [];
+  for (let m = Math.max(15, a.durationMin - 180); m <= Math.min(1440, a.durationMin + 360); m += 15) lengths.push(m);
+  if (!lengths.includes(current)) lengths.push(current);
+  lengths.sort((x, y) => x - y);
+
+  const myRides = a.rides.filter((r) => r.mine && (r.status === "pending" || r.status === "confirmed"));
+  const startMs = fromInput(start);
+  const chosen = (Object.entries(pickups) as [Leg, PickupDraft][]).filter(([, p]) => p.pickup);
+  const estimating = chosen.some(([, p]) => p.estKm === null || p.estMin === null);
+  const length = kind === "move" ? duration : minutes;
+  const newStart = kind === "move" ? startMs : a.startsAt;
+  const newEnd = newStart + length * 60_000;
+  const price = a.rate !== null ? round2((a.rate * length) / 60) : done ? (a.cost?.total ?? null) : a.price;
+  const same = kind === "move" ? startMs === a.startsAt && duration === a.durationMin && samePlace(place, a.place) && chosen.length === 0 : minutes === current;
+  const needsPlace = entry ? entry.needsPlace : !!a.place;
+  const blocked = busy || same || estimating || (kind === "move" && (!Number.isFinite(startMs) || (needsPlace && !place)));
+
+  const send = () =>
+    run(async () => {
+      try {
+        const input: ChangeInput =
+          kind === "move"
+            ? {
+                kind,
+                startsAt: startMs,
+                durationMin: duration,
+                place,
+                pickups: chosen.map(([leg, p]): ChangePickup => ({ leg, pickup: p.pickup!, estKm: p.estKm!, estMin: p.estMin!, fareIsEstimate: p.fareIsEstimate })),
+                note: note.trim()
+              }
+            : { kind, minutes, note: note.trim() };
+        await store.api.proposeChange(a.id, input);
+        onDone();
+      } finally {
+        reload();
+        await store.refresh().catch(() => {});
+      }
+    });
+
+  return (
+    <section className="card stack" data-testid="change-sheet">
+      <h3 className="with-info">
+        {t(kind === "move" ? "change.titleMove" : "change.titleLength")}
+        <InfoTip text={t(kind === "move" ? "change.hintMove" : "change.hintLength", { name: otherName(a, t) })} testId="change" />
+      </h3>
+      {kind === "move" ? (
+        <>
+          <label className="field">
+            <span>{t("change.start")}</span>
+            <input
+              type="datetime-local"
+              value={start}
+              min={toLocalInput(roundUp(Date.now() + (dep.booking.minLeadMin + 1) * 60_000, 15))}
+              max={toLocalInput(Date.now() + dep.booking.maxDays * 86_400_000)}
+              step={900}
+              onChange={(e) => setStart(e.target.value)}
+              data-testid="change-start"
+            />
+          </label>
+          <label className="field">
+            <span>{t("change.duration")}</span>
+            <select value={duration} onChange={(e) => setDuration(Number(e.target.value))} data-testid="change-duration">
+              {durations.map((m) => (
+                <option key={m} value={m}>
+                  {durationText(m, t)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {(a.place || needsPlace) && <PlaceInput label={t("change.place")} value={place} onChange={setPlace} home={app.profile?.home ?? null} testId="change-place" optional={!needsPlace} />}
+          {myRides.map((r) => (
+            <PickupField key={r.rideId} leg={r.leg} to={pickupTarget(r.leg, r.dropoff, a.place, place)} value={pickups[r.leg] ?? NO_PICKUP} onChange={(p) => setPickups((x) => ({ ...x, [r.leg]: p }))} />
+          ))}
+        </>
+      ) : (
+        <label className="field">
+          <span>{t("change.minutes")}</span>
+          <select value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} data-testid="change-minutes">
+            {lengths.map((m) => (
+              <option key={m} value={m}>
+                {durationText(m, t)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <label className="field">
+        <span>{t("change.note")}</span>
+        <textarea value={note} maxLength={200} rows={2} onChange={(e) => setNote(e.target.value)} data-testid="change-note" />
+      </label>
+      {Number.isFinite(newEnd) && (
+        <p className="muted small" data-testid="change-preview">
+          {!done && t("change.ends", { time: timeText(newEnd, locale) })}
+          {price !== null && (
+            <>
+              {!done && " · "}
+              {t(done ? "change.total" : "change.price")}: <Money amount={price} currency={a.currency} />
+            </>
+          )}
+        </p>
+      )}
+      {same && (
+        <p className="hint" data-testid="change-same">
+          {t("change.same")}
+        </p>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="row">
+        <button type="button" className="btn btn-primary grow" disabled={blocked} onClick={() => void send()} data-testid="change-send">
+          {t("change.send")}
+        </button>
+        <button type="button" className="btn btn-secondary" onClick={onDone}>
+          {t("common.cancel")}
+        </button>
+      </div>
     </section>
   );
 }
