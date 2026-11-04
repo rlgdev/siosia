@@ -1174,3 +1174,41 @@ past.
   that counts (an agreed correction), when the service allows it, and the preview shows the old
   length and total next to the new. The app offers all this only once the database announces
   `pastMoves` in `siosia_config.features`; before that it keeps the 2.14 rules (V89).
+
+## Amendment 2.14.2 (2026-11-04): a ride under way warns instead of blocking; one Payment section
+
+Operator request of 2026-11-04: during an appointment a change could not be sent because one of its
+rides was already on its way (`ride_started`) — that should be a warning, not a blocker. And on a
+finished appointment the cost, proposing another time frame and the tip belong together in one
+**Payment** section.
+
+- **FR-346 — A ride under way never blocks a change.** An attached ride already handed to drivers
+  (`requested`, `accepted`, `arrived`) or being driven (`in_progress`) that the change would move or
+  re-place stays exactly as booked: not moved, not cancelled, its driver not told — and the change
+  goes through. Such a ride shows with effect `underway` (V97) in the proposal sheet, on the change
+  card for both parties, and is judged again at acceptance: a ride dispatched between proposing and
+  accepting is then left as booked (never a refusal). The warning reads "Ride {leg} is already on its
+  way — it stays as booked; agree any change with the driver (chat)". Only a new pickup asked for a
+  ride that is already under way is refused (`ride_started`; the sheet offers pickups only for rides
+  still booked ahead) — when proposing only: at acceptance a pickup whose ride has since been
+  dispatched, driven, expired or cancelled is simply not applied. Scheduled rides keep the 2.14 rules
+  (follow, or cancel when too soon) — a booking held past its window while its rider or driver is
+  still busy is still scheduled. The sheet takes "under way" from the server (each attached ride's
+  `underway`), never from the clock.
+- **FR-347 — Payment.** On a finished (`done`) appointment — however it is opened (History, the
+  bell, a link) — C3 shows one card **Payment** for the two parties and their families (family:
+  read-only), in this order:
+  1. what counts: the time counted (and "booked: …" when it differs), the rate with its source or the
+     set amount, the total (or "no price agreed");
+  2. a pending change of this appointment, here instead of above the details: old → new time frame
+     and total, Accept / Decline (the other party) or Withdraw (the proposer);
+  3. the tip: given (amount, by whom — "You left a tip" only to the one who gave it), or for the
+     client side within 7 days the tip choices;
+  4. "Total with tip" when there is a tip;
+  5. **Propose another time frame** while a change may be proposed (FR-342/FR-339 kinds), opening
+     the change sheet inside the section.
+  Before it is done nothing moves: the price in the header, the change card on top, *Propose a
+  change* among the actions. Without the `changes` feature (V89) item 5 is the 2.6 *Correct the time*
+  for the provider.
+- **FR-348 — History row.** H1's row of a done appointment shows the total with the tip ("120.00 +
+  20.00 tip") next to the change chip.

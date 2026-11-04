@@ -1,7 +1,8 @@
 // Component tests of 2.14 "proposing a change" (FR-334–339, V93): C3 Propose a change (a move with
 // my ride's new pickup, a new length of a live or done appointment), the pending card (Accept /
 // Decline for the other party, Withdraw for the proposer), the change:<id> panel arg, P1 To answer
-// with the change chip and H1's chip — EN and PL, with a fake backend.
+// with the change chip and H1's chip — EN and PL, with a fake backend. 2.14.2 (FR-346–348, V97–V98):
+// a ride under way as a warning (sheet and card), the Payment card of a done appointment, H1's tip.
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -156,7 +157,7 @@ const at = (h: number, m = 0) => new Date(2026, 10, 3, h, m).getTime();
 describe("C3 Propose a change — a move (FR-334, FR-339)", () => {
   it("sends the new start, length, place and my ride's new pickup with its route estimate", async () => {
     const a = appt({
-      rides: [{ rideId: "r1", leg: "there", passenger: "client", mine: true, scheduledFor: Date.now() + 25 * 3600_000, status: "confirmed", driver: null, pickup: PARK, dropoff: KIDS, fare: 20 }]
+      rides: [{ rideId: "r1", leg: "there", passenger: "client", mine: true, scheduledFor: Date.now() + 25 * 3600_000, status: "confirmed", underway: false, driver: null, pickup: PARK, dropoff: KIDS, fare: 20 }]
     });
     const proposeChange = vi.fn(async (_id: string, _i: ChangeInput) => a);
     setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "a1" });
@@ -289,7 +290,7 @@ describe("C3 a new length (FR-335)", () => {
     await waitFor(() => expect(proposeChange).toHaveBeenCalledWith("a1", { kind: "length", minutes: 240, note: "" }));
   });
 
-  it("a done one: Correct the time gave way to proposing another length (either party), in Polish", async () => {
+  it("a done one: Correct the time gave way to proposing another time frame in Payment (either party), in Polish", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
     const a = appt({
@@ -307,7 +308,11 @@ describe("C3 a new length (FR-335)", () => {
     setup("pl", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "a1" });
     expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
     expect(screen.queryByTestId("cost-correct")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByTestId("cost-propose"));
+    // 2.14.2 (FR-347): Propose another time frame in the Payment card; the sheet opens inside it
+    expect(screen.getByTestId("payment-propose")).toHaveTextContent("Zaproponuj inne godziny");
+    await userEvent.click(screen.getByTestId("payment-propose"));
+    expect(within(screen.getByTestId("appt-payment")).getByTestId("change-sheet")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("change-mode-length"));
     expect(screen.getByTestId("change-sheet")).toHaveTextContent("Zaproponuj nową długość");
     await userEvent.selectOptions(screen.getByTestId("change-minutes"), "150");
     expect(screen.getByTestId("change-preview")).toHaveTextContent(/Nowa kwota: 100,00/);
@@ -333,7 +338,9 @@ describe("C3 a new length (FR-335)", () => {
     const setActualTime = vi.fn(async () => done);
     const { unmount } = setup("en", <AppointmentPanel />, { getAppointment: async () => done, setActualTime }, { panel: "appointment", panelArg: "a1", deployment: old });
     expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
-    expect(screen.queryByTestId("cost-propose")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
+    // 2.14.2 (FR-347): Correct the time stays inside the Payment card
+    expect(within(screen.getByTestId("appt-payment")).getByTestId("cost-correct")).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("cost-correct"));
     await userEvent.selectOptions(screen.getByTestId("cost-minutes"), "150");
     await userEvent.click(screen.getByTestId("cost-save"));
@@ -407,7 +414,7 @@ describe("P1 To answer and H1 (FR-339)", () => {
 // B15 (2026-11-03, the 2.14 pre-release review): the sheet and the answer, each finding pinned.
 describe("2.14 review fixes (B15)", () => {
   const myThere = (a: AppointmentView) =>
-    [{ rideId: "r1", leg: "there" as const, passenger: "client" as const, mine: true, scheduledFor: a.startsAt - 1800_000, status: "confirmed" as const, driver: null, pickup: PARK, dropoff: KIDS, fare: 20 }];
+    [{ rideId: "r1", leg: "there" as const, passenger: "client" as const, mine: true, scheduledFor: a.startsAt - 1800_000, status: "confirmed" as const, underway: false, driver: null, pickup: PARK, dropoff: KIDS, fare: 20 }];
 
   it("the same pickup chosen twice keeps its estimate (Send stays on); a moved place re-routes the there ride to it", async () => {
     const a = appt();
@@ -477,8 +484,10 @@ describe("2.14.1 moving into the past (FR-345)", () => {
     const a = doneAt();
     const proposeChange = vi.fn(async (_id: string, _i: ChangeInput) => a);
     setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "a1" });
-    await userEvent.click(await screen.findByTestId("appt-change"));
-    const sheet = screen.getByTestId("change-sheet");
+    // 2.14.2 (FR-347): on a done one, in the Payment card (not among the actions)
+    await userEvent.click(await screen.findByTestId("payment-propose"));
+    expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+    const sheet = within(screen.getByTestId("appt-payment")).getByTestId("change-sheet");
     expect(screen.getByTestId("change-mode-move")).toHaveTextContent("Time and place");
     expect(screen.getByTestId("change-mode-length")).toHaveTextContent("Length only");
     expect(screen.getByTestId("change-mode-move")).toHaveAttribute("aria-pressed", "true");
@@ -506,16 +515,18 @@ describe("2.14.1 moving into the past (FR-345)", () => {
     vi.setSystemTime(new Date(2026, 10, 6, 12, 0));
     const a = doneAt();
     const first = setup("pl", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
-    await userEvent.click(await screen.findByTestId("appt-change"));
+    await userEvent.click(await screen.findByTestId("payment-propose"));
     expect(screen.getByTestId("change-sheet")).toHaveTextContent("Zaproponuj zmianę");
     expect(screen.queryByTestId("change-mode-length")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("cost-propose")).not.toBeInTheDocument();
+    // the button hides while its sheet is open
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
     expect(screen.getByTestId("change-start")).toBeInTheDocument();
     first.unmount();
     vi.setSystemTime(new Date(2026, 11, 4, 12, 0));
     setup("pl", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
     expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
     expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
   });
 
   it("a future appointment may move into the past; a start ahead keeps the lead; 30 days back at most — in Polish", async () => {
@@ -566,8 +577,8 @@ describe("2.14.1 moving into the past (FR-345)", () => {
     vi.setSystemTime(new Date(2026, 10, 3, 15, 0));
     const a = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17) });
     a.rides = [
-      { rideId: "r1", leg: "there", passenger: "client", mine: true, scheduledFor: at(13, 30), status: "confirmed", driver: null, pickup: PARK, dropoff: KIDS, fare: 20 },
-      { rideId: "r2", leg: "back", passenger: "client", mine: true, scheduledFor: at(17, 5), status: "confirmed", driver: null, pickup: KIDS, dropoff: PARK, fare: 20 }
+      { rideId: "r1", leg: "there", passenger: "client", mine: true, scheduledFor: at(13, 30), status: "confirmed", underway: false, driver: null, pickup: PARK, dropoff: KIDS, fare: 20 },
+      { rideId: "r2", leg: "back", passenger: "client", mine: true, scheduledFor: at(17, 5), status: "confirmed", underway: false, driver: null, pickup: KIDS, dropoff: PARK, fare: 20 }
     ] as AppointmentView["rides"];
     setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "change:a1" });
     await screen.findByTestId("change-sheet");
@@ -652,6 +663,7 @@ describe("2.14.1 on a database still at 2.14 (no 'pastMoves', V89)", () => {
     const second = setup("en", <AppointmentPanel />, { getAppointment: async () => done }, { panel: "appointment", panelArg: "a1", deployment: old });
     expect(await screen.findByTestId("appt-cost")).toBeInTheDocument();
     expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
     second.unmount();
     vi.setSystemTime(new Date(2026, 10, 3, 10, 0));
     const planned = appt({ startsAt: at(18), durationMin: 120, endsAt: at(20) });
@@ -666,5 +678,254 @@ describe("2.14.1 on a database still at 2.14 (no 'pastMoves', V89)", () => {
     await userEvent.click(screen.getByTestId("change-send"));
     // the 2.14 server's bad_time is not described with the 2.14.1 rules
     expect(await screen.findByRole("alert")).not.toHaveTextContent(en["change.badTime"]);
+  });
+});
+
+// 2.14.2 (FR-346–348, V97–V98): a ride already on its way warns instead of blocking; one Payment card.
+describe("2.14.2 a ride under way is a warning (FR-346, V97)", () => {
+  it("the sheet warns about my ride back already on its way when a live session gets longer; Send stays on, no new pickup for it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 16, 50));
+    const a = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17), rate: 40, price: 120 });
+    // the ride back at 17:05 is handed to drivers (requested, no driver yet): the server says underway
+    a.rides = [{ rideId: "r2", leg: "back", passenger: "client", mine: true, scheduledFor: at(17, 5), status: "pending", underway: true, driver: null, pickup: KIDS, dropoff: PARK, fare: 20 }] as AppointmentView["rides"];
+    const proposeChange = vi.fn(async () => a);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, proposeChange }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    // move mode, nothing changed yet: no warning, and no pickup for a ride already on its way
+    expect(screen.queryByTestId("change-underway")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("change-pickup-back")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("change-mode-length"));
+    await userEvent.selectOptions(screen.getByTestId("change-minutes"), "240");
+    expect(screen.getByTestId("change-underway-back")).toHaveTextContent("Ride back is already on its way — it stays as booked; agree any change with the driver (chat)");
+    expect(screen.getByTestId("change-underway")).toHaveTextContent(en["change.underwayHint"]);
+    expect(screen.getByTestId("change-send")).toBeEnabled();
+    await userEvent.click(screen.getByTestId("change-send"));
+    await waitFor(() => expect(proposeChange).toHaveBeenCalledWith("a1", { kind: "length", minutes: 240, note: "" }));
+  });
+
+  it("a later start warns about the other party's ride there whose driver has set off — in Polish; a ride booked ahead does not", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 13, 40));
+    const a = appt({ role: "client", startsAt: at(14), durationMin: 180, endsAt: at(17) });
+    a.rides = [
+      // Siosia's ride there at 13:45 with its driver: the driver has set off (accepted) — underway
+      { rideId: "r1", leg: "there", passenger: "provider", mine: false, scheduledFor: at(13, 45), status: "confirmed", underway: true, driver: { nickname: "Adam" } },
+      // my ride back at 17:05 is still booked ahead
+      { rideId: "r2", leg: "back", passenger: "client", mine: true, scheduledFor: at(17, 5), status: "pending", underway: false, driver: null, pickup: KIDS, dropoff: PARK, fare: 20 }
+    ] as AppointmentView["rides"];
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    expect(screen.queryByTestId("change-underway")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("change-start"), { target: { value: toLocalInput(at(15)) } });
+    expect(screen.getByTestId("change-underway-there")).toHaveTextContent("Przejazd tam już jedzie — zostaje tak, jak był zamówiony; ewentualną zmianę uzgodnij z kierowcą (czat)");
+    expect(screen.queryByTestId("change-underway-back")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-pickup-back")).toBeInTheDocument();
+    expect(screen.getByTestId("change-send")).toBeEnabled();
+  });
+
+  it("a booking held past its window (its driver still on another trip) is not under way: no warning, a new pickup is offered", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 16, 50));
+    const a = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17), rate: 40, price: 120 });
+    // a claimed booking at 17:05, past its driver's 30 min lead but still scheduled on the server
+    a.rides = [
+      { rideId: "r2", leg: "back", passenger: "client", mine: true, scheduledFor: at(17, 5), status: "confirmed", underway: false, driver: { nickname: "Adam" }, pickup: KIDS, dropoff: PARK, fare: 20 }
+    ] as AppointmentView["rides"];
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "change:a1" });
+    await screen.findByTestId("change-sheet");
+    expect(screen.getByTestId("change-pickup-back")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("change-mode-length"));
+    await userEvent.selectOptions(screen.getByTestId("change-minutes"), "240");
+    expect(screen.queryByTestId("change-underway")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("change-underway-back")).not.toBeInTheDocument();
+  });
+
+  it("the card shows the ride under way as a warning to the proposer and to the other party (EN, PL)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 16, 50));
+    const mine = appt({ startsAt: at(14), durationMin: 180, endsAt: at(17), rate: 40, price: 120 });
+    const proposal = change(mine, {
+      kind: "length",
+      by: "client",
+      mine: true,
+      startsAt: at(14),
+      durationMin: 240,
+      endsAt: at(18),
+      price: 160,
+      rides: [{ rideId: "r2", leg: "back", passenger: "client", mine: true, from: at(17, 5), to: at(17, 5), effect: "underway" }]
+    });
+    mine.change = proposal;
+    const first = setup("en", <AppointmentPanel />, { getAppointment: async () => mine }, { panel: "appointment", panelArg: "a1" });
+    const card = await screen.findByTestId("change-card");
+    expect(within(card).getByTestId("change-ride-back")).toHaveTextContent("Ride back is already on its way — it stays as booked");
+    expect(within(card).getByTestId("change-ride-back")).toHaveClass("notice-warn");
+    first.unmount();
+    const theirs = appt({ role: "provider", startsAt: at(14), durationMin: 180, endsAt: at(17), rate: 40, price: 120 });
+    theirs.change = { ...proposal, mine: false, rides: [{ ...proposal.rides[0], mine: false }] };
+    const answerChange = vi.fn(async () => theirs);
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => theirs, answerChange }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("change-ride-back")).toHaveTextContent("Przejazd powrotny już jedzie — zostaje tak, jak był zamówiony");
+    // a warning, not a blocker: Accept is there
+    await userEvent.click(screen.getByTestId("change-accept"));
+    await waitFor(() => expect(answerChange).toHaveBeenCalledWith("a1", "accept"));
+  });
+});
+
+describe("2.14.2 Payment on a done appointment (FR-347, V98)", () => {
+  const COST = { minutes: 150, rate: 40, total: 100, currency: "PLN", source: "catalog" as const, corrected: true };
+  const doneAt = (over: Partial<AppointmentView> = {}) =>
+    appt({ status: "done", startsAt: at(14), durationMin: 180, endsAt: at(17), endedAt: at(17), rate: 40, price: 120, actualMin: 150, cost: COST, ...over });
+  const follows = (x: HTMLElement, y: HTMLElement) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  it("one card in order: what counts, the pending change, the tip given, the total with the tip, Propose another time frame", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const a = doneAt({ tip: { amount: 20, by: "Toria", at: at(17, 30), mine: true } });
+    a.change = change(a, { kind: "length", by: "provider", startsAt: a.startsAt, durationMin: 180, minutes: 180, price: 120, expiresAt: at(17) + 86_400_000 });
+    const answerChange = vi.fn(async () => a);
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a, answerChange }, { panel: "appointment", panelArg: "a1" });
+    const pay = await screen.findByTestId("appt-payment");
+    expect(pay).toHaveTextContent("Payment");
+    // no separate cost or tip cards, no change card on top, no Propose a change among the actions
+    expect(screen.getAllByTestId("appt-cost")).toHaveLength(1);
+    expect(screen.getAllByTestId("change-card")).toHaveLength(1);
+    expect(screen.queryByTestId("appt-change")).not.toBeInTheDocument();
+    const p = within(pay);
+    expect(p.getByTestId("cost-time")).toHaveTextContent("2 h 30 min");
+    expect(p.getByTestId("cost-corrected")).toHaveTextContent("booked: 3 h");
+    expect(p.getByTestId("cost-rate")).toHaveTextContent("PLN 40.00/h · price list");
+    expect(p.getByTestId("cost-total")).toHaveTextContent("PLN 100.00");
+    expect(p.getByTestId("change-card")).toHaveTextContent("Siosia proposes a change");
+    expect(p.getByTestId("change-length")).toHaveTextContent("3 h");
+    expect(p.getByTestId("appt-tip")).toHaveTextContent("You left a tip: PLN 20.00");
+    expect(p.getByTestId("payment-total-tip")).toHaveTextContent("Total with tipPLN 120.00");
+    expect(p.getByTestId("payment-propose")).toHaveTextContent("Propose another time frame");
+    expect(p.getByTestId("payment-propose-info")).toBeInTheDocument();
+    const order = ["cost-total", "change-card", "appt-tip", "payment-total-tip", "payment-propose"].map((id) => p.getByTestId(id));
+    for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true);
+    // the change is answered right there
+    await userEvent.click(p.getByTestId("change-accept"));
+    await waitFor(() => expect(answerChange).toHaveBeenCalledWith("a1", "accept"));
+    // a counter-proposal opens the sheet inside the card, at the end
+    await userEvent.click(p.getByTestId("payment-propose"));
+    const sheet = p.getByTestId("change-sheet");
+    expect(follows(p.getByTestId("payment-total-tip"), sheet)).toBe(true);
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
+  });
+
+  it("the client side within 7 days gets the tip choices; no total with tip before one — in Polish", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const a = doneAt();
+    const tipAppointment = vi.fn(async () => a);
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => a, tipAppointment }, { panel: "appointment", panelArg: "a1" });
+    const pay = await screen.findByTestId("appt-payment");
+    expect(pay).toHaveTextContent("Płatność");
+    const p = within(pay);
+    expect(p.getByTestId("cost-total")).toHaveTextContent("100,00 zł");
+    expect(p.queryByTestId("payment-total-tip")).not.toBeInTheDocument();
+    expect(p.getByTestId("payment-propose")).toHaveTextContent("Zaproponuj inne godziny");
+    const tip = p.getByTestId("appt-tip");
+    await userEvent.click(within(tip).getAllByTestId("tip-chip")[1]);
+    await userEvent.click(within(tip).getByTestId("tip-send"));
+    await waitFor(() => expect(tipAppointment).toHaveBeenCalledWith("a1", 20));
+    // after 7 days the choices are gone
+    cleanup();
+    vi.setSystemTime(new Date(2026, 10, 11, 18, 0));
+    setup("pl", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    await screen.findByTestId("appt-payment");
+    expect(screen.queryByTestId("appt-tip")).not.toBeInTheDocument();
+    // still movable (30 days), the length no longer
+    await userEvent.click(screen.getByTestId("payment-propose"));
+    expect(screen.queryByTestId("change-mode-length")).not.toBeInTheDocument();
+  });
+
+  it("the provider sees who tipped and the total with it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    setup("en", <AppointmentPanel />, { getAppointment: async () => doneAt({ role: "provider", tip: { amount: 20, by: "Roman", at: at(17, 30), mine: false } }) }, { panel: "appointment", panelArg: "a1" });
+    const p = within(await screen.findByTestId("appt-payment"));
+    expect(p.getByTestId("appt-tip")).toHaveTextContent("Roman left a tip: PLN 20.00");
+    expect(p.getByTestId("payment-total-tip")).toHaveTextContent("PLN 120.00");
+    expect(p.queryByTestId("tip-chip")).not.toBeInTheDocument();
+  });
+
+  it("by whom (FR-347): the client's family is told the client tipped, the client is told a family member did", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const kin = doneAt({ role: "family", family: { side: "client", member: "Toria" }, tip: { amount: 20, by: "Toria", at: at(17, 30), mine: false } });
+    const first = setup("en", <AppointmentPanel />, { getAppointment: async () => kin }, { panel: "appointment", panelArg: "a1" });
+    let p = within(await screen.findByTestId("appt-payment"));
+    expect(p.getByTestId("appt-tip")).toHaveTextContent("Toria left a tip: PLN 20.00");
+    expect(p.queryByTestId("tip-given")).not.toBeInTheDocument();
+    first.unmount();
+    const client = doneAt({ tip: { amount: 20, by: "Anna", at: at(17, 30), mine: false } });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => client }, { panel: "appointment", panelArg: "a1" });
+    p = within(await screen.findByTestId("appt-payment"));
+    expect(p.getByTestId("appt-tip")).toHaveTextContent("Anna left a tip: PLN 20.00");
+    expect(p.queryByTestId("tip-given")).not.toBeInTheDocument();
+  });
+
+  it("the family sees the Payment read-only: no propose, no answer, no correction", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 3, 18, 0));
+    const fam = doneAt({ role: "family", family: { side: "provider", member: "Siosia" }, tip: { amount: 20, by: "Toria", at: at(17, 30), mine: false } });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => fam }, { panel: "appointment", panelArg: "a1" });
+    const p = within(await screen.findByTestId("appt-payment"));
+    expect(p.getByTestId("cost-total")).toHaveTextContent("PLN 100.00");
+    expect(p.getByTestId("appt-tip")).toHaveTextContent("Toria left a tip: PLN 20.00");
+    expect(p.getByTestId("payment-total-tip")).toHaveTextContent("PLN 120.00");
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cost-correct")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("change-accept")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tip-chip")).not.toBeInTheDocument();
+  });
+
+  it("before it is done nothing moves: the price in the header, the change card on top, Propose a change among the actions", async () => {
+    const a = appt({ price: 120, rate: 40 });
+    a.change = change(a, { by: "provider" });
+    setup("en", <AppointmentPanel />, { getAppointment: async () => a }, { panel: "appointment", panelArg: "a1" });
+    expect(await screen.findByTestId("appt-price")).toHaveTextContent("PLN 120.00");
+    expect(screen.queryByTestId("appt-payment")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-card")).toHaveClass("card");
+    expect(screen.getByTestId("appt-change")).toBeInTheDocument();
+    expect(screen.queryByTestId("payment-propose")).not.toBeInTheDocument();
+  });
+
+  it("H1: a done row shows the total with the tip (FR-348), EN and PL", async () => {
+    const now = Date.now();
+    const done = appt({
+      status: "done",
+      startsAt: now - 5 * 3600_000,
+      durationMin: 180,
+      endsAt: now - 2 * 3600_000,
+      endedAt: now - 2 * 3600_000,
+      cost: { minutes: 180, rate: 40, total: 120, currency: "PLN", source: "catalog", corrected: false },
+      tip: { amount: 20, by: "Toria", at: now - 3600_000, mine: true }
+    });
+    const plain = appt({
+      id: "a2",
+      status: "done",
+      startsAt: now - 30 * 3600_000,
+      durationMin: 60,
+      endsAt: now - 29 * 3600_000,
+      cost: { minutes: 60, rate: 40, total: 40, currency: "PLN", source: "catalog", corrected: false }
+    });
+    const backend = {
+      timeline: async () => [
+        { kind: "appointment" as const, at: done.startsAt, appointment: done },
+        { kind: "appointment" as const, at: plain.startsAt, appointment: plain }
+      ],
+      earnings: async () => ({ todayTotal: 0, todayCount: 0, monthTotal: 0, monthCount: 0, currency: "PLN" })
+    };
+    const first = setup("en", <HistoryScreen />, backend);
+    const rows = await screen.findAllByTestId("history-appointment");
+    expect(within(rows[0]).getByTestId("history-cost")).toHaveTextContent("PLN 120.00");
+    expect(within(rows[0]).getByTestId("history-tip")).toHaveTextContent("+ PLN 20.00 tip");
+    expect(within(rows[1]).queryByTestId("history-tip")).not.toBeInTheDocument();
+    first.unmount();
+    setup("pl", <HistoryScreen />, backend);
+    expect(await screen.findByTestId("history-tip")).toHaveTextContent("+ 20,00 zł napiwku");
   });
 });

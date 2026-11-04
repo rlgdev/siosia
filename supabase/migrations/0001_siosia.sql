@@ -1259,6 +1259,8 @@ returns jsonb language sql stable security definer set search_path = public as $
              'mine', x.rider_id = p_viewer,
              'scheduledFor', siosia_ms(x.scheduled_for),
              'status', siosia_ride_summary(x.status, x.driver_id, x.cancelled_by, x.cancel_reason),
+             -- 2.14.2 (FR-346, V97): handed to drivers or being driven — a change leaves it as booked
+             'underway', x.status in ('requested', 'accepted', 'arrived', 'in_progress'),
              'driver', case when x.driver_id is null then null else jsonb_build_object(
                          'nickname', coalesce((select nickname from profiles where user_id = x.driver_id), 'Deleted user'),
                          'icon', (siosia_master_of(x.driver_id)).icon) end)
@@ -1341,7 +1343,8 @@ $$;
 
 -- 2.14 (FR-339, V93): the pending change as one of the two parties sees it (ChangeView), null when
 -- there is none. What each ride would do is the outcome at now, by the rules of acceptance — best
--- effort: a ride that would block it (ride_started) shows as kept, and the view never fails.
+-- effort: a ride whose new places would not pass shows as kept, one already on its way as underway
+-- (2.14.2, FR-346), and the view never fails.
 create or replace function public.siosia_change_json(a public.appointments, p_viewer uuid)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
 declare ch appointment_changes; v_eff jsonb; v_len int; v_start timestamptz; v_rides jsonb := '[]'::jsonb; e jsonb;
@@ -1429,7 +1432,9 @@ returns jsonb language sql stable security definer set search_path = public as $
     -- 2.9 (FR-314): the tip — the parties and their families see it.
     'tip', case when v.sees and a.tip is not null then jsonb_build_object(
              'amount', a.tip, 'by', coalesce((select p.nickname from profiles p where p.user_id = a.tip_by), ''),
-             'at', siosia_ms(coalesce(a.tip_at, a.ended_at, a.starts_at))) end,
+             'at', siosia_ms(coalesce(a.tip_at, a.ended_at, a.starts_at)),
+             -- 2.14.2: the viewer gave it (a family member may tip for the client)
+             'mine', coalesce(a.tip_by = p_viewer, false)) end,
     'family', case when v.role = 'family' then jsonb_build_object(
                 'side', case when siosia_same_family(p_viewer, a.client_id) then 'client' else 'provider' end,
                 'member', coalesce((select p.nickname from profiles p
@@ -6573,16 +6578,27 @@ begin
     end if;
     if char_length(coalesce(ch.note, '')) > 200 then return 'bad_input'; end if;
     -- A new pickup only for a live ride of mine on that leg (FR-334): someone else's → forbidden.
+    -- 2.14.2 (FR-346): a ride being driven is live too (at accepting it is left as booked: underway).
     for p in select value from jsonb_array_elements(coalesce(ch.pickups, '[]'::jsonb)) loop
       v_leg := case when jsonb_typeof(p) = 'object' then p ->> 'leg' end;
       if v_leg is null or v_leg not in ('there', 'back') then return 'bad_leg'; end if;
-      -- 2.14.1 (FR-342): a done appointment's move touches no rides, so no pickups for it
-      if a.status = 'done' then return 'bad_leg'; end if;
-      if not exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg and r.rider_id = ch.proposed_by
-                       and r.status in ('scheduled', 'requested', 'accepted', 'arrived')) then
-        return case when exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg
-                                   and r.status in ('scheduled', 'requested', 'accepted', 'arrived'))
-                    then 'forbidden' else 'bad_leg' end;
+      -- When proposing (no lapse moment yet) only. At accepting, a ride of mine dispatched, driven,
+      -- expired or cancelled since then (or the appointment done meanwhile) is never a refusal: the
+      -- pickup applies to a live ride of mine booked ahead only, otherwise it is left as it is.
+      if ch.expires_at is null then
+        -- 2.14.1 (FR-342): a done appointment's move touches no rides, so no pickups for it
+        if a.status = 'done' then return 'bad_leg'; end if;
+        if not exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg and r.rider_id = ch.proposed_by
+                         and r.status in ('scheduled', 'requested', 'accepted', 'arrived', 'in_progress')) then
+          return case when exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg
+                                     and r.status in ('scheduled', 'requested', 'accepted', 'arrived', 'in_progress'))
+                      then 'forbidden' else 'bad_leg' end;
+        end if;
+        -- 2.14.2 (FR-346, V97): a new pickup only for a ride of mine still booked ahead
+        if not exists (select 1 from rides r where r.appointment_id = a.id and r.leg = v_leg
+                         and r.rider_id = ch.proposed_by and r.status = 'scheduled') then
+          return 'ride_started';
+        end if;
       end if;
       if v_leg = any (v_legs) or jsonb_typeof(p -> 'pickup') is distinct from 'object' or not siosia_valid_place(p -> 'pickup')
          or jsonb_typeof(p -> 'estKm') is distinct from 'number' or jsonb_typeof(p -> 'estMin') is distinct from 'number'
@@ -6617,12 +6633,14 @@ end $$;
 
 -- 2.14 (FR-337, V92): what each attached ride does if the change is accepted now — one list for
 -- the preview and for the acceptance: [{rideId, leg, rider, driver, status, from, to, effect
--- move|cancel|keep, moved (places), pickup, dropoff, estKm, estMin, fare, fareIsEstimate}].
+-- move|cancel|keep|underway, moved (places), pickup, dropoff, estKm, estMin, fare, fareIsEstimate}].
 -- A there ride moves by the start's shift, a back ride by the end's (never before the new start);
 -- the proposer's pickup applies to their ride; with the place moved, a ride at the old place (≤ 150 m:
--- there dropoff, back pickup) follows it. A ride already dispatched that would change → ride_started;
--- one that would start within the booking lead → cancel. Changed places → distance and fare by the
--- booking rules. p_strict = false (the view): never an error, a blocking ride shows as kept.
+-- there dropoff, back pickup) follows it. 2.14.2 (FR-346, V97): a ride already dispatched or being
+-- driven that would change → underway: left as booked (not moved, not cancelled, its driver not told),
+-- never a refusal. One that would start within the booking lead → cancel. Changed places → distance
+-- and fare by the booking rules. p_strict = false (the view): never an error, a ride whose new places
+-- would not pass shows as kept.
 create or replace function public.siosia_change_effects(a public.appointments, ch public.appointment_changes, p_strict boolean)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
 declare
@@ -6643,7 +6661,7 @@ begin
   v_de := v_ne - (a.starts_at + make_interval(mins => a.duration_min));
   v_follow := ch.kind = 'move' and a.place_lat is not null and ch.place is not null
               and ch.place is distinct from siosia_appt_place(a);
-  for r in select * from rides x where x.appointment_id = a.id and x.status in ('scheduled', 'requested', 'accepted', 'arrived')
+  for r in select * from rides x where x.appointment_id = a.id and x.status in ('scheduled', 'requested', 'accepted', 'arrived', 'in_progress')
             order by x.scheduled_for, x.leg loop
     v_t := case when r.leg = 'there' then r.scheduled_for + v_ds else greatest(v_ns, r.scheduled_for + v_de) end;
     v_opu := jsonb_build_object('lat', r.pickup_lat, 'lng', r.pickup_lng, 'label', r.pickup_label);
@@ -6666,8 +6684,8 @@ begin
     if v_t = r.scheduled_for and not v_moved then
       v_effect := 'keep';
     elsif r.status <> 'scheduled' then
-      if p_strict then return siosia_err('ride_started'); end if;
-      v_effect := 'keep'; v_t := r.scheduled_for; v_pu := v_opu; v_do := v_odo; v_moved := false;
+      -- 2.14.2 (FR-346, V97): already on its way — stays as booked, a warning; the change goes through
+      v_effect := 'underway'; v_t := r.scheduled_for; v_pu := v_opu; v_do := v_odo; v_moved := false;
     elsif v_t < now() + make_interval(mins => c.booking_min_lead_min) then
       v_effect := 'cancel';
     else
@@ -6719,6 +6737,7 @@ end $$;
 -- final times fit their other bookings (the claim rule) and their other accepted appointments
 -- (booking_moved); otherwise the ride is offered again (booking_moved dropped to them, booking_new
 -- to every driver). A driver on both legs is judged at both new times (twin of applyRideEffects).
+-- 2.14.2 (FR-346, V97): an underway ride (like a kept one) is left exactly as booked, its driver not told.
 create or replace function public.siosia_change_apply_rides(a public.appointments, p_effects jsonb)
 returns void language plpgsql security definer set search_path = public as $$
 declare e jsonb; r rides; v_t timestamptz; v_driver uuid;
@@ -6905,8 +6924,9 @@ begin
   v_code := siosia_change_check(a, ch);
   if v_code is not null then return siosia_err(v_code); end if;
   -- The live rides locked before their effects are read: a ride the cron sweep is starting right now
-  -- is waited for and then seen dispatched (ride_started), never left behind at the old time.
-  perform 1 from rides where appointment_id = a.id and status in ('scheduled', 'requested', 'accepted', 'arrived')
+  -- is waited for and then seen dispatched: 2.14.2 (FR-346) left as booked (underway), never moved
+  -- behind the dispatcher's back, and the change still goes through.
+  perform 1 from rides where appointment_id = a.id and status in ('scheduled', 'requested', 'accepted', 'arrived', 'in_progress')
    order by id for update;
   v_eff := siosia_change_effects(a, ch, true);
   if jsonb_typeof(v_eff) = 'object' then return v_eff; end if;

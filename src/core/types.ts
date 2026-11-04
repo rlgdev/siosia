@@ -154,6 +154,12 @@ export interface AttachedRide {
   mine: boolean;
   scheduledFor: number | null;
   status: AttachedStatus;
+  /**
+   * 2.14.2 (FR-346, V97): already handed to drivers or being driven (requested, accepted, arrived,
+   * in_progress) — a change leaves it as booked. A booking held past its window (its rider or driver
+   * still busy) is not: it is still booked ahead and follows a change.
+   */
+  underway: boolean;
   driver: { nickname: string; icon?: string | null } | null;
   pickup?: Place;
   dropoff?: Place;
@@ -262,7 +268,8 @@ export interface AppointmentView {
   /** 2.6 (FR-270): what it cost — done appointments only (parties and family). */
   cost: CostSummary | null;
   /** 2.9 (FR-314): the client side's tip to the provider (parties and families). */
-  tip: { amount: number; by: string; at: number } | null;
+  /** 2.14.2: mine = the viewer gave it (a family member may tip for the client, FR-314). */
+  tip: { amount: number; by: string; at: number; mine: boolean } | null;
   /** 2.6 (FR-254): role "family" — whose appointment this is (that member's side and nickname). */
   family: { side: PartyRole; member: string } | null;
   /** 2.14 (FR-334–339): the pending change proposal (the two parties only; others null). */
@@ -281,8 +288,8 @@ export interface ChangeRide {
   /** Pickup time before / after the change. */
   from: number | null;
   to: number | null;
-  /** "move" (new time and/or pickup), "cancel" (would start too soon — booked again by hand), "keep". */
-  effect: "move" | "cancel" | "keep";
+  /** "move" (new time and/or pickup), "cancel" (would start too soon — booked again by hand), "keep", "underway" (2.14.2, FR-346: already on its way — stays as booked, a warning). */
+  effect: "move" | "cancel" | "keep" | "underway";
   /** The passenger only (FR-114): the new pickup and fare when they change. */
   pickup?: Place;
   dropoff?: Place;

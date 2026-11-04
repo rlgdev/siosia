@@ -221,7 +221,10 @@ When it is accepted, the appointment, its price (at the rate it was booked with)
 together: a ride there moves with the start, a ride back with the end, and the driver is told — or,
 if the new time doesn't fit their day, the ride goes back to other drivers (*no driver yet*). A ride
 that would now be too soon is cancelled; ask for a ride under **Siosia → Ride** at the time. A ride
-already on its way can't be moved. Moved wholly into the past, a confirmed appointment is done at
+already on its way (looking for a driver, or with its driver coming or driving) never stops a
+change: it stays as booked, and both the sheet and the proposal say so — *Ride back is already on
+its way — it stays as booked; agree any change with the driver (chat)*. Only its pickup can't be
+changed any more. Moved wholly into the past, a confirmed appointment is done at
 once (at its new end) and the cost summary goes out; a done one takes the new time, its total
 follows the rate (a set amount stays) and the corrected summary goes out again — its rides stay as
 they were. The weekly reports follow the new date.
@@ -308,11 +311,15 @@ invitation waiting on the start screen.
 catalog first: pick them in *Propose a contract*. Once they accept, they appear under the service for
 your family only, at the contract rate.
 
-**What it cost.** When an appointment is over, its page shows a **Summary** — the time, the rate and
-the total — and everyone in the family and the person who looked after the kids get a notification.
-Came back an hour late? Within 24 hours either of you can *Propose another length* (see *Moving or
-changing an appointment*); once the other accepts, the total follows the rate and the family hears
-about it. Siosia never charges anything — settle between you.
+**What it cost.** When an appointment is over, its page shows one **Payment** card — the time counted
+(and the booked one when it differs), the rate and the total; a change waiting for an answer; the tip
+(or, on the client's side within 7 days, the tip choices); the *Total with tip*; and **Propose
+another time frame** — and everyone in the family and the person who looked after the kids get a
+notification. Came back an hour late? Either of you taps *Propose another time frame* right there
+(the length within 24 hours, the time within 30 days; see *Moving or changing an appointment*); once
+the other accepts, the total follows the rate and the family hears about it. The family sees the
+Payment card but can't propose or answer. History shows each done appointment's total with its tip
+(*120.00 + 20.00 tip*). Siosia never charges anything — settle between you.
 
 **Weekly report.** History → **Weekly report**: Monday to Sunday, what you spent (services as a
 client, rides as a passenger) and earned (services you gave, rides you drove), per person and
@@ -624,7 +631,10 @@ Po akceptacji termin, jego cena (według stawki z rezerwacji) i przejazdy zmieni
 przejazd tam przesuwa się z początkiem, powrotny z końcem, a kierowca dostaje informację — a jeśli
 nowa godzina mu nie pasuje, przejazd wraca do innych kierowców (*jeszcze bez kierowcy*). Przejazd,
 który byłby teraz za wcześnie, zostanie odwołany; w tym czasie zamów przejazd: **Siosia →
-Przejazd**. Przejazdu, który już jedzie, nie da się przesunąć. Potwierdzony termin przesunięty w
+Przejazd**. Przejazd, który już jedzie (szuka kierowcy albo kierowca jest w drodze lub wiezie),
+nigdy nie blokuje zmiany: zostaje tak, jak był zamówiony, a arkusz i propozycja to mówią — *Przejazd
+powrotny już jedzie — zostaje tak, jak był zamówiony; ewentualną zmianę uzgodnij z kierowcą (czat)*.
+Nie da się już tylko zmienić jego miejsca odbioru. Potwierdzony termin przesunięty w
 całości w przeszłość od razu się kończy (z nowym końcem) i przychodzi podsumowanie kosztów;
 zakończony dostaje nowy czas, kwota liczy się ze stawki (ustalona kwota zostaje), a poprawione
 podsumowanie przychodzi ponownie — przejazdy zostają bez zmian. Raporty tygodniowe idą za nową datą.
@@ -710,11 +720,15 @@ startowym czeka na nią zaproszenie do Twojej rodziny.
 wybierz ją w *Zaproponuj umowę*. Po akceptacji pojawia się przy usłudze tylko dla Twojej rodziny, w
 stawce z umowy.
 
-**Ile to kosztowało.** Po zakończeniu termin pokazuje **Podsumowanie** — czas, stawkę i kwotę — a cała
-rodzina i osoba, która zajmowała się dziećmi, dostają powiadomienie. Wróciliście godzinę później?
-W ciągu 24 godzin każde z was może *Zaproponować inną długość* (zob. *Przesunięcie lub zmiana
-terminu*); po akceptacji drugiej strony kwota liczy się ze stawki, a rodzina dostaje informację.
-Siosia niczego nie pobiera — rozliczacie się sami.
+**Ile to kosztowało.** Po zakończeniu termin pokazuje jedną kartę **Płatność** — policzony czas (i
+zarezerwowany, gdy się różni), stawkę i kwotę; zmianę czekającą na odpowiedź; napiwek (albo, po
+stronie klienta w ciągu 7 dni, wybór napiwku); *Razem z napiwkiem*; oraz **Zaproponuj inne godziny**
+— a cała rodzina i osoba, która zajmowała się dziećmi, dostają powiadomienie. Wróciliście godzinę
+później? Każde z was dotyka *Zaproponuj inne godziny* od razu tam (długość do 24 godzin, czas do 30
+dni; zob. *Przesunięcie lub zmiana terminu*); po akceptacji drugiej strony kwota liczy się ze
+stawki, a rodzina dostaje informację. Rodzina widzi kartę Płatność, ale nie proponuje ani nie
+odpowiada. Historia pokazuje przy każdym zakończonym terminie kwotę z napiwkiem (*120,00 zł + 20,00
+zł napiwku*). Siosia niczego nie pobiera — rozliczacie się sami.
 
 **Raport tygodniowy.** Historia → **Raport tygodniowy**: od poniedziałku do niedzieli, ile wydałeś
 (usługi jako klient, przejazdy jako pasażer) i zarobiłeś (usługi, które dałeś, kursy, które

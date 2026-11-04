@@ -1,6 +1,6 @@
 // Siosia 2.14 change proposals in the engine (FR-334–340, V90–V94): who may propose, the move and
 // length windows, no_change, counter-proposals and replacing, withdraw and lapse, the checks again at
-// acceptance (overlap, ride_started), reminders, price and cost, rides following (shift, clamp,
+// acceptance (overlap; 2.14.2: a ride under way stays as booked, never ride_started), reminders, price and cost, rides following (shift, clamp,
 // too soon, pickups and fares, the place followed), drivers kept or dropped, the view per role,
 // toAnswer, series dates moved and gaps at the rule's slot, cancel / delete / merge.
 
@@ -447,7 +447,7 @@ describe("rides follow (FR-337, V92)", () => {
     expect(code(() => book("client", 30, a.id, "there"))).toBe("ok");
   });
 
-  it("a ride already dispatched refuses (ride_started) when proposing and when accepting; the view still shows it", () => {
+  it("2.14.2: a ride dispatched before accepting stays as booked (underway) and the change goes through (FR-346, V97)", () => {
     const a = planned(5 * 60);
     const there = book("client", 4 * 60, a.id, "there");
     at((e) => e.claimBooking("driver", there.id));
@@ -455,11 +455,11 @@ describe("rides follow (FR-337, V92)", () => {
     now += 3 * 60 * MIN + 31 * MIN; // the driver's time to go
     at((e) => e.sweep());
     expect(ride(there.id).status).toBe("accepted");
-    expect(view("siosia", a.id).change!.rides[0]).toMatchObject({ rideId: there.id, effect: "keep" });
-    expect(code(() => answerC("siosia", a.id))).toBe("ride_started");
-    expect(code(() => propose("siosia", a.id, moveBy(a.id, 30)))).toBe("ride_started");
-    // A change that leaves that ride alone is fine (a later end moves only the back leg).
-    expect(code(() => propose("siosia", a.id, { kind: "move", durationMin: 240 }))).toBe("ok");
+    expect(view("siosia", a.id).change!.rides[0]).toMatchObject({ rideId: there.id, effect: "underway", from: there.scheduledFor, to: there.scheduledFor });
+    // A new proposal touching it is fine too (it was ride_started before 2.14.2).
+    expect(code(() => propose("siosia", a.id, moveBy(a.id, 30)))).toBe("ok");
+    expect(code(() => answerC("client", a.id))).toBe("ok");
+    expect(ride(there.id)).toMatchObject({ status: "accepted", scheduledFor: there.scheduledFor, driverId: "driver" });
   });
 
   it("my new pickup with the phone's estimate: fare by the booking rules, shown to me only", () => {
@@ -717,6 +717,240 @@ describe("2.14 review fixes (B15)", () => {
     expect(changes()[0].proposedBy).toBe("client2");
     expect(view("client2", a.id).change).toMatchObject({ mine: true, by: "client" });
     expect(withdraw("client2", a.id).change).toBeNull();
+  });
+});
+
+describe("2.14.2 a ride under way warns, never blocks (FR-346, V97)", () => {
+  /** The ride exactly as it was: status, time, places, fare, driver. */
+  const snap = (id: string) => {
+    const r = ride(id);
+    return { status: r.status, scheduledFor: r.scheduledFor, dispatchStartedAt: r.dispatchStartedAt, pickup: r.pickup, dropoff: r.dropoff, fare: r.fare, driverId: r.driverId };
+  };
+  const driverPushes = () => pushes.filter((p) => p.kind === "booking_moved" || p.kind === "booking_cancelled" || p.kind === "booking_new");
+
+  it("during the event, the back ride already requested: a longer session is proposed and accepted, the ride untouched", () => {
+    const a = planned(60);
+    const s = appt(a.id).startsAt;
+    const back = book("client", 60 + 180, a.id, "back", HOME, PARK);
+    now = s + 165 * MIN; // 15 min before the end: the unclaimed booking has opened to dispatch
+    at((e) => e.sweep());
+    expect(ride(back.id).status).toBe("requested");
+    const before = snap(back.id);
+    expect(code(() => propose("client", a.id, { kind: "length", minutes: 240 }))).toBe("ok");
+    for (const u of ["client", "siosia"])
+      expect(view(u, a.id).change!.rides).toEqual([
+        expect.objectContaining({ rideId: back.id, leg: "back", effect: "underway", from: s + 180 * MIN, to: s + 180 * MIN })
+      ]);
+    // FR-114: nothing re-placed, so no new places or fare even for the passenger.
+    expect(view("client", a.id).change!.rides[0].pickup).toBeUndefined();
+    pushes = [];
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(appt(a.id)).toMatchObject({ status: "accepted", durationMin: 240, price: 160 });
+    expect(snap(back.id)).toEqual(before);
+    expect(driverPushes()).toEqual([]);
+    expect(kinds()).toEqual(["appt_change_accepted"]);
+  });
+
+  it("the there ride accepted, then arrived, while the appointment is moved earlier: underway, accepted, driver not told", () => {
+    const a = planned(2 * 60);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 90, a.id, "there");
+    at((e) => e.claimBooking("driver", there.id));
+    now += 60 * MIN; // the claimed booking starts (leadMin before its time)
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("accepted");
+    // Earlier by 90 min: a scheduled ride would be cancelled (too soon); this one stays as booked.
+    propose("siosia", a.id, { kind: "move", startsAt: s - 90 * MIN });
+    expect(view("client", a.id).change!.rides[0]).toMatchObject({ rideId: there.id, effect: "underway", to: there.scheduledFor });
+    at((e) => e.advance("driver", there.id, "arrived"));
+    const before = snap(there.id);
+    expect(before.status).toBe("arrived");
+    pushes = [];
+    expect(code(() => answerC("client", a.id))).toBe("ok");
+    expect(appt(a.id)).toMatchObject({ status: "accepted", startsAt: s - 90 * MIN });
+    expect(snap(there.id)).toEqual(before);
+    expect(driverPushes()).toEqual([]);
+  });
+
+  it("a ride being driven (in_progress) is listed as underway and left alone", () => {
+    const a = planned(90);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 60, a.id, "there");
+    at((e) => e.claimBooking("driver", there.id));
+    now += 31 * MIN;
+    at((e) => e.sweep());
+    at((e) => e.advance("driver", there.id, "arrived"));
+    at((e) => e.advance("driver", there.id, "in_progress"));
+    const before = snap(there.id);
+    propose("client", a.id, moveBy(a.id, 60));
+    expect(view("siosia", a.id).change!.rides).toEqual([expect.objectContaining({ rideId: there.id, effect: "underway", mine: false })]);
+    expect(view("client", a.id).change!.rides[0]).toMatchObject({ effect: "underway", mine: true });
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(appt(a.id).startsAt).toBe(s + HOUR);
+    expect(snap(there.id)).toEqual(before);
+  });
+
+  it("a new pickup for my ride already under way is refused (ride_started); one booked ahead still follows the 2.14 rules", () => {
+    const a = planned(5 * 60);
+    const there = book("client", 4 * 60, a.id, "there");
+    const back = book("client", 8 * 60 + 5, a.id, "back", HOME, PARK);
+    at((e) => e.claimBooking("driver", there.id));
+    now += 3 * 60 * MIN + 31 * MIN;
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("accepted");
+    const pick = (leg: Leg) => ({ kind: "move" as const, pickups: [{ leg, pickup: SCHOOL, estKm: 3, estMin: 9, fareIsEstimate: true }] });
+    expect(code(() => propose("client", a.id, pick("there")))).toBe("ride_started");
+    // Someone else's ride on that leg is still forbidden, before anything else.
+    expect(code(() => propose("siosia", a.id, pick("there")))).toBe("forbidden");
+    expect(changes()).toHaveLength(0);
+    // The back ride is still booked ahead: its pickup is fine, and the there ride shows underway.
+    propose("client", a.id, { ...pick("back"), startsAt: appt(a.id).startsAt + HOUR });
+    const rides = view("client", a.id).change!.rides;
+    expect(rides.map((x) => [x.rideId, x.effect])).toEqual([
+      [there.id, "underway"],
+      [back.id, "move"]
+    ]);
+    expect(rides[1]).toMatchObject({ pickup: SCHOOL, to: back.scheduledFor! + HOUR });
+    const before = snap(there.id);
+    answerC("siosia", a.id);
+    expect(snap(there.id)).toEqual(before);
+    expect(ride(back.id)).toMatchObject({ status: "scheduled", pickup: SCHOOL, scheduledFor: back.scheduledFor! + HOUR });
+  });
+
+  it("my pickup proposed while booked, the ride dispatched before accepting: accepted, the ride keeps its pickup", () => {
+    const a = planned(5 * 60);
+    const there = book("client", 4 * 60, a.id, "there");
+    propose("client", a.id, { kind: "move", startsAt: appt(a.id).startsAt + 30 * MIN, pickups: [{ leg: "there", pickup: SCHOOL, estKm: 3, estMin: 9, fareIsEstimate: true }] });
+    expect(view("client", a.id).change!.rides[0]).toMatchObject({ effect: "move", pickup: SCHOOL });
+    now += 4 * 60 * MIN - 20 * MIN; // the unclaimed booking opens to dispatch
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("requested");
+    expect(view("client", a.id).change!.rides[0]).toMatchObject({ effect: "underway" });
+    expect(view("client", a.id).change!.rides[0].pickup).toBeUndefined();
+    const before = snap(there.id);
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(snap(there.id)).toEqual(before);
+    expect(ride(there.id).pickup).toEqual(PARK);
+  });
+
+  // Review fix: at accepting, a pickup whose ride of mine is no longer live is never a refusal (FR-346).
+  const pickThere = (a: AppointmentView): ChangeInput => ({
+    kind: "move",
+    startsAt: appt(a.id).startsAt + 3 * HOUR,
+    pickups: [{ leg: "there", pickup: SCHOOL, estKm: 3, estMin: 9, fareIsEstimate: true }]
+  });
+
+  it("my pickup proposed while booked; the ride is dispatched and expires before accepting: accepted, the ride left as it is", () => {
+    const a = planned(5 * 60);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 4 * 60, a.id, "there");
+    expect(code(() => propose("client", a.id, pickThere(a)))).toBe("ok");
+    now += 4 * 60 * MIN - 20 * MIN; // opens to dispatch, no driver claims it
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("requested");
+    now = there.scheduledFor! + 16 * MIN; // 15 min after its time: expired
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("expired");
+    expect(view("client", a.id).change!.rides).toEqual([]);
+    const before = snap(there.id);
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(appt(a.id)).toMatchObject({ status: "accepted", startsAt: s + 3 * HOUR });
+    expect(snap(there.id)).toEqual(before);
+  });
+
+  it("my pickup proposed while booked; the ride is driven to the end before accepting: accepted", () => {
+    const a = planned(5 * 60);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 4 * 60, a.id, "there");
+    at((e) => e.claimBooking("driver", there.id));
+    propose("client", a.id, pickThere(a));
+    now += 3 * 60 * MIN + 31 * MIN;
+    at((e) => e.sweep());
+    for (const to of ["arrived", "in_progress", "completed"] as const) at((e) => e.advance("driver", there.id, to));
+    expect(ride(there.id).status).toBe("completed");
+    const before = snap(there.id);
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(appt(a.id).startsAt).toBe(s + 3 * HOUR);
+    expect(snap(there.id)).toEqual(before);
+  });
+
+  it("my pickup proposed while booked; I cancel that ride and the other party has one on the leg: accepted, not forbidden", () => {
+    const a = planned(5 * 60);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 4 * 60, a.id, "there");
+    const theirs = book("siosia", 4 * 60 + 40, a.id, "there", PARK, AWAY);
+    propose("client", a.id, pickThere(a));
+    at((e) => e.cancelRide("client", there.id));
+    expect(ride(there.id).status).toBe("cancelled");
+    // proposing it now is still refused: the leg's live ride is someone else's (the pending one stays)
+    expect(code(() => propose("client", a.id, { ...pickThere(a), startsAt: s + 4 * HOUR }))).toBe("forbidden");
+    expect(code(() => answerC("siosia", a.id))).toBe("ok");
+    expect(appt(a.id).startsAt).toBe(s + 3 * HOUR);
+    // the other party's ride follows the start with its own places; mine stays cancelled
+    expect(ride(theirs.id)).toMatchObject({ status: "scheduled", scheduledFor: theirs.scheduledFor! + 3 * HOUR, pickup: PARK, dropoff: AWAY });
+    expect(ride(there.id).status).toBe("cancelled");
+  });
+
+  it("the view's underway is the server's: a booking held while its driver is busy is not (it still follows); once started it is", () => {
+    const a = planned(5 * 60);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 4 * 60, a.id, "there");
+    at((e) => e.claimBooking("driver", there.id));
+    expect(view("client", a.id).rides[0]).toMatchObject({ rideId: there.id, status: "confirmed", underway: false });
+    // the driver is still on another trip when the booking's lead comes: it is held, still scheduled
+    db.rides.busy = { ...ride(there.id), id: "busy", appointmentId: null, leg: null, riderId: "other", driverId: "driver", status: "in_progress", scheduledFor: null };
+    now += 3 * 60 * MIN + 31 * MIN;
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("scheduled");
+    for (const u of ["client", "siosia"]) expect(view(u, a.id).rides[0]).toMatchObject({ status: "confirmed", underway: false });
+    propose("siosia", a.id, moveBy(a.id, 60));
+    expect(view("client", a.id).change!.rides[0]).toMatchObject({ rideId: there.id, effect: "move" });
+    withdraw("siosia", a.id);
+    // the other trip ends: the booking starts → underway, and a change leaves it as booked
+    db.rides.busy.status = "completed";
+    at((e) => e.sweep());
+    expect(ride(there.id).status).toBe("accepted");
+    expect(view("siosia", a.id).rides[0]).toMatchObject({ status: "confirmed", underway: true });
+    propose("siosia", a.id, { kind: "move", startsAt: s + HOUR });
+    expect(view("client", a.id).change!.rides[0]).toMatchObject({ rideId: there.id, effect: "underway" });
+  });
+
+  it("scheduled rides still follow or are cancelled beside one under way; a move into the past leaves the one under way too", () => {
+    const a = planned(5 * 60);
+    const s = appt(a.id).startsAt;
+    const there = book("client", 4 * 60, a.id, "there");
+    const mine = book("siosia", 4 * 60 + 40, a.id, "there", PARK, AWAY);
+    const back = book("client", 8 * 60 + 5, a.id, "back", HOME, PARK);
+    at((e) => e.claimBooking("driver", back.id));
+    at((e) => e.claimBooking("driver2", there.id));
+    now += 3 * 60 * MIN + 31 * MIN; // the there ride's driver sets off; the provider's own is still booked
+    at((e) => e.sweep());
+    expect([ride(there.id).status, ride(mine.id).status]).toEqual(["accepted", "scheduled"]);
+    // Earlier by 2 h (a start already behind us, 2.14.1): the provider's own ride (at s − 20) would now
+    // be too soon → cancelled; the back ride follows the end.
+    propose("client", a.id, { kind: "move", startsAt: s - 2 * HOUR });
+    expect(view("siosia", a.id).change!.rides.map((x) => [x.rideId, x.effect])).toEqual([
+      [there.id, "underway"],
+      [mine.id, "cancel"],
+      [back.id, "move"]
+    ]);
+    pushes = [];
+    answerC("siosia", a.id);
+    expect(ride(there.id)).toMatchObject({ status: "accepted", scheduledFor: there.scheduledFor, driverId: "driver2" });
+    expect(ride(mine.id)).toMatchObject({ status: "cancelled", cancelReason: "appointment_changed" });
+    expect(ride(back.id)).toMatchObject({ status: "scheduled", scheduledFor: back.scheduledFor! - 2 * HOUR, driverId: "driver" });
+    expect(pushesOf("booking_moved").map((p) => [p.userId, p.rideId, p.params.dropped])).toEqual([["driver", back.id, false]]);
+    expect(pushesOf("booking_moved").concat(pushesOf("booking_cancelled")).some((p) => p.userId === "driver2")).toBe(false);
+    // 2.14.1 into the past: done at once; the ride under way stays, the booked back ride is cancelled.
+    propose("siosia", a.id, { kind: "move", startsAt: now - 24 * HOUR });
+    expect(view("client", a.id).change!.rides.map((x) => [x.rideId, x.effect])).toEqual([
+      [there.id, "underway"],
+      [back.id, "cancel"]
+    ]);
+    answerC("client", a.id);
+    expect(appt(a.id).status).toBe("done");
+    expect(ride(there.id)).toMatchObject({ status: "accepted", driverId: "driver2" });
+    expect(ride(back.id).status).toBe("cancelled");
   });
 });
 

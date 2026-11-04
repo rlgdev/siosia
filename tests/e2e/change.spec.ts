@@ -4,7 +4,8 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 // context: the client moves a confirmed appointment, the provider finds it under To answer and
 // accepts, and both see the new times; then a length change of a session under way (the clock
 // moved on in both pages), accepted from C3. 2.14.1: a move into the past, accepted by the robot
-// Siosia, shows in History as done at the new time. Map services are blocked (straight-line routes).
+// Siosia, shows in History as done at the new time. 2.14.2: a ride already on its way is a warning,
+// not a blocker. Map services are blocked (straight-line routes).
 
 async function isolate(context: BrowserContext) {
   await context.route(/router\.project-osrm\.org|nominatim\.openstreetmap\.org|tile\.openstreetmap\.org/, (r) => r.abort());
@@ -195,4 +196,78 @@ test("a move into the past: the client moves a confirmed appointment to yesterda
   await expect(row).toHaveCount(1, { timeout: 10_000 });
   await expect(row).toContainText(y.row);
   await expect(row).toContainText("Done");
+});
+
+test("2.14.2: during the session, with Ewa's ride back already on its way, Toria proposes a longer length — a warning, not a blocker — and Ewa accepts (FR-346)", async ({ context }) => {
+  await isolate(context);
+  // The address search answers with one place (the last route registered wins over isolate's abort).
+  await context.route(/nominatim\.openstreetmap\.org\/search/, (r) =>
+    r.fulfill({ json: [{ lat: "52.2496", lon: "20.9538", display_name: "Wola Park, Warszawa" }], headers: { "access-control-allow-origin": "*" } })
+  );
+  // One clock for both pages (page.clock is the context's: it is forwarded once below).
+  await context.clock.install({ time: Date.now() });
+  const ewa = await context.newPage();
+  await onboard(ewa, "Ewa");
+  await offer(ewa, "childcare");
+
+  const toria = await context.newPage();
+  await onboard(toria, "Toria");
+  const start = await toria.evaluate(() => {
+    const d = new Date(Math.ceil((Date.now() + 31 * 60_000) / 900_000) * 900_000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  });
+  await requestChildcare(toria, start);
+
+  // Ewa accepts with a ride back home after it (from the appointment's place to Wola Park).
+  await ewa.getByTestId("start-planned").click();
+  const ask = ewa.getByTestId("to-answer");
+  await expect(ask).toContainText("To answer (1)", { timeout: 8000 });
+  await ask.getByTestId("answer-accept").click();
+  await ewa.getByTestId("need-ride-back").check();
+  await ewa.getByTestId("ride-back-dropoff-search").click();
+  await ewa.getByTestId("ride-back-dropoff-query").fill("Wola Park");
+  await ewa.getByTestId("ride-back-dropoff-go").click();
+  await ewa.getByRole("button", { name: /Wola Park/ }).click();
+  await expect(ewa.getByTestId("ride-back-dropoff-value")).toContainText("Wola Park");
+  await expect(ewa.getByTestId("accept-confirm")).toBeEnabled();
+  await ewa.getByTestId("accept-confirm").click();
+  await expect(ewa.getByTestId("appt-status")).toHaveText("Confirmed");
+  await expect(ewa.getByTestId("appt-rides")).toContainText("Ride back");
+  await expect(toria.getByTestId("appt-chip")).toHaveText("Confirmed", { timeout: 8000 });
+
+  // Ten minutes before the end, in both pages: Ewa's ride back (5 min after the end) has opened to
+  // drivers — it is under way (her app shows the ride search).
+  const ahead = (await toria.evaluate((s) => new Date(s).getTime() + 170 * 60_000 - Date.now(), start)) as number;
+  await context.clock.fastForward(ahead);
+  await expect(ewa.getByText("Finding a driver…")).toBeVisible({ timeout: 10_000 });
+
+  // Toria proposes 4 h instead of 3 h: the sheet warns about Ewa's ride back and still sends.
+  await toria.getByTestId("planned-appointment").getByTestId("open-appointment").click();
+  await expect(toria.getByTestId("appt-when")).toContainText("Now until");
+  await toria.getByTestId("appt-change").click();
+  await toria.getByTestId("change-mode-length").click();
+  await toria.getByTestId("change-minutes").selectOption("240");
+  const warning = "Ride back is already on its way — it stays as booked; agree any change with the driver (chat)";
+  await expect(toria.getByTestId("change-underway-back")).toContainText(warning);
+  await expect(toria.getByTestId("change-send")).toBeEnabled();
+  await toria.getByTestId("change-send").click();
+  await expect(toria.getByTestId("change-card")).toContainText("Your proposal — waiting for Ewa");
+  await expect(toria.getByTestId("change-ride-back")).toContainText(warning);
+
+  // Ewa opens it from the bell (over her ride search), sees the same warning and accepts.
+  await ewa.getByTestId("bell").click();
+  await ewa.getByTestId("bell-item").filter({ hasText: "Change proposed" }).first().click();
+  await expect(ewa.getByTestId("change-card")).toContainText("Toria proposes a change", { timeout: 8000 });
+  await expect(ewa.getByTestId("change-ride-back")).toContainText(warning);
+  await ewa.getByTestId("change-accept").click();
+  await expect(ewa.getByTestId("change-card")).toHaveCount(0);
+  await expect(ewa.getByRole("alert")).toHaveCount(0);
+
+  // Both see the new end; the ride back stays as booked (still looking for a driver).
+  const end = await shift(toria, start, 240);
+  await expect(ewa.getByTestId("appt-when")).toContainText(`Now until ${end.hhmm}`);
+  await expect(toria.getByTestId("change-card")).toHaveCount(0, { timeout: 8000 });
+  await expect(toria.getByTestId("appt-when")).toContainText(`Now until ${end.hhmm}`);
+  await expect(toria.getByTestId("appt-rides")).toContainText("Ride back");
 });

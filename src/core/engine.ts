@@ -279,12 +279,15 @@ export interface ChangeRow {
 /** 2.14: a change as checked (the row's own fields). */
 type ChangeDraft = Pick<ChangeRow, "kind" | "startsAt" | "durationMin" | "place" | "minutes" | "pickups" | "note">;
 
-/** 2.14 (FR-337, V92): what one attached ride does when a change is accepted. */
+/**
+ * 2.14 (FR-337, V92): what one attached ride does when a change is accepted. 2.14.2 (FR-346, V97):
+ * "underway" = already handed to drivers or being driven — stays exactly as booked (a warning).
+ */
 interface RideEffect {
   r: RideRow;
   from: number;
   to: number;
-  effect: "move" | "cancel" | "keep";
+  effect: "move" | "cancel" | "keep" | "underway";
   pickup: Place;
   dropoff: Place;
   estKm: number;
@@ -3559,6 +3562,7 @@ export class Engine {
         mine: r.riderId === viewer,
         scheduledFor: r.scheduledFor ?? null,
         status: rideSummary(r)!,
+        underway: r.status === "requested" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress",
         driver: r.driverId ? { nickname: this.db.users[r.driverId]?.nickname ?? "Deleted user", icon: this.masterOf(r.driverId)?.icon ?? null } : null,
         ...(r.riderId === viewer ? { pickup: { ...r.pickup }, dropoff: { ...r.dropoff }, fare: r.fare, currency: r.currency } : {})
       }));
@@ -3620,7 +3624,7 @@ export class Engine {
       actualMin: a.actualMin ?? null,
       cost: candidate ? null : this.costOf(a),
       // 2.9 (FR-314): the tip — the parties and their families see it.
-      tip: !candidate && a.tip != null ? { amount: a.tip, by: this.nick(a.tipBy ?? null), at: a.tipAt ?? a.endedAt ?? a.startsAt } : null,
+      tip: !candidate && a.tip != null ? { amount: a.tip, by: this.nick(a.tipBy ?? null), at: a.tipAt ?? a.endedAt ?? a.startsAt, mine: a.tipBy === viewer } : null,
       family: family ? { side: kinSide, member: this.nick(kinSide === "client" ? a.clientId : a.providerId) } : null,
       series: s
         ? {
@@ -4240,7 +4244,7 @@ export class Engine {
     if (!a || !this.isParty(uid, a)) throw new ServerError("not_found");
     if (!input || typeof input !== "object") throw new ServerError("bad_input");
     const draft = this.checkChange(uid, a, input);
-    // V92: a ride already dispatched cannot follow, and new places must pass the booking rules.
+    // V92: new places must pass the booking rules; 2.14.2 (V97): a ride under way stays as booked.
     this.changeEffects(a, { ...draft, proposedBy: uid }, true);
     const pending = this.pendingChange(a.id);
     if (pending) {
@@ -4442,8 +4446,15 @@ export class Engine {
         if (!p || (p.leg !== "there" && p.leg !== "back")) throw new ServerError("bad_leg");
         if (pickups.some((x) => x.leg === p.leg)) throw new ServerError("bad_input");
         const onLeg = live.filter((r) => r.leg === p.leg);
-        // Only for my own live ride on that leg (FR-334).
-        if (!onLeg.some((r) => r.riderId === uid)) throw new ServerError(onLeg.length ? "forbidden" : "bad_leg");
+        if (expiresAt === undefined) {
+          // When proposing: only for my own live ride on that leg (FR-334), and (2.14.2, FR-346, V97) only
+          // for one still booked ahead (not yet handed to drivers).
+          if (!onLeg.some((r) => r.riderId === uid)) throw new ServerError(onLeg.length ? "forbidden" : "bad_leg");
+          if (!onLeg.some((r) => r.riderId === uid && r.status === "scheduled")) throw new ServerError("ride_started");
+        }
+        // At accepting (expiresAt given), a ride of mine dispatched, driven, expired or cancelled since then
+        // (or the appointment done meanwhile) is never a refusal: the pickup applies to a live ride of mine
+        // booked ahead only (changeEffects), otherwise it is left as it is.
         if (!p.pickup || !isValidLatLng(p.pickup) || !String(p.pickup.label ?? "").trim()) throw new ServerError("bad_input");
         if (typeof p.estKm !== "number" || typeof p.estMin !== "number" || !Number.isFinite(p.estKm) || !Number.isFinite(p.estMin)) throw new ServerError("bad_input");
         // As a template (siosia_change_check in numeric): kept to 3 decimals; a trip that rounds to 0 km is none.
@@ -4467,16 +4478,24 @@ export class Engine {
     return { kind: "length", startsAt: null, durationMin: null, place: null, minutes: m, pickups: [], note };
   }
 
-  /** The rides of an appointment that may still follow it (or refuse to: ride_started), soonest first. */
+  /**
+   * The rides of an appointment a change may touch, soonest first: booked ahead (they follow) or
+   * already under way (2.14.2, V97: requested, accepted, arrived, in_progress — they stay as booked).
+   */
   private liveRides(a: ApptRow): RideRow[] {
     return Object.values(this.db.rides)
-      .filter((r) => r.appointmentId === a.id && (r.status === "scheduled" || r.status === "requested" || r.status === "accepted" || r.status === "arrived"))
+      .filter(
+        (r) =>
+          r.appointmentId === a.id &&
+          (r.status === "scheduled" || r.status === "requested" || r.status === "accepted" || r.status === "arrived" || r.status === "in_progress")
+      )
       .sort((x, y) => (x.scheduledFor ?? 0) - (y.scheduledFor ?? 0));
   }
 
   /**
    * What each attached ride does on acceptance (FR-337, V92) — the preview and the outcome alike.
-   * strict: refuse (ride_started, outside_area, too_far); otherwise the offending ride shows "keep".
+   * strict: refuse (outside_area, too_far); otherwise the offending ride shows "keep". 2.14.2 (FR-346,
+   * V97): a ride under way that the change would move or re-place is "underway" — never a refusal.
    */
   private changeEffects(a: ApptRow, c: ChangeDraft & { proposedBy: string }, strict: boolean): RideEffect[] {
     // A change of a done appointment (a length, or a 2.14.1 move) moves nothing.
@@ -4518,7 +4537,11 @@ export class Engine {
           out.push(keep);
           continue;
         }
-        if (r.status !== "scheduled") throw new ServerError("ride_started");
+        // 2.14.2 (FR-346, V97): already on its way — not moved, not cancelled, its driver not told.
+        if (r.status !== "scheduled") {
+          out.push({ ...keep, effect: "underway" });
+          continue;
+        }
         if (to < this.now + this.cfg.booking.minLeadMin * 60_000) {
           out.push({ ...keep, to, effect: "cancel" });
           continue;

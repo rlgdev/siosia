@@ -135,11 +135,13 @@ describe("tips (FR-314–316, V74)", () => {
     expect(await code(call("nanny", "siosia_tip_appointment", [a.id, 10]))).toBe("not_found");
     expect(await code(call("other", "siosia_tip_appointment", [a.id, 10]))).toBe("not_found");
     const v = await call<Json>("mum", "siosia_tip_appointment", [a.id, 20.004]);
-    expect(v.tip).toMatchObject({ amount: 20, by: "Anna" });
+    expect(v.tip).toMatchObject({ amount: 20, by: "Anna", mine: true });
     expect(await sent()).toEqual(["appt_tip>nanny"]);
     expect((await outbox())[0]).toMatchObject({ appointment_id: a.id, params: { sender: "Anna", total: 20, currency: "PLN", service: "Childcare" } });
-    expect((await call<Json>("nanny", "siosia_get_appointment", [a.id])).tip).toMatchObject({ amount: 20, by: "Anna" });
-    expect((await call<Json>("dad", "siosia_get_appointment", [a.id])).tip).toMatchObject({ amount: 20 });
+    expect((await call<Json>("nanny", "siosia_get_appointment", [a.id])).tip).toMatchObject({ amount: 20, by: "Anna", mine: false });
+    // 2.14.2: the client is told Anna gave it, not that he did
+    expect((await call<Json>("dad", "siosia_get_appointment", [a.id])).tip).toMatchObject({ amount: 20, by: "Anna", mine: false });
+    expect((await call<Json>("mum", "siosia_get_appointment", [a.id])).tip).toMatchObject({ amount: 20, mine: true });
     expect(await code(call("dad", "siosia_tip_appointment", [a.id, 5]))).toBe("already_tipped");
     // The week's report counts it: spent by the client, earned by the provider.
     const w = await localDay("appointments", "starts_at", a.id);

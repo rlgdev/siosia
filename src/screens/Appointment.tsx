@@ -14,10 +14,13 @@
 // 2.14 (FR-334–339): either party proposes a change — a planned appointment's start, length, place
 // and their own rides' pickups, or a live / just-finished one's length; the pending change is a
 // card above everything with Accept / Decline (the other party) or Withdraw (the proposer).
+// 2.14.2 (FR-346–347): a ride already on its way never blocks a change — it shows as a warning (it
+// stays as booked); a done appointment has one Payment card — what counts, a pending change, the
+// tip, the total with the tip and Propose another time frame (its sheet opens inside the card).
 
 import { Icon } from "../components/Icon";
 import { InfoTip } from "../components/InfoTip";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AddToCalendar } from "../components/AddToCalendar";
 import { answerChangeOrBusy, apptRoom, isOpen, kidCountText, otherName, otherOf, partyText, rideLines, seriesMarker, statusChip } from "../components/apptWords";
 import { ChatButton } from "../components/ChatSheet";
@@ -32,7 +35,7 @@ import { Money, Panel, RatingBadge, StarInput, useBusy } from "../components/ui"
 import { computeFare } from "../core/fare";
 import { haversineKm } from "../core/geo";
 import { derivedPickup } from "../core/time";
-import type { AppointmentView, CatalogItem, ChangeInput, ChangeKind, ChangePickup, ChangeView, Leg, Place, RideTemplateInput } from "../core/types";
+import type { AppointmentView, AttachedRide, CatalogItem, ChangeInput, ChangeKind, ChangePickup, ChangeView, Leg, Place, RideTemplateInput } from "../core/types";
 import { hasFeature, ServerError } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
@@ -137,6 +140,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
   const showKids = kids.length > 0 || canChangeKids || (a.role === "candidate" && a.kidCount > 0);
   const kidsToRate = a.status === "done" && a.role === "provider" ? kids.filter((k) => k.myRating !== null || now < rateUntil) : [];
   const room = apptRoom(a);
+  const done = a.status === "done";
 
   const act = (fn: () => Promise<unknown>) =>
     run(async () => {
@@ -153,6 +157,9 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
     await act(() => answerChangeOrBusy(store.api, a, () => (theirs = true)));
     if (theirs) setError(t("change.providerBusy", { name: otherName(a, t) }));
   };
+  const sheet = mode === "change" && (
+    <ProposeChange a={a} kinds={kinds} past={pastMoves} initial={kinds.includes(changeKind) ? changeKind : (kinds[0] ?? "length")} onDone={() => setMode("view")} reload={reload} />
+  );
 
   return (
     <div className="stack" data-testid="appointment">
@@ -221,7 +228,8 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
         )}
       </section>
 
-      {a.change && <ChangeCard a={a} c={a.change} busy={busy} act={act} accept={acceptChange} />}
+      {/* 2.14.2 (FR-347): a done appointment's pending change sits in its Payment card instead */}
+      {a.change && !done && <ChangeCard a={a} c={a.change} busy={busy} act={act} accept={acceptChange} />}
 
       {showKids && (
         <section className="card stack" data-testid="appt-kids">
@@ -244,8 +252,17 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
       )}
       {mode === "kids" && <KidsEditor a={a} onDone={() => setMode("view")} reload={reload} />}
 
-      {a.cost && <CostSection a={a} reload={reload} changes={changes} onPropose={canPropose && kinds.includes("length") && mode === "view" ? () => openChange("length") : undefined} />}
-      <TipSection a={a} reload={reload} />
+      {done && a.role !== "candidate" && (
+        <PaymentSection
+          a={a}
+          reload={reload}
+          changes={changes}
+          moves={kinds.includes("move")}
+          changeCard={a.change && <ChangeCard a={a} c={a.change} busy={busy} act={act} accept={acceptChange} inline />}
+          onPropose={canPropose && mode === "view" ? () => openChange(kinds[0]) : undefined}
+          sheet={sheet}
+        />
+      )}
 
       {a.role !== "candidate" && a.coming && <ComingLine a={a} />}
       {a.role !== "candidate" && (a.updateCount > 0 || a.feedOpen) && <SessionFeedSection a={a} />}
@@ -281,7 +298,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
       {mode === "accept" && <AcceptSheet a={a} onDone={() => setMode("view")} reload={reload} />}
       {mode === "take" && <AcceptSheet a={a} take onDone={() => setMode("view")} reload={reload} />}
       {(mode === "there" || mode === "back") && <AddRide a={a} leg={mode} onDone={() => setMode("view")} reload={reload} />}
-      {mode === "change" && <ProposeChange a={a} kinds={kinds} past={pastMoves} initial={kinds.includes(changeKind) ? changeKind : (kinds[0] ?? "length")} onDone={() => setMode("view")} reload={reload} />}
+      {!done && sheet}
 
       {mode === "cancel" && (
         <section className="card stack" data-testid="cancel-box">
@@ -346,7 +363,7 @@ function AppointmentDetails({ a, reload, accepting, taking, changing }: { a: App
               ))}
             </section>
           )}
-          {canPropose && (
+          {canPropose && !done && (
             <button type="button" className="btn btn-secondary" onClick={() => openChange(kinds[0] ?? "move")} data-testid="appt-change">
               <Icon name="calendar" className="ico-inline" /> {t("change.propose")}
             </button>
@@ -370,93 +387,135 @@ const money = (amount: number, currency: string, locale: string) => {
   }
 };
 
-/**
- * 2.6 (FR-270, FR-272): the Summary of a done appointment — the time counted, the rate and where it
- * came from, the total — and, for the provider within 24 h after the end, Correct the time.
- */
-/**
- * 2.9 (FR-314): after a done appointment the client side may leave a tip — once, within 7 days; the
- * provider side sees it (who gave it, how much).
- */
-function TipSection({ a, reload }: { a: AppointmentView; reload: () => void }) {
-  const { t, locale } = useI18n();
-  const store = useStore();
+/** 2.9 (FR-314): the client side (the client or their family) may tip within 7 days; null = no tip line at all. */
+function tipState(a: AppointmentView, now: number): "given" | "choices" | null {
   if (a.status !== "done" || !a.provider || a.role === "candidate") return null;
+  if (a.tip) return "given";
   const clientSide = a.role === "client" || (a.role === "family" && a.family?.side === "client");
-  if (!clientSide)
-    return a.tip ? (
-      <p className="notice notice-ok" data-testid="appt-tip">
-        <Icon name="sparkles" className="ico-inline" /> {t("tip.givenBy", { who: a.tip.by || a.client.nickname, amount: money(a.tip.amount, a.currency, locale) })}
-      </p>
-    ) : null;
-  if (!a.tip && store.serverNow() > (a.endedAt ?? a.endsAt) + 7 * 24 * 3600_000) return null;
-  return (
-    <section className="card" data-testid="appt-tip">
-      <TipBox
-        currency={a.currency}
-        max={1000}
-        suggested={[10, 20, 50]}
-        tip={a.tip?.amount ?? null}
-        onTip={async (n) => {
-          await store.api.tipAppointment(a.id, n);
-          reload();
-        }}
-      />
-    </section>
-  );
+  return clientSide && now <= (a.endedAt ?? a.endsAt) + 7 * 24 * 3600_000 ? "choices" : null;
 }
 
-function CostSection({ a, reload, changes, onPropose }: { a: AppointmentView; reload: () => void; changes: boolean; onPropose?: () => void }) {
+/**
+ * 2.14.2 (FR-347, V98): the Payment of a done appointment — one card for the two parties and their
+ * families, in this order: what counts (2.6, FR-270: the time counted, the rate and where it came
+ * from, the total), a pending change (FR-339), the tip (2.9, FR-314), the total with the tip, and
+ * Propose another time frame (FR-342, its sheet opens here). A database without change proposals
+ * (V89) keeps the provider's 2.6 Correct the time instead. The family sees it all, none of the actions.
+ */
+function PaymentSection({
+  a,
+  reload,
+  changes,
+  moves,
+  changeCard,
+  onPropose,
+  sheet
+}: {
+  a: AppointmentView;
+  reload: () => void;
+  changes: boolean;
+  /** A move may be proposed (else only a new length): which hint the i explains. */
+  moves: boolean;
+  changeCard: ReactNode;
+  onPropose?: () => void;
+  sheet: ReactNode;
+}) {
   const { t, locale } = useI18n();
   const store = useStore();
-  const cost = a.cost!;
+  const now = store.serverNow();
+  const cost = a.cost;
+  const tip = tipState(a, now);
   // A database before 2.14 (no "changes", V89): the provider still corrects the time one-sidedly (2.6).
-  const canCorrect = !changes && a.role === "provider" && store.serverNow() < (a.endedAt ?? a.endsAt) + 24 * 3600_000;
+  const canCorrect = !!cost && !changes && a.role === "provider" && now < (a.endedAt ?? a.endsAt) + 24 * 3600_000;
+  const withTip = cost?.total != null && a.tip ? round2(cost.total + a.tip.amount) : null;
+  const setAmount = cost?.rate === null;
+  if (!cost && !tip && !changeCard && !onPropose && !sheet) return null;
   return (
-    <section className="card stack" data-testid="appt-cost">
-      <strong>{t("cost.title")}</strong>
-      <div className="kv">
-        <span>{t("cost.time")}</span>
-        <span data-testid="cost-time">{durationText(cost.minutes, t)}</span>
-      </div>
-      {cost.corrected && <small className="muted" data-testid="cost-corrected">{t("cost.corrected", { time: durationText(a.durationMin, t) })}</small>}
-      {cost.rate !== null && (
-        <div className="kv">
-          <span>{t("cost.rate")}</span>
-          <span data-testid="cost-rate">
-            {t("cost.perHour", { rate: money(cost.rate, cost.currency, locale) })} · {t(`cost.source.${cost.source}` as MessageKey)}
-          </span>
+    <section className="card stack" data-testid="appt-payment">
+      <strong>{t("payment.title")}</strong>
+      {cost && (
+        <div className="stack" data-testid="appt-cost">
+          <div className="kv">
+            <span>{t("cost.time")}</span>
+            <span data-testid="cost-time">{durationText(cost.minutes, t)}</span>
+          </div>
+          {cost.corrected && <small className="muted" data-testid="cost-corrected">{t("cost.corrected", { time: durationText(a.durationMin, t) })}</small>}
+          {cost.rate !== null && (
+            <div className="kv">
+              <span>{t("cost.rate")}</span>
+              <span data-testid="cost-rate">
+                {t("cost.perHour", { rate: money(cost.rate, cost.currency, locale) })} · {t(`cost.source.${cost.source}` as MessageKey)}
+              </span>
+            </div>
+          )}
+          {/* 2.12.2: a set amount (custom or a fixed price) says so; the time does not change it */}
+          {cost.rate === null && (cost.source === "custom" || cost.source === "fixed") && (
+            <div className="kv">
+              <span>{t("cost.price")}</span>
+              <span data-testid="cost-source">{t(`cost.source.${cost.source}` as MessageKey)}</span>
+            </div>
+          )}
+          <div className="kv big">
+            <span>{t("cost.total")}</span>
+            {cost.total === null ? (
+              <span className="muted" data-testid="cost-total">
+                {t("cost.none")}
+              </span>
+            ) : (
+              <strong className="cost-total" data-testid="cost-total">
+                <Money amount={cost.total} currency={cost.currency} />
+              </strong>
+            )}
+          </div>
         </div>
       )}
-      {/* 2.12.2: a set amount (custom or a fixed price) says so; the time does not change it */}
-      {cost.rate === null && (cost.source === "custom" || cost.source === "fixed") && (
-        <div className="kv">
-          <span>{t("cost.price")}</span>
-          <span data-testid="cost-source">{t(`cost.source.${cost.source}` as MessageKey)}</span>
+      {changeCard}
+      {tip === "given" && a.tip && (
+        <p className="notice notice-ok" data-testid="appt-tip">
+          <Icon name="sparkles" className="ico-inline" />{" "}
+          {/* FR-347: by whom — "You" only to the one who gave it (a family member may tip for the client) */}
+          {a.tip.mine || (a.role === "client" && !a.tip.by) ? (
+            <span data-testid="tip-given">{t("tip.given", { amount: money(a.tip.amount, a.currency, locale) })}</span>
+          ) : (
+            t("tip.givenBy", { who: a.tip.by || a.client.nickname, amount: money(a.tip.amount, a.currency, locale) })
+          )}
+        </p>
+      )}
+      {tip === "choices" && (
+        <div data-testid="appt-tip">
+          <TipBox
+            currency={a.currency}
+            max={1000}
+            suggested={[10, 20, 50]}
+            tip={null}
+            onTip={async (n) => {
+              await store.api.tipAppointment(a.id, n);
+              reload();
+            }}
+          />
         </div>
       )}
-      <div className="kv big">
-        <span>{t("cost.total")}</span>
-        {cost.total === null ? (
-          <span className="muted" data-testid="cost-total">
-            {t("cost.none")}
-          </span>
-        ) : (
-          <strong className="cost-total" data-testid="cost-total">
-            <Money amount={cost.total} currency={cost.currency} />
+      {withTip !== null && (
+        <div className="kv big" data-testid="payment-total-tip">
+          <span>{t("payment.totalTip")}</span>
+          <strong>
+            <Money amount={withTip} currency={cost!.currency} />
           </strong>
-        )}
-      </div>
-      {/* 2.14 (FR-339): the provider's one-sided Correct the time (2.6) gave way to a proposal of a new length. */}
+        </div>
+      )}
       {onPropose && (
         <span className="with-info">
-          <button type="button" className="btn btn-link btn-small" onClick={onPropose} data-testid="cost-propose">
-            {t("change.lengthEntry")}
+          <button type="button" className="btn btn-secondary btn-small" onClick={onPropose} data-testid="payment-propose">
+            <Icon name="calendar" className="ico-inline" /> {t("payment.propose")}
           </button>
-          <InfoTip text={t(cost.rate === null ? "change.lengthHintSet" : "change.lengthHint")} testId="cost-propose" />
+          <InfoTip
+            text={t(moves ? (setAmount ? "payment.proposeHintSet" : "payment.proposeHint") : setAmount ? "change.lengthHintSet" : "change.lengthHint")}
+            testId="payment-propose"
+          />
         </span>
       )}
       {canCorrect && <CorrectTime a={a} reload={reload} />}
+      {sheet}
     </section>
   );
 }
@@ -856,8 +915,30 @@ export function proposeKind(a: AppointmentView, now: number, pastMoves = true): 
 
 const samePlace = (p: Place | null, q: Place | null) => (p === null || q === null ? p === q : p.label === q.label && p.lat === q.lat && p.lng === q.lng);
 
-/** The pending change as a card above everything (FR-339): old → new, what each ride does, the note, the answer. */
-function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: ChangeView; busy: boolean; act: (fn: () => Promise<unknown>) => unknown; accept: () => unknown }) {
+/**
+ * 2.14.2 (FR-346, V97): an attached ride already handed to drivers or being driven, as the server
+ * judges it (requested, accepted, arrived, in_progress). A booking held past its window while its
+ * rider or driver is still busy is still booked ahead: it follows the change.
+ */
+function rideUnderway(r: AttachedRide): boolean {
+  return (r.status === "pending" || r.status === "confirmed") && r.underway === true;
+}
+
+/** "Ride back is already on its way — it stays as booked; agree any change with the driver (chat)" (FR-346). */
+function UnderwayLine({ leg, testId }: { leg: Leg; testId: string }) {
+  const { t } = useI18n();
+  return (
+    <p className="notice notice-warn small" data-testid={testId}>
+      <Icon name="car" className="ico-inline" /> {t("change.ride.underway", { leg: t(`appt.leg.${leg}` as MessageKey) })}
+    </p>
+  );
+}
+
+/**
+ * The pending change as a card above everything (FR-339) — or, on a done appointment, inside its
+ * Payment card (`inline`, FR-347): old → new, what each ride does, the note, the answer.
+ */
+function ChangeCard({ a, c, busy, act, accept, inline }: { a: AppointmentView; c: ChangeView; busy: boolean; act: (fn: () => Promise<unknown>) => unknown; accept: () => unknown; inline?: boolean }) {
   const { t, locale } = useI18n();
   const store = useStore();
   const now = store.serverNow();
@@ -872,7 +953,7 @@ function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: Change
   const legWord = (leg: Leg) => t(`appt.leg.${leg}` as MessageKey);
   const rideTime = (ms: number | null) => (ms !== null ? timeText(ms, locale) : "—");
   return (
-    <section className="card stack" data-testid="change-card">
+    <section className={inline ? "notice notice-info stack" : "card stack"} data-testid="change-card">
       <strong>{c.mine ? t("change.cardMine", { name }) : t("change.cardTheirs", { name })}</strong>
       {(move || !done) && timeChanged && (
         <p data-testid="change-when">
@@ -904,22 +985,27 @@ function ChangeCard({ a, c, busy, act, accept }: { a: AppointmentView; c: Change
           {oldPrice !== null && oldPrice !== c.price && was(money(oldPrice, a.currency, locale))}
         </p>
       )}
-      {c.rides.map((r) => (
-        <p key={r.rideId} className="ride-line small" data-testid={`change-ride-${r.leg}`}>
-          {r.effect === "cancel"
-            ? t("change.ride.cancel", { leg: legWord(r.leg) })
-            : r.effect === "move"
-              ? t("change.ride.move", { leg: legWord(r.leg), time: rideTime(r.to) })
-              : t("change.ride.keep", { leg: legWord(r.leg), time: rideTime(r.from ?? r.to) })}
-          {r.effect === "move" && r.pickup && ` · ${t("change.ride.pickup", { place: r.pickup.label })}`}
-          {r.effect === "move" && r.fare !== undefined && (
-            <>
-              {" · "}
-              <Money amount={r.fare} currency={a.currency} />
-            </>
-          )}
-        </p>
-      ))}
+      {c.rides.map((r) =>
+        // 2.14.2 (FR-346): a ride already on its way stays as booked — a warning, not a refusal.
+        r.effect === "underway" ? (
+          <UnderwayLine key={r.rideId} leg={r.leg} testId={`change-ride-${r.leg}`} />
+        ) : (
+          <p key={r.rideId} className="ride-line small" data-testid={`change-ride-${r.leg}`}>
+            {r.effect === "cancel"
+              ? t("change.ride.cancel", { leg: legWord(r.leg) })
+              : r.effect === "move"
+                ? t("change.ride.move", { leg: legWord(r.leg), time: rideTime(r.to) })
+                : t("change.ride.keep", { leg: legWord(r.leg), time: rideTime(r.from ?? r.to) })}
+            {r.effect === "move" && r.pickup && ` · ${t("change.ride.pickup", { place: r.pickup.label })}`}
+            {r.effect === "move" && r.fare !== undefined && (
+              <>
+                {" · "}
+                <Money amount={r.fare} currency={a.currency} />
+              </>
+            )}
+          </p>
+        )
+      )}
       {c.note && (
         <p className="note" data-testid="change-note-text">
           „{c.note}”
@@ -1061,8 +1147,11 @@ function ProposeChange({ a, kinds, past = true, initial, onDone, reload }: { a: 
   if (!lengths.includes(current)) lengths.push(current);
   lengths.sort((x, y) => x - y);
 
-  // A new pickup only for my rides still scheduled and ahead (a done appointment's rides are behind it).
-  const myRides = done ? [] : a.rides.filter((r) => r.mine && (r.status === "pending" || r.status === "confirmed") && r.scheduledFor !== null && r.scheduledFor > nowMs);
+  // A new pickup only for my rides still booked ahead (a done appointment's rides are behind it; a
+  // ride already on its way keeps its pickup — the server's ride_started, FR-346).
+  const myRides = done
+    ? []
+    : a.rides.filter((r) => r.mine && (r.status === "pending" || r.status === "confirmed") && r.scheduledFor !== null && r.scheduledFor > nowMs && !rideUnderway(r));
   const startMs = fromInput(start);
   const chosen = (Object.entries(pickups) as [Leg, PickupDraft][]).filter(([, p]) => p.pickup);
   const estimating = chosen.some(([, p]) => p.estKm === null || p.estMin === null);
@@ -1087,6 +1176,13 @@ function ProposeChange({ a, kinds, past = true, initial, onDone, reload }: { a: 
             : startMs > nowMs && startMs < nowMs + lead
               ? t("change.inLead", { min: dep.booking.minLeadMin })
               : null;
+  // 2.14.2 (FR-346, V97): the rides already on their way that this change would move or re-place —
+  // they stay as booked (a warning; the change still goes through). A done appointment moves no ride.
+  const placeMoved = kind === "move" && !samePlace(place, a.place);
+  const underway =
+    done || same || !Number.isFinite(newEnd)
+      ? []
+      : a.rides.filter((r) => rideUnderway(r) && (placeMoved || (r.leg === "there" ? newStart !== a.startsAt : newEnd !== a.endsAt)));
   const blocked = busy || same || estimating || problem !== null || (kind === "move" && (!Number.isFinite(startMs) || (needsPlace && !place)));
 
   const send = async () => {
@@ -1220,6 +1316,14 @@ function ProposeChange({ a, kinds, past = true, initial, onDone, reload }: { a: 
             </>
           )}
         </p>
+      )}
+      {underway.length > 0 && (
+        <div className="stack" data-testid="change-underway">
+          {underway.map((r) => (
+            <UnderwayLine key={r.rideId} leg={r.leg} testId={`change-underway-${r.leg}`} />
+          ))}
+          <small className="muted">{t("change.underwayHint")}</small>
+        </div>
       )}
       {same && (
         <p className="hint" data-testid="change-same">

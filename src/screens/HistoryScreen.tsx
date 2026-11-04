@@ -4,12 +4,14 @@
 // Replaces the v1 Ride history and Earnings & history panels; an online driver, who keeps D1,
 // opens the same list as a panel.
 // 2.14 (FR-339): a done appointment with a pending change of its length shows the change chip.
+// 2.14.2 (FR-348): a done appointment's row shows its total with the tip ("120.00 + 20.00 tip").
 
 import { Icon } from "../components/Icon";
 import { useCallback, useEffect, useState } from "react";
 import { changeChip, otherName, partyText, statusChip } from "../components/apptWords";
 import { HistoryFeed } from "../components/SessionFeed";
 import { Money, Page, Panel } from "../components/ui";
+import { formatMoney } from "../core/fare";
 import type { AppointmentView, Earnings, HistoryItem, RideView } from "../core/types";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
@@ -117,7 +119,7 @@ function useDate(): (ms: number) => string {
 }
 
 function AppointmentRow({ a }: { a: AppointmentView }) {
-  const { t, lang } = useI18n();
+  const { t, lang, locale } = useI18n();
   const store = useStore();
   const date = useDate();
   const canRate = a.status === "done" && a.role !== "family" && a.myRating === null && !!a.provider && store.serverNow() < (a.endedAt ?? a.endsAt) + RATE_WINDOW_MS;
@@ -139,8 +141,17 @@ function AppointmentRow({ a }: { a: AppointmentView }) {
           <small className="muted">{partyText(a, t)}</small>
           {/* 2.6 (FR-273): what it cost once done (a corrected time included), else the price asked */}
           {a.cost?.total != null ? (
-            <span data-testid="history-cost">
-              <Money amount={a.cost.total} currency={a.cost.currency} />
+            <span>
+              <span data-testid="history-cost">
+                <Money amount={a.cost.total} currency={a.cost.currency} />
+              </span>
+              {/* 2.14.2 (FR-348): the tip on top — "120.00 + 20.00 tip" */}
+              {a.status === "done" && a.tip && (
+                <small className="muted" data-testid="history-tip">
+                  {" "}
+                  {t("payment.plusTip", { amount: formatMoney(a.tip.amount, a.cost.currency, locale) })}
+                </small>
+              )}
             </span>
           ) : (
             a.price !== null && a.status !== "done" && <Money amount={a.price} currency={a.currency} />

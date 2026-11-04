@@ -329,7 +329,7 @@ describe("P1 Planned (FR-130–131, FR-123, US13)", () => {
     const mine = appt({
       startsAt: now + 2 * 3600_000,
       series: series(),
-      rides: [{ rideId: "r9", leg: "there", passenger: "client", mine: true, scheduledFor: now + 3600_000, status: "confirmed", driver: ROMAN }]
+      rides: [{ rideId: "r9", leg: "there", passenger: "client", mine: true, scheduledFor: now + 3600_000, status: "confirmed", underway: false, driver: ROMAN }]
     });
     const ask = appt({ id: "a2", status: "requested", role: "provider", serviceId: "learning", service: { name: DEFAULT_SERVICES[1].name, icon: "📚" }, client: EWA, provider: TORIA, startsAt: now + 26 * 3600_000 });
     const waiting = appt({ id: "a3", status: "requested", startsAt: now + 50 * 3600_000 });

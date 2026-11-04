@@ -943,7 +943,15 @@ export const en = {
   "change.badTime": "That time can't be proposed — at most 30 days back, a start ahead needs the usual notice, and a done appointment stays in the past.",
   "change.windowClosed": "Too late to change — a done appointment can be moved for 30 days after its end, its length for 24 h.",
   "err.no_change": "That is the same as now — change something first.",
-  "err.ride_started": "A ride for this appointment is already on its way — it can't be moved now."
+  "err.ride_started": "That ride is already on its way — its pickup can't be changed now.",
+  "change.ride.underway": "Ride {leg} is already on its way — it stays as booked; agree any change with the driver (chat)",
+  "change.underwayHint": "The change still goes through; only rides booked ahead follow it.",
+  "payment.title": "Payment",
+  "payment.totalTip": "Total with tip",
+  "payment.plusTip": "+ {amount} tip",
+  "payment.propose": "Propose another time frame",
+  "payment.proposeHint": "Within 30 days after the end either of you may propose when it really happened (the length for 24 h); once the other accepts, the total follows and the family is told.",
+  "payment.proposeHintSet": "Within 30 days after the end either of you may propose when it really happened (the length for 24 h); once the other accepts, the family is told. The total is a set amount and stays as it is."
 } as const;
 
 export type MessageKey = keyof typeof en;

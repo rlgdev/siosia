@@ -75,6 +75,27 @@ const endAgo = async (id: unknown, agoMin: number) => {
   );
   await sweep();
 };
+/** 2.14.2: a ride handed to dispatch (requested), its driver on the way (accepted), arrived or driving (in_progress). */
+const dispatch = (id: unknown, status: "requested" | "accepted" | "arrived" | "in_progress") =>
+  h.admin(
+    "update public.rides set status = $2::text, dispatch_started_at = now()," +
+      " accepted_at = case when $2::text <> 'requested' then now() end," +
+      " arrived_at = case when $2::text in ('arrived', 'in_progress') then now() end," +
+      " started_at = case when $2::text = 'in_progress' then now() end where id = $1",
+    [id, status]
+  );
+/** As the engine's `now += min`: the appointment and its rides come `min` minutes closer. */
+const travel = async (apptId: unknown, min: number) => {
+  await h.admin(
+    "update public.appointments set starts_at = starts_at - make_interval(mins => $2), requested_at = now() - interval '30 days' where id = $1",
+    [apptId, min]
+  );
+  await h.admin(
+    "update public.rides set scheduled_for = scheduled_for - make_interval(mins => $2)," +
+      " dispatch_started_at = dispatch_started_at - make_interval(mins => $2) where appointment_id = $1",
+    [apptId, min]
+  );
+};
 const km = async (a: { lat: number; lng: number }, b: { lat: number; lng: number }) =>
   Number((await h.admin("select public.siosia_km($1, $2, $3, $4) as k", [a.lat, a.lng, b.lat, b.lng])).rows[0].k);
 const fare = async (k: number, m: number) => Number((await h.admin("select public.siosia_fare($1, $2) as f", [k, m])).rows[0].f);
@@ -324,7 +345,7 @@ describe("rides follow (FR-337, V92)", () => {
     expect(Number((await ride(back.id)).fare)).toBe(Number(back.fare));
   });
 
-  it("a ride that would start too soon is cancelled (appointment_changed, its driver told); a dispatched one blocks the change", async () => {
+  it("a ride that would start too soon is cancelled (appointment_changed, its driver told); 2.14.2: a dispatched one stays as booked (underway)", async () => {
     const a = await appt(3 * 60);
     const s = Number(a.startsAt);
     const there = await book("client", iso(s - 120 * MIN), a.id, "there");
@@ -338,17 +359,21 @@ describe("rides follow (FR-337, V92)", () => {
     // no appt_ride_failed: it goes like a cancelled appointment's ride (not shown)
     expect(await sent("appt_ride_failed")).toEqual([]);
     expect((await getAppt("client", a.id)).rides).toEqual([]);
-    // dispatched: refused when proposing and when accepting; the view still shows it (kept)
+    // 2.14.2 (FR-346, V97): dispatched before accepting — the view shows it underway, a new proposal
+    // touching it is fine too (it was ride_started before), and accepting leaves it as booked
     const b = await appt(2 * 24 * 60);
     const sb = Number(b.startsAt);
     const r2 = await book("client", iso(sb - 30 * MIN), b.id, "there");
-    await h.admin("update public.rides set status = 'requested' where id = $1", [r2.id]);
-    expect(await code(propose("client", b.id, { kind: "move", startsAt: sb + 60 * MIN }))).toBe("ride_started");
-    await h.admin("update public.rides set status = 'scheduled' where id = $1", [r2.id]);
+    expect(await call("driver", "siosia_claim_booking", [r2.id])).toBe("won");
     await propose("client", b.id, { kind: "move", startsAt: sb + 60 * MIN });
-    await h.admin("update public.rides set status = 'requested' where id = $1", [r2.id]);
-    expect(((await getAppt("siosia", b.id)).change as Json).rides).toMatchObject([{ effect: "keep", from: sb - 30 * MIN, to: sb - 30 * MIN }]);
-    expect(await code(answerCh("siosia", b.id, "accept"))).toBe("ride_started");
+    await dispatch(r2.id, "accepted");
+    expect(((await getAppt("siosia", b.id)).change as Json).rides).toMatchObject([
+      { rideId: r2.id, effect: "underway", from: sb - 30 * MIN, to: sb - 30 * MIN }
+    ]);
+    expect(await code(propose("siosia", b.id, { kind: "move", startsAt: sb + 30 * MIN }))).toBe("no error");
+    expect(await code(answerCh("client", b.id, "accept"))).toBe("no error");
+    expect(await ride(r2.id)).toMatchObject({ status: "accepted", driver_id: U.driver });
+    expect(ms((await ride(r2.id)).scheduled_for)).toBe(sb - 30 * MIN);
   });
 
   it("pickups: only for my own live ride, with the phone's estimate; fare by the booking rules", async () => {
@@ -822,5 +847,246 @@ describe("2.14.1 moves into the past (FR-342–345, V96)", () => {
     expect(Math.abs(Number((v.change as Json).expiresAt) - (next - 30 * MIN))).toBeLessThan(1000);
     await sweep();
     expect(await changes(c.id)).toEqual(["proposed:client"]);
+  });
+});
+
+// 2.14.2 (2026-11-04): a ride under way warns, never blocks (FR-346, V97). Twins in change.test.
+describe("2.14.2 a ride under way warns, never blocks (FR-346, V97)", () => {
+  const HOUR = 60 * MIN;
+  /** The ride exactly as it was: status, time, places, fare, driver. */
+  const snap = async (id: unknown) => {
+    const r = await ride(id);
+    return {
+      status: r.status, scheduledFor: ms(r.scheduled_for), dispatchStartedAt: ms(r.dispatch_started_at),
+      pickup: [r.pickup_lat, r.pickup_lng, r.pickup_label], dropoff: [r.dropoff_lat, r.dropoff_lng, r.dropoff_label],
+      fare: Number(r.fare), driverId: r.driver_id
+    };
+  };
+  const driverPushes = async () =>
+    (await outbox()).filter((p) => p.kind === "booking_moved" || p.kind === "booking_cancelled" || p.kind === "booking_new");
+  const startOf = async (id: unknown) => ms((await h.admin("select starts_at from public.appointments where id = $1", [id])).rows[0].starts_at);
+  const rides = async (who: Who, id: unknown) => ((await getAppt(who, id)).change as Json).rides as Json[];
+
+  it("during the event, the back ride already requested: a longer session is proposed and accepted, the ride untouched", async () => {
+    const a = await appt(60);
+    await h.admin("update public.appointments set rate = 40, price = 120 where id = $1", [a.id]);
+    const back = await book("client", iso(Number(a.startsAt) + 180 * MIN), a.id, "back", HOME, PARK);
+    // 15 min before the end: the unclaimed booking has opened to dispatch
+    await shift(a.id, -165);
+    const s = await startOf(a.id);
+    await h.admin("update public.rides set scheduled_for = $2 where id = $1", [back.id, iso(s + 180 * MIN)]);
+    await dispatch(back.id, "requested");
+    const before = await snap(back.id);
+    expect(await code(propose("client", a.id, { kind: "length", minutes: 240 }))).toBe("no error");
+    for (const who of ["client", "siosia"] as Who[])
+      expect(await rides(who, a.id)).toEqual([
+        expect.objectContaining({ rideId: back.id, leg: "back", effect: "underway", from: s + 180 * MIN, to: s + 180 * MIN })
+      ]);
+    // FR-114: nothing re-placed, so no new places or fare even for the passenger
+    expect((await rides("client", a.id))[0]).not.toHaveProperty("pickup");
+    await clearOutbox();
+    expect(await code(answerCh("siosia", a.id, "accept"))).toBe("no error");
+    expect(await getAppt("client", a.id)).toMatchObject({ status: "accepted", durationMin: 240, price: 160 });
+    expect(await snap(back.id)).toEqual(before);
+    expect(await driverPushes()).toEqual([]);
+    expect(await sent()).toEqual(["appt_change_accepted>client"]);
+  });
+
+  it("the there ride accepted, then arrived, while the appointment is moved earlier: underway, accepted, driver not told", async () => {
+    const a = await appt(2 * 60);
+    const there = await book("client", iso(Number(a.startsAt) - 30 * MIN), a.id, "there");
+    await call("driver", "siosia_claim_booking", [there.id]);
+    // an hour on: the claimed booking starts (leadMin before its time)
+    await travel(a.id, 60);
+    await sweep();
+    expect((await ride(there.id)).status).toBe("accepted");
+    const s = await startOf(a.id);
+    // earlier by 90 min: a scheduled ride would be cancelled (too soon); this one stays as booked
+    await propose("siosia", a.id, { kind: "move", startsAt: s - 90 * MIN });
+    expect((await rides("client", a.id))[0]).toMatchObject({ rideId: there.id, effect: "underway", to: ms((await ride(there.id)).scheduled_for) });
+    await dispatch(there.id, "arrived");
+    const before = await snap(there.id);
+    expect(before.status).toBe("arrived");
+    await clearOutbox();
+    expect(await code(answerCh("client", a.id, "accept"))).toBe("no error");
+    const after = await getAppt("client", a.id);
+    expect(after.status).toBe("accepted");
+    expect(Number(after.startsAt)).toBe(s - 90 * MIN);
+    expect(await snap(there.id)).toEqual(before);
+    expect(await driverPushes()).toEqual([]);
+  });
+
+  it("a ride being driven (in_progress) is listed as underway and left alone", async () => {
+    const a = await appt(90);
+    const s = Number(a.startsAt);
+    const there = await book("client", iso(s - 30 * MIN), a.id, "there");
+    await call("driver", "siosia_claim_booking", [there.id]);
+    await dispatch(there.id, "in_progress");
+    const before = await snap(there.id);
+    await propose("client", a.id, { kind: "move", startsAt: s + HOUR });
+    expect(await rides("siosia", a.id)).toEqual([expect.objectContaining({ rideId: there.id, effect: "underway", mine: false })]);
+    expect((await rides("client", a.id))[0]).toMatchObject({ effect: "underway", mine: true });
+    expect(await code(answerCh("siosia", a.id, "accept"))).toBe("no error");
+    expect(Number((await getAppt("client", a.id)).startsAt)).toBe(s + HOUR);
+    expect(await snap(there.id)).toEqual(before);
+  });
+
+  it("a new pickup for my ride already under way is refused (ride_started); one booked ahead still follows the 2.14 rules", async () => {
+    const a = await appt(5 * 60);
+    const s = Number(a.startsAt);
+    const there = await book("client", iso(s - HOUR), a.id, "there");
+    const back = await book("client", iso(s + 185 * MIN), a.id, "back", HOME, PARK);
+    await call("driver", "siosia_claim_booking", [there.id]);
+    await dispatch(there.id, "accepted");
+    const pick = (leg: string) => ({ kind: "move", pickups: [{ leg, pickup: SCHOOL, estKm: 3, estMin: 9, fareIsEstimate: true }] });
+    expect(await code(propose("client", a.id, pick("there")))).toBe("ride_started");
+    // someone else's ride on that leg is still forbidden, before anything else
+    expect(await code(propose("siosia", a.id, pick("there")))).toBe("forbidden");
+    expect(await changes(a.id)).toEqual([]);
+    // the back ride is still booked ahead: its pickup is fine, and the there ride shows underway
+    await propose("client", a.id, { ...pick("back"), startsAt: s + HOUR });
+    const rs = await rides("client", a.id);
+    expect(rs.map((x) => [x.rideId, x.effect])).toEqual([
+      [there.id, "underway"],
+      [back.id, "move"]
+    ]);
+    expect(rs[1]).toMatchObject({ pickup: SCHOOL, to: s + 185 * MIN + HOUR });
+    const before = await snap(there.id);
+    await answerCh("siosia", a.id, "accept");
+    expect(await snap(there.id)).toEqual(before);
+    expect(await ride(back.id)).toMatchObject({ status: "scheduled", pickup_label: SCHOOL.label, pickup_lat: SCHOOL.lat });
+    expect(ms((await ride(back.id)).scheduled_for)).toBe(s + 185 * MIN + HOUR);
+  });
+
+  it("my pickup proposed while booked, the ride dispatched before accepting: accepted, the ride keeps its pickup", async () => {
+    const a = await appt(5 * 60);
+    const s = Number(a.startsAt);
+    const there = await book("client", iso(s - HOUR), a.id, "there");
+    await propose("client", a.id, {
+      kind: "move", startsAt: s + 30 * MIN, pickups: [{ leg: "there", pickup: NEWHOME, estKm: 3, estMin: 9, fareIsEstimate: true }]
+    });
+    expect((await rides("client", a.id))[0]).toMatchObject({ effect: "move", pickup: NEWHOME });
+    // the unclaimed booking opens to dispatch
+    await dispatch(there.id, "requested");
+    expect((await rides("client", a.id))[0]).toMatchObject({ effect: "underway" });
+    expect((await rides("client", a.id))[0]).not.toHaveProperty("pickup");
+    const before = await snap(there.id);
+    expect(await code(answerCh("siosia", a.id, "accept"))).toBe("no error");
+    expect(await snap(there.id)).toEqual(before);
+    expect((await ride(there.id)).pickup_label).toBe(HOME.label);
+  });
+
+  it("scheduled rides still follow or are cancelled beside one under way; a move into the past leaves the one under way too", async () => {
+    const a = await appt(5 * 60);
+    const there = await book("client", iso(Number(a.startsAt) - HOUR), a.id, "there");
+    const mine = await book("siosia", iso(Number(a.startsAt) - 20 * MIN), a.id, "there", PARK, HOME);
+    const back = await book("client", iso(Number(a.startsAt) + 185 * MIN), a.id, "back", HOME, PARK);
+    await call("driver", "siosia_claim_booking", [back.id]);
+    await call("driver2", "siosia_claim_booking", [there.id]);
+    // the there ride's driver sets off; the provider's own is still booked
+    await travel(a.id, 3 * 60 + 31);
+    await sweep();
+    expect([(await ride(there.id)).status, (await ride(mine.id)).status]).toEqual(["accepted", "scheduled"]);
+    const s = await startOf(a.id);
+    const [thereAt, backAt] = [ms((await ride(there.id)).scheduled_for), ms((await ride(back.id)).scheduled_for)];
+    // earlier by 2 h (a start already behind us, 2.14.1): the provider's own ride (at s − 20) would now
+    // be too soon → cancelled; the back ride follows the end
+    await propose("client", a.id, { kind: "move", startsAt: s - 2 * HOUR });
+    expect((await rides("siosia", a.id)).map((x) => [x.rideId, x.effect])).toEqual([
+      [there.id, "underway"],
+      [mine.id, "cancel"],
+      [back.id, "move"]
+    ]);
+    await clearOutbox();
+    await answerCh("siosia", a.id, "accept");
+    expect(await ride(there.id)).toMatchObject({ status: "accepted", driver_id: U.driver2 });
+    expect(ms((await ride(there.id)).scheduled_for)).toBe(thereAt);
+    expect(await ride(mine.id)).toMatchObject({ status: "cancelled", cancel_reason: "appointment_changed" });
+    expect(await ride(back.id)).toMatchObject({ status: "scheduled", driver_id: U.driver });
+    expect(ms((await ride(back.id)).scheduled_for)).toBe(backAt - 2 * HOUR);
+    const out = await outbox();
+    expect(out.filter((p) => p.kind === "booking_moved").map((p) => [p.who, p.ride_id, p.params.dropped])).toEqual([["driver", back.id, false]]);
+    expect(out.some((p) => (p.kind === "booking_moved" || p.kind === "booking_cancelled") && p.who === "driver2")).toBe(false);
+    // 2.14.1 into the past: done at once; the ride under way stays, the booked back ride is cancelled
+    await propose("siosia", a.id, { kind: "move", startsAt: Date.now() - 24 * HOUR });
+    expect((await rides("client", a.id)).map((x) => [x.rideId, x.effect])).toEqual([
+      [there.id, "underway"],
+      [back.id, "cancel"]
+    ]);
+    await answerCh("client", a.id, "accept");
+    expect((await getAppt("client", a.id)).status).toBe("done");
+    expect(await ride(there.id)).toMatchObject({ status: "accepted", driver_id: U.driver2 });
+    expect((await ride(back.id)).status).toBe("cancelled");
+  });
+
+  // Review fix: at accepting, a pickup whose ride of mine is no longer live is never a refusal (FR-346).
+  const pickThere = (s: number) => ({
+    kind: "move", startsAt: s + 3 * HOUR, pickups: [{ leg: "there", pickup: NEWHOME, estKm: 3, estMin: 9, fareIsEstimate: true }]
+  });
+
+  for (const end of ["expired", "completed"] as const)
+    it(`my pickup proposed while booked; the ride is dispatched and then ${end} before accepting: accepted, the ride left as it is`, async () => {
+      const a = await appt(5 * 60);
+      const s = Number(a.startsAt);
+      const there = await book("client", iso(s - HOUR), a.id, "there");
+      expect(await code(propose("client", a.id, pickThere(s)))).toBe("no error");
+      await dispatch(there.id, "requested");
+      await h.admin("update public.rides set status = $2::text, ended_at = now() where id = $1", [there.id, end]);
+      expect((await getAppt("client", a.id)).change).toMatchObject({ rides: [] });
+      const before = await snap(there.id);
+      expect(await code(answerCh("siosia", a.id, "accept"))).toBe("no error");
+      expect(await getAppt("client", a.id)).toMatchObject({ status: "accepted" });
+      expect(await startOf(a.id)).toBe(s + 3 * HOUR);
+      expect(await snap(there.id)).toEqual(before);
+    });
+
+  it("my pickup proposed while booked; I cancel that ride and the other party has one on the leg: accepted, not forbidden", async () => {
+    const a = await appt(5 * 60);
+    const s = Number(a.startsAt);
+    const there = await book("client", iso(s - HOUR), a.id, "there");
+    const theirs = await book("siosia", iso(s - 20 * MIN), a.id, "there", PARK, HOME);
+    await propose("client", a.id, pickThere(s));
+    await call("client", "siosia_cancel_ride", [there.id, null]);
+    expect((await ride(there.id)).status).toBe("cancelled");
+    // proposing it now is still refused: the leg's live ride is someone else's (the pending one stays)
+    expect(await code(propose("client", a.id, { ...pickThere(s), startsAt: s + 4 * HOUR }))).toBe("forbidden");
+    expect(await code(answerCh("siosia", a.id, "accept"))).toBe("no error");
+    expect(await startOf(a.id)).toBe(s + 3 * HOUR);
+    // the other party's ride follows the start with its own places; mine stays cancelled
+    expect(await ride(theirs.id)).toMatchObject({ status: "scheduled", pickup_label: PARK.label, dropoff_label: HOME.label });
+    expect(ms((await ride(theirs.id)).scheduled_for)).toBe(s - 20 * MIN + 3 * HOUR);
+    expect((await ride(there.id)).status).toBe("cancelled");
+  });
+
+  it("the view's underway is the server's: a booking held past its lead (still scheduled) is not and still follows; once started it is", async () => {
+    const a = await appt(5 * 60);
+    const there = await book("client", iso(Number(a.startsAt) - HOUR), a.id, "there");
+    await call("driver", "siosia_claim_booking", [there.id]);
+    expect(((await getAppt("client", a.id)).rides as Json[])[0]).toMatchObject({ rideId: there.id, status: "confirmed", underway: false });
+    // the driver is still on another trip when the booking's lead comes: it is held, still scheduled
+    const busy = (
+      await h.admin(
+        "insert into public.rides select (jsonb_populate_record(null::public.rides, to_jsonb(r) || jsonb_build_object(" +
+          "'id', gen_random_uuid(), 'rider_id', $2::uuid, 'appointment_id', null, 'leg', null, 'status', 'in_progress', 'scheduled_for', null))).*" +
+          " from public.rides r where r.id = $1 returning id",
+        [there.id, U.other]
+      )
+    ).rows[0].id;
+    await travel(a.id, 3 * 60 + 31);
+    await sweep();
+    for (const who of ["client", "siosia"] as Who[])
+      expect(((await getAppt(who, a.id)).rides as Json[])[0]).toMatchObject({ status: "confirmed", underway: false });
+    expect((await ride(there.id)).status).toBe("scheduled");
+    const s = await startOf(a.id);
+    await propose("siosia", a.id, { kind: "move", startsAt: s + HOUR });
+    expect((await rides("client", a.id))[0]).toMatchObject({ rideId: there.id, effect: "move" });
+    await withdraw("siosia", a.id);
+    // the other trip ends: the booking starts → underway, and a change leaves it as booked
+    await h.admin("update public.rides set status = 'completed', ended_at = now() where id = $1", [busy]);
+    await sweep();
+    expect((await ride(there.id)).status).toBe("accepted");
+    expect(((await getAppt("siosia", a.id)).rides as Json[])[0]).toMatchObject({ status: "confirmed", underway: true });
+    await propose("siosia", a.id, { kind: "move", startsAt: s + HOUR });
+    expect((await rides("client", a.id))[0]).toMatchObject({ rideId: there.id, effect: "underway" });
   });
 });

@@ -152,11 +152,13 @@ describe("tips (FR-314–316, V74)", () => {
     expect(code(() => at((e) => e.tipAppointment("nanny", a.id, 10)))).toBe("not_found");
     expect(code(() => at((e) => e.tipAppointment("other", a.id, 10)))).toBe("not_found");
     const v = at((e) => e.tipAppointment("mum", a.id, 20.004));
-    expect(v.tip).toEqual({ amount: 20, by: "Anna", at: now });
+    expect(v.tip).toEqual({ amount: 20, by: "Anna", at: now, mine: true });
     expect(sent()).toEqual(["appt_tip>nanny"]);
     expect(pushes[0]).toMatchObject({ appointmentId: a.id, params: { sender: "Anna", total: 20, currency: "PLN", service: "Childcare" } });
-    expect(at((e) => e.getAppointment("nanny", a.id)).tip).toMatchObject({ amount: 20, by: "Anna" });
-    expect(at((e) => e.getAppointment("dad", a.id)).tip).toMatchObject({ amount: 20 });
+    expect(at((e) => e.getAppointment("nanny", a.id)).tip).toMatchObject({ amount: 20, by: "Anna", mine: false });
+    // 2.14.2: the client is told Anna gave it, not that he did
+    expect(at((e) => e.getAppointment("dad", a.id)).tip).toMatchObject({ amount: 20, by: "Anna", mine: false });
+    expect(at((e) => e.getAppointment("mum", a.id)).tip).toMatchObject({ amount: 20, mine: true });
     expect(code(() => at((e) => e.tipAppointment("dad", a.id, 5)))).toBe("already_tipped");
     // The week's report counts it: spent by the client, earned by the provider.
     const week = "2026-10-19";

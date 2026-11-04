@@ -945,5 +945,13 @@ export const pl: Record<MessageKey, string> = {
   "change.badTime": "Tego czasu nie można zaproponować — najwyżej 30 dni wstecz, początek w przyszłości wymaga zwykłego wyprzedzenia, a zakończone spotkanie zostaje w przeszłości.",
   "change.windowClosed": "Za późno na zmianę — zakończone spotkanie można przesunąć do 30 dni po końcu, jego długość do 24 godz.",
   "err.no_change": "To jest to samo co teraz — najpierw coś zmień.",
-  "err.ride_started": "Przejazd do tego spotkania już jedzie — nie da się go teraz przesunąć."
+  "err.ride_started": "Ten przejazd już jedzie — nie da się teraz zmienić miejsca odbioru.",
+  "change.ride.underway": "Przejazd {leg} już jedzie — zostaje tak, jak był zamówiony; ewentualną zmianę uzgodnij z kierowcą (czat)",
+  "change.underwayHint": "Zmiana i tak przejdzie; za spotkaniem przesuwają się tylko przejazdy zamówione na później.",
+  "payment.title": "Płatność",
+  "payment.totalTip": "Razem z napiwkiem",
+  "payment.plusTip": "+ {amount} napiwku",
+  "payment.propose": "Zaproponuj inne godziny",
+  "payment.proposeHint": "Do 30 dni po zakończeniu każde z was może zaproponować, kiedy naprawdę się odbyło (długość do 24 godz.); po akceptacji drugiej strony kwota się zmienia, a rodzina dostaje powiadomienie.",
+  "payment.proposeHintSet": "Do 30 dni po zakończeniu każde z was może zaproponować, kiedy naprawdę się odbyło (długość do 24 godz.); po akceptacji drugiej strony rodzina dostaje powiadomienie. Kwota jest ustalona i się nie zmienia."
 };
