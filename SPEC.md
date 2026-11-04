@@ -249,7 +249,7 @@ T68|x|release 2.14 (merged with 2.12.2/2.12.3): review, live DB migration (re-ru
 T69|x|2.14.1 moves into the past: engine + SQL twins (windows, accept → done / done rewrite, lapse), UI (start back 30 d, Time and place / Length only switch, hint), i18n, tests engine + sql + ui + e2e|V96,V19
 T70|x|release 2.14.1: live SQL, main, live check|§15,V96
 T71|x|2.14.2: underway effect (engine + SQL twins, accept never refuses), warnings in sheet + card, Payment section on done C3 (cost + change + tip + propose), H1 total + tip, i18n EN/PL, tests engine + sql + ui + e2e|V97,V98,V19
-T72|.|release 2.14.2: live SQL, main, live check (change during the event with a ride under way)|§15,V97,V98
+T72|x|release 2.14.2: live SQL, main, live check (change during the event with a ride under way)|§15,V97,V98
 
 ## §B bugs
 
